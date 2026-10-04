@@ -1,0 +1,64 @@
+{
+  "name": "SELinux Policy (refpolicy)",
+  "scopeName": "source.selinux",
+  "patterns": [
+    { "include": "#doc" },
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#definition" },
+    { "include": "#structural" },
+    { "include": "#keywords" },
+    { "include": "#call" },
+    { "include": "#params" },
+    { "include": "#quotes" },
+    { "include": "#types" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "doc": {
+      "begin": "^\\s*(##)",
+      "beginCaptures": { "1": { "name": "punctuation.definition.comment.selinux" } },
+      "end": "$",
+      "name": "comment.block.documentation.selinux",
+      "patterns": [
+        { "match": "</?[A-Za-z]+(?:\\s+[a-z]+=\"[^\"]*\")*\\s*/?>", "name": "storage.type.class.doc.selinux" }
+      ]
+    },
+    "comment": {
+      "patterns": [
+        { "match": "#.*$", "name": "comment.line.number-sign.selinux" },
+        { "match": "\\bdnl\\b.*$", "name": "comment.line.dnl.m4" }
+      ]
+    },
+    "string": { "match": "\"[^\"\\n]*\"", "name": "string.quoted.double.selinux" },
+    "definition": {
+      "match": "\\b(interface|template|define)(\\()(`)([A-Za-z0-9_$]+)(')",
+      "captures": {
+        "1": { "name": "storage.type.function.selinux" },
+        "3": { "name": "punctuation.definition.quote.m4" },
+        "4": { "name": "entity.name.function.selinux" },
+        "5": { "name": "punctuation.definition.quote.m4" }
+      }
+    },
+    "structural": {
+      "match": "\\b(gen_require|optional_policy|tunable_policy|ifdef|ifndef|ifelse|policy_module|gen_tunable|gen_bool|require|optional|if|else)\\b",
+      "name": "keyword.control.selinux"
+    },
+    "keywords": {
+      "patterns": [
+        { "match": "\\b(allow|dontaudit|auditallow|neverallow|allowxperm|dontauditxperm|auditallowxperm|neverallowxperm)\\b", "name": "keyword.other.rule.selinux" },
+        { "match": "\\b(type_transition|type_change|type_member|range_transition|role_transition)\\b", "name": "keyword.other.transition.selinux" },
+        { "match": "\\b(type|attribute|attribute_role|typealias|alias|typeattribute|roleattribute|role|types|bool|class|common|inherits|user|roles|level|range|sid|constrain|mlsconstrain|validatetrans|mlsvalidatetrans|portcon|genfscon|fs_use_xattr|fs_use_task|fs_use_trans|netifcon|nodecon)\\b", "name": "storage.type.selinux" },
+        { "match": "\\b(self|true|false)\\b", "name": "constant.language.selinux" }
+      ]
+    },
+    "call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_$]*)(?=\\()",
+      "name": "entity.name.function.call.selinux"
+    },
+    "params": { "match": "\\$[0-9*@]", "name": "variable.parameter.selinux" },
+    "quotes": { "match": "[`']", "name": "punctuation.definition.quote.m4" },
+    "types": { "match": "\\b[A-Za-z0-9_$]+_t\\b", "name": "entity.name.type.selinux" },
+    "numbers": { "match": "\\b[0-9]+(\\.[0-9]+)*\\b", "name": "constant.numeric.selinux" }
+  }
+}

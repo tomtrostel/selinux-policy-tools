@@ -1,0 +1,321 @@
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { parsePolicy, parseFc, parseFlask } = require('./parser');
+
+const POLICY_EXT = ['.te', '.if', '.spt', '.m4', '.te.in', '.if.in'];
+const FLASK_FILES = new Set(['security_classes', 'access_vectors']);
+// Hidden directories (.git, .vscode, editor/agent worktrees like .kilo) are
+// always skipped: they never hold policy source but may hold whole tree copies.
+const SKIP_DIRS = new Set(['node_modules', 'tmp']);
+
+const M4_BUILTINS = new Set(['define', 'undefine', 'defn', 'pushdef', 'popdef', 'indir', 'builtin',
+  'ifdef', 'ifelse', 'shift', 'changequote', 'changecom', 'changeword', 'm4wrap', 'include',
+  'sinclude', 'divert', 'undivert', 'divnum', 'len', 'index', 'regexp', 'substr', 'translit',
+  'patsubst', 'format', 'incr', 'decr', 'eval', 'syscmd', 'esyscmd', 'sysval', 'mkstemp',
+  'maketemp', 'errprint', 'm4exit', '__file__', '__line__', 'dumpdef', 'traceon', 'traceoff', 'debugmode', 'debugfile']);
+
+function classifyFile(p) {
+  const base = path.basename(p);
+  if (FLASK_FILES.has(base)) return 'flask';
+  if (base.endsWith('.fc')) return 'fc';
+  if (POLICY_EXT.some(e => base.endsWith(e))) return 'policy';
+  if (['global_tunables', 'global_booleans', 'users', 'constraints', 'mls', 'mcs', 'policy_capabilities'].includes(base)) return 'policy';
+  return null;
+}
+
+/** Classes from all_perms.spt: define(`all_<class>_perms',`{ perm ... }') */
+function parseAllPerms(text) {
+  const out = [];
+  const re = /define\(`all_(\w+)_perms',\s*`\{([^}]*)\}'\)/g;
+  let m, l = 0, pos = 0, lineStart = 0;
+  while ((m = re.exec(text))) {
+    for (; pos < m.index; pos++) if (text.charCodeAt(pos) === 10) { l++; lineStart = pos + 1; }
+    const c = m.index - lineStart + 'define(`all_'.length;
+    out.push({ name: m[1], l, c, perms: m[2].trim().split(/\s+/).filter(Boolean), inherits: null });
+  }
+  return out;
+}
+
+/** Module name and layer from a path like .../policy/modules/<layer>/<mod>.te */
+function moduleInfo(p) {
+  const m = /modules\/([^/]+)\/([^/]+?)\.(te|if|fc)(\.in|\.m4)?$/.exec(p.replace(/\\/g, '/'));
+  if (m) return { layer: m[1], module: m[2] };
+  const base = path.basename(p).replace(/\.(te|if|fc)(\.in|\.m4)?$/, '');
+  return { layer: path.basename(path.dirname(p)), module: base };
+}
+
+class PolicyIndex {
+  constructor(log) {
+    this.files = new Map(); // fsPath -> parse result (+ path, kind)
+    this.log = log || (() => {});
+    this.built = false;
+  }
+
+  /* ----- loading ----- */
+
+  scanRoots(roots) {
+    const found = [];
+    const walk = (dir, depth) => {
+      if (depth > 12) return;
+      let ents;
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.')) walk(path.join(dir, e.name), depth + 1); }
+        else if (e.isFile() && classifyFile(e.name)) found.push(path.join(dir, e.name));
+      }
+    };
+    for (const r of roots) walk(r, 0);
+    for (const f of found) {
+      try { this.setFile(f, fs.readFileSync(f, 'utf8'), true); } catch (e) { this.log(`read failed ${f}: ${e.message}`); }
+    }
+    this.rebuild();
+    return found.length;
+  }
+
+  setFile(fsPath, text, deferRebuild) {
+    const kind = classifyFile(fsPath);
+    if (!kind) return;
+    let r;
+    if (kind === 'flask') r = parseFlask(text, path.basename(fsPath));
+    else if (kind === 'fc') r = parseFc(text);
+    else r = parsePolicy(text);
+    if (path.basename(fsPath) === 'all_perms.spt') r.genClasses = parseAllPerms(text);
+    r.path = fsPath;
+    r.fileKind = kind;
+    Object.assign(r, moduleInfo(fsPath));
+    this.files.set(fsPath, r);
+    if (!deferRebuild) this.rebuild();
+  }
+
+  removeFile(fsPath) {
+    if (this.files.delete(fsPath)) this.rebuild();
+  }
+
+  /* ----- global tables ----- */
+
+  rebuild() {
+    const t0 = Date.now();
+    const defs = new Map();   // name -> [def]
+    const decls = new Map();  // name -> [decl]
+    const classes = new Map();
+    const commons = new Map();
+    const fcByType = new Map();
+    const push = (m, k, v) => { let a = m.get(k); if (!a) m.set(k, a = []); a.push(v); };
+
+    for (const f of this.files.values()) {
+      if (f.kind === 'flask') {
+        for (const c of f.commons) commons.set(c.name, { ...c, path: f.path });
+        for (const c of f.classes) {
+          const prev = classes.get(c.name);
+          if (prev && c.declOnly) continue; // access_vectors entry wins over security_classes
+          classes.set(c.name, { ...c, path: f.path });
+        }
+        continue;
+      }
+      if (f.kind === 'fc') for (const e of f.entries) push(fcByType, e.type, { ...e, path: f.path });
+      for (const d of f.defs) { d.path = f.path; push(defs, d.name, d); }
+      for (const d of f.decls) { d.path = f.path; push(decls, d.name, d); }
+    }
+    // The devel headers ship no flask files, but support/all_perms.spt
+    // (generated from them at build time) lists every class with all its perms.
+    if (!classes.size) {
+      for (const f of this.files.values()) {
+        for (const c of f.genClasses || []) if (!classes.has(c.name)) classes.set(c.name, { ...c, path: f.path });
+      }
+    }
+    // Resolve inherited permissions
+    for (const c of classes.values()) {
+      c.allPerms = new Set(c.perms);
+      if (c.inherits && commons.has(c.inherits)) for (const p of commons.get(c.inherits).perms) c.allPerms.add(p);
+    }
+
+    // Macros generated at build time by support/genclassperms.py (all_perms.spt)
+    const synth = (name, cls, summary) => {
+      if (defs.has(name)) return;
+      defs.set(name, [{ kind: 'define', name, path: cls.path, l: cls.l, c: cls.c, len: cls.name.length, generated: true,
+        via: 'genclassperms.py', doc: { summary, params: [] }, declPatterns: [], bodyCalls: [], requires: [], reqBlocks: [] }]);
+    };
+    for (const c of classes.values()) synth(`all_${c.name}_perms`, c, `All permissions of class ${c.name} (generated at build time).`);
+    const anyClass = classes.values().next().value;
+    if (anyClass) {
+      synth('all_kernel_class_perms', anyClass, 'All kernel object classes with all permissions (generated at build time).');
+      synth('all_userspace_class_perms', anyClass, 'All userspace object classes with all permissions (generated at build time).');
+    }
+
+    this.defs = defs;
+    this.decls = decls;
+    this.classes = classes;
+    this.commons = commons;
+    this.fcByType = fcByType;
+    this.expandGenerated();
+    this.built = true;
+    this.log(`index rebuilt: ${this.files.size} files, ${defs.size} macros, ${decls.size} declared names, ${classes.size} classes in ${Date.now() - t0} ms`);
+  }
+
+  /**
+   * Expand templates/defines whose bodies declare $N-patterned names
+   * (types, nested interfaces), so generated names resolve to the call site.
+   */
+  expandGenerated() {
+    const defs = this.defs;
+    const generative = new Set();
+    for (const [name, list] of defs) if (list.some(d => d.declPatterns.length)) generative.add(name);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [name, list] of defs) {
+        if (generative.has(name)) continue;
+        if (list.some(d => d.bodyCalls.some(bc => generative.has(bc.name)))) { generative.add(name); changed = true; }
+      }
+    }
+    this.generative = generative;
+
+    const subst = (s, args) => s.replace(/\$(\d+)/g, (_, n) => (args[+n - 1] !== undefined ? args[+n - 1] : ''));
+    const spliceArgs = (raw, args) => {
+      const out = [];
+      for (const a of raw) {
+        if (a === '$*' || a === '$@') out.push(...args);
+        else if (/^shift\(\$[*@]\)$/.test(a)) out.push(...args.slice(1));
+        else out.push(subst(a, args));
+      }
+      return out;
+    };
+    const valid = s => /^[A-Za-z0-9_]+$/.test(s);
+
+    const genDecls = new Map();
+    const genDefs = new Map();
+    const push = (m, k, v) => { let a = m.get(k); if (!a) m.set(k, a = []); a.push(v); };
+
+    const expand = (name, args, site, depth) => {
+      if (depth > 5) return;
+      for (const d of defs.get(name) || []) {
+        for (const p of d.declPatterns) {
+          const n = subst(p.pattern, args);
+          if (!valid(n)) continue;
+          if (p.kind === 'interface' || p.kind === 'template' || p.kind === 'define') {
+            const doc = p.doc ? substDoc(p.doc, args) : null;
+            push(genDefs, n, { kind: p.kind, name: n, path: site.path, l: site.l, c: site.c, len: site.len, doc, generated: true, via: site.name, declPatterns: [], bodyCalls: [], requires: [], reqBlocks: [] });
+          } else {
+            push(genDecls, n, { kind: p.kind, name: n, path: site.path, l: site.l, c: site.c, len: site.len, attrs: [], generated: true, via: site.name });
+          }
+        }
+        for (const bc of d.bodyCalls) {
+          if (!generative.has(bc.name)) continue;
+          expand(bc.name, spliceArgs(bc.args, args), site, depth + 1);
+        }
+      }
+    };
+    const substDoc = (doc, args) => {
+      const s = x => x.replace(/\$(\d+)/g, (_, n) => args[+n - 1] || `$${n}`);
+      return { ...doc, summary: s(doc.summary || ''), desc: s(doc.desc || ''), params: (doc.params || []).map(p => ({ ...p, summary: s(p.summary) })) };
+    };
+
+    for (const f of this.files.values()) {
+      if (!f.calls) continue;
+      for (const c of f.calls) {
+        if (!generative.has(c.name)) continue;
+        if (c.inDef && c.args.some(a => a.includes('$'))) continue;
+        expand(c.name, c.args, { path: f.path, l: c.l, c: c.c, len: c.len, name: c.name }, 0);
+      }
+    }
+    const same = (a, b) => a.path === b.path && a.l === b.l;
+    for (const [k, v] of genDecls) {
+      const a = this.decls.get(k);
+      const fresh = a ? v.filter(g => !a.some(x => same(x, g))) : v;
+      if (!fresh.length) continue;
+      if (a) a.push(...fresh); else this.decls.set(k, fresh);
+    }
+    for (const [k, v] of genDefs) { const a = this.defs.get(k); if (a) a.push(...v); else this.defs.set(k, v); }
+  }
+
+  /* ----- queries ----- */
+
+  isMacro(name) { return this.defs.has(name) || M4_BUILTINS.has(name); }
+  isBuiltin(name) { return M4_BUILTINS.has(name); }
+
+  /** Everything that defines `name`: macros, declarations, classes. */
+  definitionsOf(name) {
+    const out = [];
+    for (const d of this.defs.get(name) || []) out.push({ path: d.path, l: d.l, c: d.c, len: d.len, what: d });
+    for (const d of this.decls.get(name) || []) out.push({ path: d.path, l: d.l, c: d.c, len: d.len, what: d });
+    const cls = this.classes.get(name);
+    if (cls) out.push({ path: cls.path, l: cls.l, c: cls.c, len: name.length, what: { kind: 'class', ...cls } });
+    const com = this.commons.get(name);
+    if (com) out.push({ path: com.path, l: com.l, c: com.c, len: name.length, what: { kind: 'common', ...com } });
+    return out;
+  }
+
+  referencesOf(name) {
+    const out = [];
+    for (const f of this.files.values()) {
+      const a = f.refs && f.refs.get(name);
+      if (a) for (const [l, c] of a) out.push({ path: f.path, l, c, len: name.length });
+    }
+    return out;
+  }
+
+  /** Attributes a type has, from its declaration and typeattribute-style calls. */
+  attributesOf(name) {
+    const out = new Set();
+    for (const d of this.decls.get(name) || []) for (const a of d.attrs || []) out.add(a);
+    return [...out];
+  }
+
+  permsOf(cls) {
+    const c = this.classes.get(cls);
+    return c ? [...c.allPerms] : null;
+  }
+
+  /** Cheap check for "is this a type or attribute declared somewhere". */
+  isTypeLike(name) {
+    const a = this.decls.get(name);
+    return !!(a && a.some(d => d.kind === 'type' || d.kind === 'attribute'));
+  }
+
+  /**
+   * A file belongs to a module if it sits in a refpolicy modules/ tree, or
+   * has a .te next to it (standalone module dirs, as the devel Makefile sees
+   * them). Devel-header .if files have no .te and stay out of the list.
+   */
+  isModuleFile(p) {
+    return /modules[\\/]/.test(p) || this.files.has(p.replace(/\.(if|fc)$/, '.te'));
+  }
+
+  modules() {
+    const mods = new Map();
+    for (const f of this.files.values()) {
+      if (!/\.(te|if|fc)$/.test(f.path)) continue;
+      if (!this.isModuleFile(f.path)) continue;
+      const key = `${f.layer}/${f.module}`;
+      let m = mods.get(key);
+      if (!m) mods.set(key, m = { layer: f.layer, module: f.module, files: {} });
+      m.files[path.extname(f.path).slice(1)] = f.path;
+    }
+    return [...mods.values()].sort((a, b) => a.layer.localeCompare(b.layer) || a.module.localeCompare(b.module));
+  }
+
+  moduleContents(teOrIfPath) {
+    const base = teOrIfPath.replace(/\.(te|if|fc)$/, '');
+    const te = this.files.get(base + '.te');
+    const iff = this.files.get(base + '.if');
+    const fc = this.files.get(base + '.fc');
+    return {
+      types: te ? te.decls.filter(d => d.kind === 'type').map(d => ({ name: d.name, path: te.path, l: d.l, c: d.c })) : [],
+      attributes: te ? te.decls.filter(d => d.kind === 'attribute').map(d => ({ name: d.name, path: te.path, l: d.l, c: d.c })) : [],
+      booleans: te ? te.decls.filter(d => d.kind === 'bool').map(d => ({ name: d.name, path: te.path, l: d.l, c: d.c })) : [],
+      interfaces: iff ? iff.defs.map(d => ({ name: d.name, kind: d.kind, path: iff.path, l: d.l, c: d.c, summary: d.doc && d.doc.summary })) : [],
+      fileContexts: fc ? fc.entries.map(e => ({ name: `${e.spec} → ${e.type}`, path: fc.path, l: e.l, c: e.c })) : [],
+    };
+  }
+
+  stats() {
+    let modules = 0, interfaces = 0, templates = 0, types = 0;
+    for (const f of this.files.values()) if (f.path.endsWith('.te') && this.isModuleFile(f.path)) modules++;
+    for (const list of this.defs.values()) for (const d of list) { if (d.kind === 'interface') interfaces++; else if (d.kind === 'template') templates++; }
+    for (const list of this.decls.values()) if (list.some(d => d.kind === 'type')) types++;
+    return { files: this.files.size, modules, interfaces, templates, types, classes: this.classes.size };
+  }
+}
+
+module.exports = { PolicyIndex, classifyFile, M4_BUILTINS };

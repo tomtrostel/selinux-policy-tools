@@ -1,0 +1,307 @@
+{
+  "name": "selinux-policy-tools",
+  "displayName": "SELinux Policy Tools",
+  "description": "Navigation and authoring help for refpolicy-style SELinux policy source (RHEL/Fedora selinux-policy, CLIP-style locked-down policies).",
+  "version": "0.2.0",
+  "publisher": "local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://example.invalid/selinux-policy-tools"
+  },
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "main": "./client/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.te",
+    "workspaceContains:**/*.if",
+    "onLanguage:selinux",
+    "onLanguage:selinux-fc"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "selinux",
+        "aliases": [
+          "SELinux Policy",
+          "selinux"
+        ],
+        "extensions": [
+          ".te",
+          ".if",
+          ".spt",
+          ".te.in",
+          ".if.in",
+          ".te.m4",
+          ".if.m4"
+        ],
+        "filenames": [
+          "access_vectors",
+          "security_classes",
+          "global_tunables",
+          "global_booleans",
+          "constraints",
+          "mls",
+          "mcs",
+          "users",
+          "policy_capabilities",
+          "initial_sids"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "selinux-fc",
+        "aliases": [
+          "SELinux File Contexts"
+        ],
+        "extensions": [
+          ".fc"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "selinux",
+        "scopeName": "source.selinux",
+        "path": "./syntaxes/selinux.tmLanguage.json"
+      },
+      {
+        "language": "selinux-fc",
+        "scopeName": "source.selinux-fc",
+        "path": "./syntaxes/selinux-fc.tmLanguage.json"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "selinux",
+          "title": "SELinux Policy",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "selinux": [
+        {
+          "id": "selinuxPolicyExplorer",
+          "name": "Policy Explorer"
+        },
+        {
+          "id": "selinuxCompiledPolicy",
+          "name": "Compiled Policy"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "selinux.reindex",
+        "title": "SELinux: Re-index Policy Sources",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "selinux.showStats",
+        "title": "SELinux: Show Index Statistics"
+      },
+      {
+        "command": "selinux.findModule",
+        "title": "SELinux: Open Module…"
+      },
+      {
+        "command": "selinux.openTe",
+        "title": "SELinux: Open Companion .te File"
+      },
+      {
+        "command": "selinux.openIf",
+        "title": "SELinux: Open Companion .if File"
+      },
+      {
+        "command": "selinux.openFc",
+        "title": "SELinux: Open Companion .fc File"
+      },
+      {
+        "command": "selinux.buildModule",
+        "title": "SELinux: Build",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "selinux.showExpanded",
+        "title": "SELinux: Show Expanded Policy"
+      },
+      {
+        "command": "selinux.findInPolicy",
+        "title": "SELinux: Find in Compiled Policy",
+        "icon": "$(search)"
+      },
+      {
+        "command": "selinux.refreshCompiled",
+        "title": "SELinux: Refresh Compiled Policy",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "selinux.reindex",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "selinux.buildModule",
+          "when": "view == selinuxCompiledPolicy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "selinux.findInPolicy",
+          "when": "view == selinuxCompiledPolicy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "selinux.refreshCompiled",
+          "when": "view == selinuxCompiledPolicy",
+          "group": "navigation@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "selinux.openTe",
+          "when": "editorLangId =~ /selinux/"
+        },
+        {
+          "command": "selinux.openIf",
+          "when": "editorLangId =~ /selinux/"
+        },
+        {
+          "command": "selinux.openFc",
+          "when": "editorLangId =~ /selinux/"
+        },
+        {
+          "command": "selinux.buildModule",
+          "when": "editorLangId =~ /selinux/"
+        },
+        {
+          "command": "selinux.showExpanded",
+          "when": "editorLangId =~ /selinux/ && resourceScheme == file"
+        },
+        {
+          "command": "selinux.refreshCompiled",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "selinux.buildModule",
+          "when": "resourceExtname =~ /^\\.(te|if|fc)$/",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "selinux.findModule",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m"
+      }
+    ],
+    "configuration": {
+      "title": "SELinux Policy",
+      "properties": {
+        "selinux.extraIncludePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional directories to index (e.g. a full selinux-policy checkout when you work on local modules in a separate folder)."
+        },
+        "selinux.useDevelHeaders": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "description": "Index the installed selinux-policy-devel headers. 'auto' does so only when the workspace has no support macros (i.e. you are writing standalone modules)."
+        },
+        "selinux.develHeadersPath": {
+          "type": "string",
+          "default": "/usr/share/selinux/devel/include",
+          "description": "Location of the selinux-policy-devel interface headers."
+        },
+        "selinux.diagnostics.unknownMacros": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn about calls to interfaces/templates/macros that are not defined anywhere in the index."
+        },
+        "selinux.diagnostics.classPerms": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check object classes and permissions in allow/dontaudit/auditallow/neverallow rules against the flask definitions."
+        },
+        "selinux.diagnostics.genRequire": {
+          "type": "boolean",
+          "default": true,
+          "description": "In .if files, warn when a type or attribute is used in an interface but missing from its gen_require block."
+        },
+        "selinux.build.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Compile with the real toolchain to report compiler and link errors and show what each line compiles to. A standalone module directory is built against selinux-policy-devel; a refpolicy source tree is built with its own Makefile. Needs Linux with make, m4, checkpolicy and policycoreutils-devel."
+        },
+        "selinux.build.onSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Build when a policy file is saved (a check: nothing is written next to your sources). The SELinux: Build command also packages a standalone module as <module>.pp."
+        },
+        "selinux.build.develMakefile": {
+          "type": "string",
+          "default": "/usr/share/selinux/devel/Makefile",
+          "description": "Makefile used to build standalone modules."
+        },
+        "selinux.build.tree.makeArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra `make` variables for full source-tree builds, overriding `build.conf`. Use what your policy RPM passes, e.g. for CLIP: `[\"NAME=mcs\", \"TYPE=mcs\", \"DISTRO=redhat\", \"UBAC=y\", \"MONOLITHIC=n\", \"UNK_PERMS=deny\", \"APPS_MODS=ssh postfix ...\"]`."
+        },
+        "selinux.build.tree.targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Make targets for source-tree builds. Empty: `base.pp modules`, then `validate` (or `policy` when `MONOLITHIC=y`)."
+        },
+        "selinux.build.tree.validate": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "After a modular tree compiles, run `make validate` (link all modules, expand, check file contexts) to catch modules that require types from disabled modules. Adds a few seconds; its results arrive after the compile results."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node test/lsp-e2e.js",
+    "test:build": "node test/build-e2e.js",
+    "test:tree": "node test/build-tree-e2e.js",
+    "survey": "node test/diag-survey.js",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.15",
+    "vscode-uri": "^3.2.0"
+  }
+}

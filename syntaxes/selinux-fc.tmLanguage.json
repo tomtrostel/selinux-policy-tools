@@ -1,0 +1,14 @@
+{
+  "name": "SELinux File Contexts",
+  "scopeName": "source.selinux-fc",
+  "patterns": [
+    { "match": "#.*$", "name": "comment.line.number-sign.selinux" },
+    { "match": "^\\s*(\\S+)", "captures": { "1": { "name": "string.regexp.selinux" } } },
+    { "match": "\\s(--|-d|-l|-s|-p|-b|-c)\\s", "name": "keyword.operator.filetype.selinux" },
+    { "match": "\\b(gen_context|ifdef|ifndef)\\b", "name": "entity.name.function.call.selinux" },
+    { "match": "<<none>>", "name": "constant.language.selinux" },
+    { "match": "\\b[A-Za-z0-9_$]+_t\\b", "name": "entity.name.type.selinux" },
+    { "match": "\\b[A-Za-z0-9_]+_(u|r)\\b", "name": "variable.other.selinux" },
+    { "match": "[`']", "name": "punctuation.definition.quote.m4" }
+  ]
+}
