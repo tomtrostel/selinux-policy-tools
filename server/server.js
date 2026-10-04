@@ -24,7 +24,7 @@ let settings = {
   develHeadersPath: '/usr/share/selinux/devel/include',
   diagnostics: { unknownMacros: true, classPerms: true, genRequire: true },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
-    tree: { makeArgs: [], targets: [], validate: true } },
+    tree: { makeArgs: [], targets: [], validate: true, outputDir: '' } },
 };
 let usingDevel = false; // index came from the devel headers (standalone modules)
 let indexing = Promise.resolve();
@@ -235,6 +235,10 @@ function runBuild(key, pkg = false, trigger = null) {
         const wantPkg = st.pkg;
         st.pkg = false;
         res = isTreeKey(key) ? await treeBuild(key, st) : await moduleBuild(key, wantPkg);
+        // Explicit builds of a tree keep their outputs (builds on save are checks only).
+        if (res.tree && wantPkg && res.ok && settings.build.tree.outputDir) {
+          try { res.exported = build.exportTreeOutputs(res, resolveOutputDir(key, settings.build.tree.outputDir), settings.build.tree.makeArgs || []); } catch (e) { res.exportError = e.message; }
+        }
         res.trigger = st.trigger;
         lastBuild.set(key, res);
       } while (st.again);
@@ -257,6 +261,12 @@ async function moduleBuild(te, pkg) {
   workDirs.add(res.workDir);
   for (const [p, t] of snapshot) builtText.set(p, t);
   return res;
+}
+
+/** `~/x` → home, relative → under the tree root, absolute as is. */
+function resolveOutputDir(root, dir) {
+  if (dir === '~' || dir.startsWith('~/')) return path.join(require('os').homedir(), dir.slice(1));
+  return path.resolve(root, dir);
 }
 
 async function treeBuild(root, st) {
@@ -302,6 +312,7 @@ function buildSummary(res) {
   return { ok: res.ok, module: res.module, ms: res.ms, errors, warnings: res.diagnostics.length - errors,
     timedOut: res.timedOut, log: res.log, package: res.pkgPath || null,
     tree: !!res.tree, outputDir: res.tree ? res.workDir : null, policyBin: res.policyBin || null,
+    exportDir: res.exported ? res.exported.dir : null, exportedFiles: res.exported ? res.exported.files.length : 0, exportError: res.exportError || null,
     packages: res.packages || 0, validated: !!res.validated };
 }
 

@@ -149,6 +149,10 @@
         "command": "selinux.refreshCompiled",
         "title": "SELinux: Refresh Compiled Policy",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "selinux.installModule",
+        "title": "SELinux: Install Module"
       }
     ],
     "menus": {
@@ -198,6 +202,10 @@
         {
           "command": "selinux.refreshCompiled",
           "when": "false"
+        },
+        {
+          "command": "selinux.installModule",
+          "when": "editorLangId =~ /selinux/"
         }
       ],
       "editor/title": [
@@ -291,6 +299,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "After a modular tree compiles, run `make validate` (link all modules, expand, check file contexts) to catch modules that require types from disabled modules. Adds a few seconds; its results arrive after the compile results."
+        },
+        "selinux.build.tree.outputDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Where the **SELinux: Build** command copies a full tree's outputs (module packages, `policy.bin`, file contexts, plus `build-info.json`). `~/…` is your home directory; a relative path is under the tree root. Empty: outputs stay in a scratch directory that is removed when VS Code closes. Builds on save never write here."
         }
       }
     }

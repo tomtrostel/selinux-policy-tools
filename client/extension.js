@@ -6,6 +6,14 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 let client;
 let status;
 
+/** Run `sudo semodule -i <pkg>` in a terminal on the policy host, so the user sees it and types the password. */
+function installPackage(pkg) {
+  let term = vscode.window.terminals.find(t => t.name === 'SELinux Install');
+  if (!term) term = vscode.window.createTerminal({ name: 'SELinux Install', cwd: path.dirname(pkg) });
+  term.show();
+  term.sendText(`sudo semodule -i '${pkg.replace(/'/g, `'\\''`)}'`);
+}
+
 /** "1 module", "2 modules", "1 class", "3 classes" */
 const count = (n, word) => `${n} ${n === 1 ? word : word + (/(s|x|ch|sh)$/.test(word) ? 'es' : 's')}`;
 
@@ -110,12 +118,32 @@ function activate(context) {
         () => client.sendRequest('selinux/build', { uri: target.toString(), package: true }));
       if (r.unavailable) { vscode.window.showWarningMessage(r.unavailable); return; }
       if (!r.ok) { buildOutput.show(true); return; }
-      const msg = r.tree
-        ? `Built ${r.module}: ${count(r.packages, 'module package')}${r.validated ? ', link validated' : ''}${r.policyBin ? ', kernel policy ' + path.basename(r.policyBin) : ''} (${(r.ms / 1000).toFixed(1)} s). Output: ${r.outputDir}`
-        : `Built ${path.basename(r.package)} in ${path.dirname(r.package)}. Install it with: sudo semodule -i ${path.basename(r.package)}`;
-      const choice = await vscode.window.showInformationMessage(msg, ...(ed ? ['Show Expanded Policy'] : []), ...(r.tree ? ['Show Compiled Policy'] : []));
+      if (r.exportError) vscode.window.showWarningMessage(`Built, but copying the outputs failed: ${r.exportError}`);
+      let msg;
+      if (!r.tree) msg = `Built ${path.basename(r.package)} in ${path.dirname(r.package)}.`;
+      else {
+        msg = `Built ${r.module}: ${count(r.packages, 'module package')}${r.validated ? ', link validated' : ''} (${(r.ms / 1000).toFixed(1)} s). ` +
+          (r.exportDir ? `Copied ${count(r.exportedFiles, 'file')} to ${r.exportDir}.`
+            : `Outputs are in ${r.outputDir}, which is removed when VS Code closes; set selinux.build.tree.outputDir to keep them.`);
+      }
+      const buttons = [...(!r.tree ? ['Install'] : []), ...(ed ? ['Show Expanded Policy'] : []), ...(r.tree ? ['Show Compiled Policy'] : []),
+        ...(r.tree && !r.exportDir ? ['Set Output Folder'] : [])];
+      const choice = await vscode.window.showInformationMessage(msg, ...buttons);
+      if (choice === 'Install') installPackage(r.package);
       if (choice === 'Show Expanded Policy') vscode.commands.executeCommand('selinux.showExpanded', ed.document.uri);
       if (choice === 'Show Compiled Policy') vscode.commands.executeCommand('selinuxCompiledPolicy.focus');
+      if (choice === 'Set Output Folder') vscode.commands.executeCommand('workbench.action.openWorkspaceSettings', 'selinux.build.tree.outputDir');
+    }),
+    vscode.commands.registerCommand('selinux.installModule', async () => {
+      const ed = vscode.window.activeTextEditor;
+      if (!ed || ed.document.uri.scheme !== 'file') return;
+      await ed.document.save();
+      // Always package first, so what gets installed matches the sources.
+      const r = await client.sendRequest('selinux/build', { uri: ed.document.uri.toString(), package: true });
+      if (r.unavailable) { vscode.window.showWarningMessage(r.unavailable); return; }
+      if (r.tree) { vscode.window.showWarningMessage('Install Module is for standalone modules. For a full policy, copy its outputs (selinux.build.tree.outputDir) to a test system and install them there.'); return; }
+      if (!r.ok) { buildOutput.show(true); vscode.window.showErrorMessage(`${r.module} did not build; fix the errors first.`); return; }
+      installPackage(r.package);
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
     vscode.commands.registerCommand('selinux.findInPolicy', async () => {

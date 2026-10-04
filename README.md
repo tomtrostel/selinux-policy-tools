@@ -100,9 +100,18 @@ Open one of these as the workspace folder:
   disabled in `modules.conf`; the error lands on the line that requires it.
   Build arguments that a policy's RPM spec passes (NAME, TYPE, APPS_MODS, …)
   go in `selinux.build.tree.makeArgs`.
+* **Keeping full-tree outputs.** Set `selinux.build.tree.outputDir` and the
+  *SELinux: Build* command copies the module packages, `policy.bin` and a
+  `build-info.json` record (time, tree, make arguments, file list) there
+  after a successful build. Files from the previous export that the new
+  build didn't produce are removed, so the directory always holds one build.
+  Builds on save never write there.
 * **Standalone modules** are built against `selinux-policy-devel`. The
   *SELinux: Build* command (🔧 in the editor title bar) also writes
-  `<module>.pp` next to the `.te`, ready for `semodule -i`.
+  `<module>.pp` next to the `.te`. *SELinux: Install Module* (or the
+  **Install** button after a build) rebuilds it and runs
+  `sudo semodule -i <module>.pp` in a terminal on the policy host, where you
+  enter your password.
 * **"Compiles to" hover.** After a build, hovering an interface call in a
   `.te` file shows the statements it produced, including nested calls.
 * **SELinux: Show Expanded Policy** opens a module's m4 output read-only,
@@ -140,6 +149,7 @@ what the sources declare.
 | `selinux.build.tree.makeArgs` | `[]` | Extra `make` variables for full trees (overrides `build.conf`) |
 | `selinux.build.tree.targets` | `[]` | Make targets for full trees; empty means `base.pp modules` then `validate` (`policy` if `MONOLITHIC=y`) |
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
+| `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
 
 Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 `.vscode/settings.json`:
@@ -190,10 +200,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   to provide one. Monolithic (`MONOLITHIC=y`) builds are untested.
 * One source tree per workspace: if the workspace contains several, the
   first one found is built.
-* Full-tree build outputs (module packages, `policy.bin`) stay in the
+* Without `selinux.build.tree.outputDir`, full-tree outputs stay in the
   scratch directory under `/tmp/selinux-policy-tools/`, which is removed
-  when the language server exits; *SELinux: Build* reports the path but
-  doesn't copy them into the tree.
+  when the language server exits.
+* There is no command to install a full policy; copy the exported outputs
+  to a test system and install them there. *Install Module* covers
+  standalone modules only.
 * Link errors from `semodule_link` carry no line number; the extension
   places them on the first reference to the missing type in that module.
   Errors inside the generated `corenetwork.te` are shown without a source

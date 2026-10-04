@@ -205,6 +205,28 @@ async function buildTree(root, readText, { makeArgs = [], targets, jobs = os.cpu
   };
 }
 
+/**
+ * Copy a successful tree build's installable outputs (module packages, the
+ * kernel policy, file contexts) to `outDir`, with a build-info.json record.
+ * Files from the previous export that this build didn't produce (e.g. a
+ * module since turned off) are removed, so the directory is one build.
+ */
+function exportTreeOutputs(res, outDir, makeArgs) {
+  const work = res.workDir;
+  const pick = [];
+  for (const n of fs.readdirSync(work)) if (/\.pp$/.test(n) || /^policy\.\d+$/.test(n) || n === 'file_contexts') pick.push([path.join(work, n), n]);
+  if (fs.existsSync(path.join(work, 'tmp', 'policy.bin'))) pick.push([path.join(work, 'tmp', 'policy.bin'), 'policy.bin']);
+  fs.mkdirSync(outDir, { recursive: true });
+  const infoPath = path.join(outDir, 'build-info.json');
+  let previous = [];
+  try { previous = JSON.parse(fs.readFileSync(infoPath, 'utf8')).files || []; } catch { /* first export */ }
+  const files = pick.map(([, n]) => n).sort();
+  for (const n of previous) if (!files.includes(n) && path.basename(n) === n) fs.rmSync(path.join(outDir, n), { force: true });
+  for (const [from, n] of pick) fs.copyFileSync(from, path.join(outDir, n));
+  fs.writeFileSync(infoPath, JSON.stringify({ builtAt: new Date().toISOString(), tree: res.root, makeArgs, validated: !!res.validated, files }, null, 2) + '\n');
+  return { dir: outDir, files };
+}
+
 /** What the last tree build compiled for a source file (its scratch copy), or null. */
 function treeBuiltText(res, realPath) {
   const rel = path.relative(res.root, realPath);
@@ -359,4 +381,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, buildModule, buildTree, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

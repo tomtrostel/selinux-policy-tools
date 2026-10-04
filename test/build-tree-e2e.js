@@ -27,6 +27,7 @@ const makeArgs = process.argv[3] ? JSON.parse(fs.readFileSync(process.argv[3], '
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-tree-e2e-'));
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
+const OUT = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-tree-out-')), 'build');
 const P = (rel) => path.join(ws, rel);
 const LOGGING = P('policy/modules/system/logging.te'), FILES = P('policy/modules/kernel/files.te');
 const ORIG = { [LOGGING]: fs.readFileSync(LOGGING, 'utf8'), [FILES]: fs.readFileSync(FILES, 'utf8') };
@@ -69,7 +70,7 @@ const hover = async (f, text, needle) => {
 
 (async () => {
   await conn.sendRequest('initialize', { processId: null, rootUri: uri(ws), capabilities: {},
-    initializationOptions: { build: { tree: { makeArgs } } } });
+    initializationOptions: { build: { tree: { makeArgs, outputDir: OUT } } } });
   conn.sendNotification('initialized', {});
   await indexed;
   check(stats.buildMode === 'tree', `workspace detected as a source tree (${stats.modules} modules)`, stats);
@@ -107,6 +108,25 @@ const hover = async (f, text, needle) => {
   await edit(LOGGING, ORIG[LOGGING]);
   r = await save(LOGGING);
   check(r.ok && r.validated && !(diags[uri(LOGGING)] || []).some(x => x.source !== 'selinux'), 'reverted tree builds and validates cleanly', fmt(LOGGING));
+
+  // 4b. Build outputs: builds on save never export; the explicit Build copies them to outputDir.
+  check(!fs.existsSync(OUT), 'builds on save do not write to outputDir');
+  r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING), package: true });
+  const info = (() => { try { return JSON.parse(fs.readFileSync(path.join(OUT, 'build-info.json'), 'utf8')); } catch { return null; } })();
+  const pps = fs.existsSync(OUT) ? fs.readdirSync(OUT).filter(n => n.endsWith('.pp')) : [];
+  check(r.ok && r.exportDir === OUT && info && pps.length === r.packages && fs.existsSync(path.join(OUT, 'policy.bin')) && info.validated,
+    `explicit build copies ${pps.length} packages + policy.bin + build-info.json to outputDir`, { r: { ...r, log: undefined }, info });
+  // A file from a previous export that this build didn't produce is removed.
+  fs.writeFileSync(path.join(OUT, 'zzz_stale.pp'), 'x');
+  fs.writeFileSync(path.join(OUT, 'build-info.json'), JSON.stringify({ ...info, files: [...info.files, 'zzz_stale.pp'] }));
+  r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING), package: true });
+  check(r.ok && !fs.existsSync(path.join(OUT, 'zzz_stale.pp')), 'stale output from an earlier export is removed');
+  const infoMtime = fs.statSync(path.join(OUT, 'build-info.json')).mtimeMs;
+  await edit(LOGGING, ORIG[LOGGING] + '\n');
+  await save(LOGGING);
+  check(fs.statSync(path.join(OUT, 'build-info.json')).mtimeMs === infoMtime, 'a later build on save leaves the exported outputs alone');
+  await edit(LOGGING, ORIG[LOGGING]);
+  await save(LOGGING);
 
   // 5. "Compiles to" hover: a loadable module (tmp/<mod>.tmp) and a base module (base.conf).
   let h = await hover(LOGGING, ORIG[LOGGING], 'init_daemon_domain(syslogd_t');
@@ -180,5 +200,6 @@ const hover = async (f, text, needle) => {
   console.log(failures ? `\n${failures} check(s) failed` : '\nall tree build checks passed');
   proc.kill();
   fs.rmSync(ws, { recursive: true, force: true });
+  fs.rmSync(path.dirname(OUT), { recursive: true, force: true });
   process.exit(failures ? 1 : 0);
-})().catch(e => { console.error(e); proc.kill(); fs.rmSync(ws, { recursive: true, force: true }); process.exit(1); });
+})().catch(e => { console.error(e); proc.kill(); fs.rmSync(ws, { recursive: true, force: true }); fs.rmSync(path.dirname(OUT), { recursive: true, force: true }); process.exit(1); });

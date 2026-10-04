@@ -70,6 +70,13 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
   on the first reference to X in that module's .te. Hover/expanded view
   read `tmp/<mod>.tmp` (loadable modules) or `base.conf` (base modules),
   parsed lazily and cached by mtime.
+  Explicit Build (request `package: true`) of a tree copies outputs to
+  `selinux.build.tree.outputDir` (`~/` or tree-relative) via
+  `exportTreeOutputs`: *.pp, policy.bin, policy.NN, file_contexts plus
+  build-info.json, whose file list is used to delete stale files from the
+  previous export. Builds on save never export. "Install Module" (client
+  only, standalone mode) packages, then sends `sudo semodule -i` to a
+  "SELinux Install" terminal; full-policy install is deliberately absent.
 - **Compiled Policy view** shows the linked kernel policy of the last tree
   build (tmp/policy.bin), not the sources, so it reflects exactly what the
   lockdown enabled. `server/policy_model.py` (python3-setools) exports it as
