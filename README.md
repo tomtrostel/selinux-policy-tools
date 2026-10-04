@@ -205,6 +205,26 @@ what the sources declare.
 * *SELinux: Find in Compiled Policy* searches all elements and reveals the
   one you pick.
 
+**Domain transition graph** (full trees)
+
+*SELinux: Show Domain Transition Graph* (also on domains in the Compiled
+Policy view, and in its title bar) opens a graph of how processes move
+between domains in the last build, starting from `init_t`, the domain under
+the cursor, or any domain you pick:
+
+* Click a domain to expand the domains it can transition to; switch to
+  *who can enter* to see the domains that can transition into it instead.
+  Double-click (or Ctrl/Cmd-click) opens the domain's declaration;
+  Alt-click makes it the new root. A filter box narrows large fan-outs
+  (`init_t` reaches hundreds of domains on RHEL).
+* A transition is shown when the compiled policy allows all of it: the
+  source may `transition` to the target, and some file type is both the
+  target's `entrypoint` and executable by the source. Arrows are solid when
+  automatic (a `type_transition` on that entrypoint), dashed when explicit
+  (the source sets the context itself, `setexec`, e.g. `runcon`/`sudo`),
+  dotted for dynamic transitions (`dyntransition`), and orange when a
+  boolean controls them. Hover an arrow for its entrypoint types.
+
 **Changes since HEAD** (full trees in git)
 
 *SELinux: Compare Compiled Policy with HEAD* answers "what did my edit
@@ -312,6 +332,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* Domain transitions: CLIP `init_t` reaches 144 domains (`syslogd_t`
+  automatically via `syslogd_exec_t`; entered from `init_t` and
+  `initrc_t`); RHEL's installed policy `init_t` 576, `sshd_t` 33 (incl.
+  dynamic ones), 22 domains can enter `sysadm_t` (one boolean-controlled).
+  The graph's webview script is tested against a fake DOM.
 * Module Preview on CLIP: `cron` off (links; 22 dependent optional blocks;
   removed rules traced into them), `mta` off (link error on the requiring
   interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
@@ -414,6 +439,7 @@ npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; d
 npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
 npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Linux; defaults to CLIP RHEL 9)
 npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
+npm run test:webview   # transition graph webview script against a fake DOM (any OS)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```

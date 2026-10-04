@@ -218,6 +218,16 @@ const hover = async (f, text, needle) => {
       `view: Types › syslogd_t › Can access › syslogd_exec_t › ${ruleItem && ruleItem.item.label} › ${origins[0] && origins[0].item.label}`);
     const viaRule = canAccess && (await Promise.all((await view.getChildren(canAccess)).slice(0, 40).map(g => view.getChildren(g)))).flat().find(r => /^via /.test(r.item.description || ''));
     check(viaRule, `view marks rules that come through an attribute (${viaRule && viaRule.item.label} ${viaRule && viaRule.item.description})`);
+
+    // 8c. Domain transitions (for the graph), from the compiled policy.
+    const doms = await conn.sendRequest('selinux/domains');
+    const out = await conn.sendRequest('selinux/transitions', { name: 'init_t', dir: 'out' });
+    const toSyslog = out.transitions && out.transitions.find(x => x.target === 'syslogd_t');
+    check(doms.domains && doms.domains.includes('init_t') && out.transitions.length > 20 && toSyslog && toSyslog.entrypoints.includes('syslogd_exec_t') && toSyslog.auto.includes('syslogd_exec_t') && out.locs.syslogd_t && out.locs.syslogd_t.p === LOGGING,
+      `init_t → ${out.transitions && out.transitions.length} domains, incl. syslogd_t automatically via syslogd_exec_t (source located)`, out.unavailable || toSyslog);
+    const inn = await conn.sendRequest('selinux/transitions', { name: 'syslogd_t', dir: 'in' });
+    check(inn.transitions && inn.transitions.some(x => x.source === 'init_t') && inn.transitions.every(x => x.target === 'syslogd_t'),
+      `who can enter syslogd_t: ${inn.transitions && inn.transitions.map(x => x.source).join(', ')}`);
   }
 
   // 9. Clean shutdown removes the scratch tree.

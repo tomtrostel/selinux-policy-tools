@@ -199,6 +199,25 @@ function activate(context) {
       if (go) vscode.commands.executeCommand('selinux.buildModule');
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
+    vscode.commands.registerCommand('selinux.transitionGraph', async (arg) => {
+      // From a Compiled Policy domain node, a name, the word under the cursor, or a pick.
+      let name = arg && arg.key ? arg.key.replace(/^t:/, '') : typeof arg === 'string' ? arg : null;
+      const d = await client.sendRequest('selinux/domains');
+      if (d.unavailable) { vscode.window.showWarningMessage(d.unavailable); return; }
+      if (!name) {
+        const ed = vscode.window.activeTextEditor;
+        const w = ed && ed.document.getText(ed.document.getWordRangeAtPosition(ed.selection.active, /[A-Za-z0-9_]+/));
+        if (w && d.domains.includes(w)) name = w;
+      }
+      if (!name) {
+        const items = d.domains.map(x => ({ label: x }));
+        items.sort((a, b) => (b.label === 'init_t') - (a.label === 'init_t'));
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Domain to start the transition graph from' });
+        if (!pick) return;
+        name = pick.label;
+      }
+      showTransitionGraph(context, name, 'out');
+    }),
     vscode.commands.registerCommand('selinux.previewModule', async (arg) => {
       const st = await client.sendRequest('selinux/moduleStates');
       if (st.unavailable) { vscode.window.showWarningMessage(st.unavailable); return; }
@@ -284,6 +303,83 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.openIf', () => vscode.commands.executeCommand('selinux.openCompanion', 'if')),
     vscode.commands.registerCommand('selinux.openFc', () => vscode.commands.executeCommand('selinux.openCompanion', 'fc')),
   );
+}
+
+/* ---------------- domain transition graph (webview) ---------------- */
+
+let transitionPanel = null;
+
+/** Open (or retarget) the transition graph panel at `root`, `dir` = 'out' | 'in'. */
+function showTransitionGraph(context, root, dir = 'out') {
+  if (transitionPanel) {
+    transitionPanel.reveal(vscode.ViewColumn.Active);
+    transitionPanel.webview.postMessage({ cmd: 'init', root, dir, domains: transitionPanel.domains });
+    return;
+  }
+  const panel = vscode.window.createWebviewPanel('selinuxTransitions', `Transitions: ${root}`, vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  transitionPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'transitions.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; }
+  input[type=text] { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); padding: 3px 6px; }
+  .muted { opacity: .75; }
+  .legend svg { vertical-align: middle; }
+  #wrap { overflow: auto; }
+  .node { cursor: pointer; }
+  .node rect { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-editorWidget-border, #888); }
+  .node.open rect { stroke: var(--vscode-focusBorder); stroke-width: 1.5; }
+  .node.root rect { fill: var(--vscode-button-background); }
+  .node.root text { fill: var(--vscode-button-foreground); }
+  .node text { fill: var(--vscode-foreground); font-size: 12px; }
+  .node:hover rect { stroke: var(--vscode-focusBorder); }
+  .edge { fill: none; stroke: var(--vscode-charts-blue, #3794ff); stroke-width: 1.2; opacity: .85; }
+  .edge.cond { stroke: var(--vscode-charts-orange, #d18616); }
+  .edge:hover { stroke-width: 2.5; opacity: 1; }
+  .arrowhead { fill: var(--vscode-foreground); opacity: .7; }
+</style></head><body>
+<div id="bar">
+  <span id="title"></span>
+  <label>Root <input id="root" type="text" list="domains" size="28" spellcheck="false"></label><datalist id="domains"></datalist>
+  <label><input type="radio" name="dir" value="out" checked> transitions from</label>
+  <label><input type="radio" name="dir" value="in"> who can enter</label>
+  <label>Filter <input id="filter" type="text" size="18" spellcheck="false" placeholder="name contains…"></label>
+  <span class="legend muted">
+    <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-blue,#3794ff)"/></svg> automatic
+    <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-blue,#3794ff)" stroke-dasharray="6 4"/></svg> explicit (setexec)
+    <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-blue,#3794ff)" stroke-dasharray="2 3"/></svg> dynamic
+    <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-orange,#d18616)"/></svg> boolean-controlled
+  </span>
+  <span id="status" class="muted"></span>
+  <span class="muted">click: expand · double-click: source · alt-click: make root · hover an arrow for entrypoints</span>
+</div>
+<div id="wrap"><svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  panel.webview.onDidReceiveMessage(async (m) => {
+    if (m.cmd === 'ready') {
+      const d = await client.sendRequest('selinux/domains');
+      panel.domains = d.domains || [];
+      if (d.unavailable) vscode.window.showWarningMessage(d.unavailable);
+      panel.webview.postMessage({ cmd: 'init', root, dir, domains: panel.domains });
+    } else if (m.cmd === 'expand') {
+      const r = await client.sendRequest('selinux/transitions', { name: m.name, dir: m.dir });
+      if (r.unavailable) panel.webview.postMessage({ cmd: 'error', name: m.name, msg: r.unavailable });
+      else panel.webview.postMessage({ cmd: 'transitions', name: m.name, dir: m.dir, transitions: r.transitions, locs: r.locs });
+    } else if (m.cmd === 'rooted') {
+      panel.title = m.dir === 'in' ? `Entering: ${m.root}` : `Transitions: ${m.root}`;
+    } else if (m.cmd === 'open') {
+      if (m.loc) vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c);
+      else vscode.window.showInformationMessage(`No source declaration found for ${m.name}.`);
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { transitionPanel = null; }, undefined, context.subscriptions);
 }
 
 /* ---------------- expanded policy (read-only m4 output) ---------------- */
@@ -378,6 +474,7 @@ class CompiledPolicyView {
     const id = `${parent ? parent.id : ''}/${key}`;
     const item = new vscode.TreeItem(label, opts.kids ? (opts.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed) : vscode.TreeItemCollapsibleState.None);
     item.id = id;
+    if (opts.context) item.contextValue = opts.context;
     if (opts.desc !== undefined) item.description = String(opts.desc);
     if (opts.icon) item.iconPath = new vscode.ThemeIcon(opts.icon);
     if (opts.tooltip) item.tooltip = opts.tooltip;
@@ -442,7 +539,7 @@ class CompiledPolicyView {
     const m = this.model;
     const isDomain = t.attrs.includes('domain');
     return this.node(parent, `t:${t.name}`, t.name, {
-      icon: isDomain ? 'server-process' : 'symbol-class', loc: t.loc,
+      icon: isDomain ? 'server-process' : 'symbol-class', loc: t.loc, context: isDomain ? 'domain' : 'type',
       desc: desc !== undefined ? desc : (t.loc && t.loc.m) || '',
       tooltip: `${isDomain ? 'domain' : 'type'} ${t.name}${t.permissive ? ' (permissive)' : ''}\n${this.where(t.loc)}`,
       kids: (n) => {

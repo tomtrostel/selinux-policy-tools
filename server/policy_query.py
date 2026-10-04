@@ -23,6 +23,11 @@ class Index:
         self.mtime = os.stat(path).st_mtime
         p = setools.SELinuxPolicy(path)
         self.attrs = {str(t): [str(a) for a in t.attributes()] for t in p.types()}
+        self.members = {}
+        for t, attrs in self.attrs.items():
+            for a in attrs:
+                self.members.setdefault(a, []).append(t)
+        self.domains = {t for t, attrs in self.attrs.items() if "domain" in attrs}
         self.rules = []
         self.by_src, self.by_tgt = {}, {}
         for r in p.terules():
@@ -39,6 +44,92 @@ class Index:
             self.rules.append(rule)
             self.by_src.setdefault(rule["s"], []).append(i)
             self.by_tgt.setdefault(rule["t"], []).append(i)
+
+    # ----- domain transitions (what setools' DomainTransitionAnalysis checks, without networkx) -----
+
+    def expand(self, name):
+        """Types an attribute stands for (a type stands for itself)."""
+        return self.members.get(name, [name])
+
+    def with_perm(self, names, bucket, cls, perm, rt="allow"):
+        for n in names:
+            for i in bucket.get(n, ()):
+                r = self.rules[i]
+                if r["rt"] == rt and r["c"] == cls and perm in r["perms"]:
+                    yield r
+
+    def side_types(self, r, field, subject):
+        return [subject] if r[field] == "self" else self.expand(r[field])
+
+    def exec_types(self, s):
+        sn = [s] + self.attrs.get(s, [])
+        out = set()
+        for r in self.with_perm(sn, self.by_src, "file", "execute"):
+            out.update(self.side_types(r, "t", s))
+        return out
+
+    def entrypoints(self, t):
+        tn = [t] + self.attrs.get(t, [])
+        out = set()
+        for r in self.with_perm(tn, self.by_src, "file", "entrypoint"):
+            out.update(self.side_types(r, "t", t))
+        return out
+
+    def auto_entries(self, s, t):
+        """Entrypoint types for which type_transition s E:process t exists."""
+        sn = [s] + self.attrs.get(s, [])
+        out = set()
+        for n in sn:
+            for i in self.by_src.get(n, ()):
+                r = self.rules[i]
+                if r["rt"] == "type_transition" and r["c"] == "process" and r["perms"] and r["perms"][0] == t:
+                    out.update(self.side_types(r, "t", s))
+        return out
+
+    def can(self, s, perm, target_self=True):
+        sn = [s] + self.attrs.get(s, [])
+        return any(r["t"] in ("self", s) or s in self.expand(r["t"]) for r in self.with_perm(sn, self.by_src, "process", perm))
+
+    def transition(self, s, t, rules):
+        eps = self.entrypoints(t) & self.exec_types(s)
+        auto = self.auto_entries(s, t) & eps
+        return {"source": s, "target": t, "entrypoints": sorted(eps), "auto": sorted(auto),
+                "setexec": self.can(s, "setexec"), "conditional": sorted({r["cond"] for r in rules if r["cond"]})}
+
+    def transitions(self, name, direction):
+        if name not in self.attrs:
+            return []
+        out = []
+        if direction == "out":
+            targets = {}
+            sn = [name] + self.attrs.get(name, [])
+            for r in self.with_perm(sn, self.by_src, "process", "transition"):
+                for t in self.side_types(r, "t", name):
+                    if t != name and t in self.attrs:
+                        targets.setdefault(t, []).append(r)
+            dyn = {}
+            for r in self.with_perm(sn, self.by_src, "process", "dyntransition"):
+                for t in self.side_types(r, "t", name):
+                    if t != name:
+                        dyn.setdefault(t, []).append(r)
+            for t in sorted(set(targets) | set(dyn)):
+                tr = self.transition(name, t, targets.get(t, []))
+                tr["dynamic"] = t in dyn and self.can(name, "setcurrent")
+                if tr["entrypoints"] or tr["dynamic"]:
+                    out.append(tr)
+        else:
+            sources = {}
+            tn = [name] + self.attrs.get(name, [])
+            for r in self.with_perm(tn, self.by_tgt, "process", "transition"):
+                for s in self.expand(r["s"]):
+                    if s != name and s in self.attrs:
+                        sources.setdefault(s, []).append(r)
+            for s in sorted(sources):
+                tr = self.transition(s, name, sources[s])
+                tr["dynamic"] = False
+                if tr["entrypoints"]:
+                    out.append(tr)
+        return out
 
     def query(self, name, direction, kinds):
         # A type matches rules written for it or for any attribute it has.
@@ -70,6 +161,8 @@ def main():
             if req.get("op") == "rules":
                 rules, via = idx.query(req["name"], req.get("dir", "source"), req.get("kinds") or [])
                 resp.update(rules=rules, via=via, count=len(rules))
+            elif req.get("op") == "transitions":
+                resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
             else:
                 resp["error"] = "unknown op"
         except Exception as e:  # report and keep serving

@@ -8,7 +8,8 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
 tag on commit 3605cef). Steps 1 and 2 are done; step 3 in progress (3.1
-done after the release, not yet in a release; next is 3.2).
+module preview and 3.2 transition graph done after the release, not yet in
+a release; next is 3.3 property checks).
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -36,10 +37,19 @@ done after the release, not yet in a release; next is 3.2).
       doesn't rebuild set-dependent outputs when the module set changes
       (`forgetStaleModuleSet` in build.js), and link errors now land on the
       interface call that requires the missing type (`interfaceRequires`).
-   2. **Domain-transition graph** (next): webview graph from the policy model's
-      transitions (already exported by policy_model.py), rooted at init_t,
-      a login domain or any selected domain; nodes clickable to source.
-   3. **Property checks**: saved assertions over the compiled policy (e.g.
+   2. **Domain-transition graph** (done): `policy_query.py` op
+      `transitions` (out/in) computes real transitions like setools'
+      DomainTransitionAnalysis, which needs python3-networkx (not
+      installed): process:transition (target attributes expanded) +
+      entrypoint ∩ execute file types; automatic if a type_transition on
+      that entrypoint exists, explicit via setexec, dynamic via
+      dyntransition + setcurrent; conditional booleans reported. Requests
+      `selinux/transitions` (+ source locs) and `selinux/domains`. Webview
+      `media/transitions.js` (plain JS + SVG, layered BFS layout, click to
+      expand, double-click opens source, alt-click re-roots, filter);
+      panel code `showTransitionGraph` in client/extension.js; tested with
+      a fake DOM (test/webview-transitions-test.js).
+   3. **Property checks** (next): saved assertions over the compiled policy (e.g.
       "only auditd_t may write auditd_log_t", "no transition path
       user_t → sysadm_t"), re-checked after each build, failures as
       diagnostics/notifications. Start with setools (TERuleQuery,
@@ -216,6 +226,8 @@ is only visible to collaborators; making it public is the user's call.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
+- `test/webview-transitions-test.js` (`npm run test:webview`, any OS):
+  runs media/transitions.js against a fake DOM through a whole session.
 - `test/preview-e2e.js` (`npm run test:preview`): module preview on a CLIP
   copy: cron off / mta off (link error placement) / nscd on / ntp off
   (APPS_MODS, after other previews), plus the view with a stub vscode.

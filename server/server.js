@@ -1227,6 +1227,27 @@ connection.onRequest('selinux/typeRules', async ({ name, dir, kinds }) => {
   return r.error ? { unavailable: `Rule query failed: ${r.error}` } : r;
 });
 
+// Domain transitions out of (or into) a domain, with source locations of every domain involved.
+connection.onRequest('selinux/transitions', async ({ name, dir }) => {
+  await indexing;
+  const model = await getPolicyModel();
+  if (model.unavailable) return model;
+  const r = await policyQuery.request({ op: 'transitions', bin: model.bin, name, dir: dir === 'in' ? 'in' : 'out' });
+  if (r.error) return { unavailable: `Transition query failed: ${r.error}` };
+  const locs = {};
+  const typeByName = new Map(model.types.map(t => [t.name, t]));
+  for (const n of new Set([name, ...r.transitions.flatMap(x => [x.source, x.target])])) { const t = typeByName.get(n); if (t && t.loc) locs[n] = t.loc; }
+  return { name, dir, transitions: r.transitions, locs };
+});
+
+// Domains of the last build (for the transition graph's root picker).
+connection.onRequest('selinux/domains', async () => {
+  await indexing;
+  const model = await getPolicyModel();
+  if (model.unavailable) return model;
+  return { domains: model.types.filter(t => t.attrs.includes('domain')).map(t => t.name).sort(), builtAt: model.builtAt };
+});
+
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */
 let ruleIndex = { key: null, side: null };
 async function currentSide() {

@@ -179,6 +179,11 @@
       {
         "command": "selinux.applyModulePreview",
         "title": "SELinux: Apply Module Preview to modules.conf"
+      },
+      {
+        "command": "selinux.transitionGraph",
+        "title": "SELinux: Show Domain Transition Graph",
+        "icon": "$(type-hierarchy)"
       }
     ],
     "menus": {
@@ -212,6 +217,11 @@
           "command": "selinux.previewModule",
           "when": "view == selinuxModulePreview",
           "group": "navigation@1"
+        },
+        {
+          "command": "selinux.transitionGraph",
+          "when": "view == selinuxCompiledPolicy",
+          "group": "navigation@4"
         }
       ],
       "commandPalette": [
@@ -259,6 +269,11 @@
         {
           "command": "selinux.previewModule",
           "when": "view == selinuxPolicyExplorer && viewItem == module",
+          "group": "navigation@1"
+        },
+        {
+          "command": "selinux.transitionGraph",
+          "when": "view == selinuxCompiledPolicy && viewItem == domain",
           "group": "navigation@1"
         }
       ]
@@ -385,6 +400,7 @@
     "test:rhel": "node test/build-rhel-e2e.js",
     "test:diff": "node test/diff-e2e.js",
     "test:preview": "node test/preview-e2e.js",
+    "test:webview": "node test/webview-transitions-test.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },
