@@ -913,7 +913,9 @@ connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {
  * statements in the matching side's m4 output (explain.js).
  */
 const explain = require('./explain');
-const baseline = { key: null, res: null, info: null, srcRoot: null, pending: null, pendingKey: null };
+// Builds of committed trees (git archive + build), keyed by commit + settings; at most REF_BUILDS kept.
+const refBuilds = new Map(); // key -> { res, info, srcRoot, dest, pending, used }
+const REF_BUILDS = 3;
 let explainIdle = null;
 
 function treeBuildOptions(root) {
@@ -925,61 +927,120 @@ function treeBuildOptions(root) {
   return { makeArgs, files, targets: custom || p1.includes('policy') ? p1 : [...p1, 'validate'] };
 }
 
-async function ensureBaseline(root, info) {
+/** The tree at commit `info.sha`, exported and built with the current settings (cached). */
+async function ensureRefBuild(root, info) {
   const opts = treeBuildOptions(root);
   const key = JSON.stringify({ root, sha: info.sha, opts });
-  if (baseline.key === key && baseline.res) return baseline;
-  if (baseline.pending && baseline.pendingKey === key) { await baseline.pending; return baseline; }
-  baseline.pendingKey = key;
-  baseline.pending = (async () => {
-    connection.sendNotification('selinux/build', { state: 'baseline', module: path.basename(root), short: info.sha.slice(0, 7) });
-    const dest = build.scratchDir('head', root);
-    workDirs.add(dest);
-    const srcRoot = await build.exportHead(info, dest);
-    const res = await build.buildTree(srcRoot, (p) => { try { return fs.readFileSync(p); } catch { return null; } }, opts);
-    workDirs.add(res.workDir);
-    Object.assign(baseline, { key, res, info, srcRoot });
+  let e = refBuilds.get(key);
+  if (e && e.res) { e.used = Date.now(); return e; }
+  if (e && e.pending) { await e.pending; return refBuilds.get(key); }
+  e = { info, used: Date.now() };
+  refBuilds.set(key, e);
+  e.pending = (async () => {
+    connection.sendNotification('selinux/build', { state: 'baseline', module: path.basename(root), short: info.sha.slice(0, 7), ref: info.ref });
+    e.dest = build.scratchDir('head', `${root}@${info.sha}`);
+    workDirs.add(e.dest);
+    e.srcRoot = await build.exportHead(info, e.dest);
+    e.res = await build.buildTree(e.srcRoot, (p) => { try { return fs.readFileSync(p); } catch { return null; } }, opts);
+    workDirs.add(e.res.workDir);
   })();
-  try { await baseline.pending; } finally { baseline.pending = null; }
-  return baseline;
+  try { await e.pending; } catch (err) { refBuilds.delete(key); throw err; } finally { e.pending = null; }
+  // Keep the most recently used few; drop the rest (exported copy + its build).
+  const done = [...refBuilds.entries()].filter(([, x]) => x.res).sort((a, b) => b[1].used - a[1].used);
+  for (const [k, x] of done.slice(REF_BUILDS)) {
+    refBuilds.delete(k);
+    for (const d of [x.dest, x.res.workDir]) { workDirs.delete(d); fs.rmSync(d, { recursive: true, force: true }); }
+  }
+  return e;
 }
 
-connection.onRequest('selinux/policyDiff', async () => {
+/** Origins in an exported commit point into the copy; also give the working-tree path and the ref's name. */
+const fromRef = (label, srcRoot) => {
+  const f = (o) => ({ ...o, head: true, ref: label, real: path.join(treeRoot, path.relative(srcRoot, o.path)), because: o.because && o.because.map(f) });
+  return f;
+};
+
+connection.onRequest('selinux/gitRefs', async () => {
+  if (!treeRoot) return { unavailable: 'Needs a full policy source tree.' };
+  const info = await build.gitInfo(treeRoot);
+  if (!info) return { unavailable: `${treeRoot} is not in a git repository with commits.` };
+  return build.gitRefs(treeRoot);
+});
+
+/*
+ * Compare two versions of the compiled policy:
+ *   base:   a git ref (default HEAD), or `saved`: a directory with an
+ *           exported build (policy.bin; selinux.build.tree.outputDir)
+ *   target: a git ref, or null for the working tree (its last build)
+ * Each side that has sources is traced; a saved build has none.
+ */
+connection.onRequest('selinux/policyDiff', async (params = {}) => {
   await indexing;
-  if (!treeRoot) return { unavailable: 'Comparing with HEAD needs a full policy source tree.' };
+  const { base: baseRef = 'HEAD', target: targetRef = null, saved = null } = params || {};
+  if (!treeRoot) return { unavailable: 'Comparing builds needs a full policy source tree.' };
   const why = buildUnavailable();
   if (why) return { unavailable: why };
-  const info = await build.gitInfo(treeRoot);
-  if (!info) return { unavailable: `${treeRoot} is not in a git repository with commits, so there is no HEAD to compare with.` };
   const t0 = Date.now();
+  const describe = (info) => ({ sha: info.sha, short: info.sha.slice(0, 7), subject: info.subject, when: info.when, label: info.ref === info.sha || /^[0-9a-f]{7,40}$/.test(info.ref) ? info.sha.slice(0, 7) : info.ref });
 
-  // Current side: the last build of the working tree (build now if there is none or it failed).
-  let cur = lastBuild.get(treeRoot);
-  if (!cur || !cur.ok || !cur.policyBin) { await runBuild(treeRoot, false, null); cur = lastBuild.get(treeRoot); }
-  if (!cur || !cur.ok || !cur.policyBin) return { unavailable: 'The working tree does not build; fix its errors (see Problems) and compare again.' };
+  // Base side.
+  let A, baseInfo = null, baseDesc;
+  if (saved) {
+    const bin = path.join(saved, 'policy.bin');
+    if (!fs.existsSync(bin)) return { unavailable: `${saved} has no policy.bin (export a build there with selinux.build.tree.outputDir and SELinux: Build).` };
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(path.join(saved, 'build-info.json'), 'utf8')); } catch { /* optional */ }
+    A = { policyBin: bin, side: null };
+    baseDesc = { saved, label: `saved build ${path.basename(saved)}`, builtAt: meta.builtAt || null, subject: meta.builtAt ? `exported ${new Date(meta.builtAt).toLocaleString()}` : 'saved build' };
+  } else {
+    baseInfo = await build.gitInfo(treeRoot, baseRef);
+    if (!baseInfo) return { unavailable: baseRef === 'HEAD' ? `${treeRoot} is not in a git repository with commits, so there is no HEAD to compare with.` : `'${baseRef}' is not a commit, branch or tag of this repository.` };
+    const e = await ensureRefBuild(treeRoot, baseInfo);
+    if (!e.res.ok || !e.res.policyBin) return { unavailable: `${baseRef} (${baseInfo.sha.slice(0, 7)}) does not build with the current settings, so there is nothing to compare with.`, log: e.res.log };
+    baseDesc = describe(baseInfo);
+    A = { policyBin: e.res.policyBin, side: { res: e.res, map: fromRef(baseDesc.label, e.srcRoot), srcRoot: e.srcRoot } };
+  }
 
-  const base = await ensureBaseline(treeRoot, info);
-  const short = info.sha.slice(0, 7);
-  if (!base.res.ok || !base.res.policyBin) return { unavailable: `HEAD (${short}) does not build with the current settings, so there is nothing to compare with.`, log: base.res.log };
+  // Target side: the working tree, or another ref.
+  let B, targetDesc, targetInfo = null;
+  if (!targetRef) {
+    let cur = lastBuild.get(treeRoot);
+    if (!cur || !cur.ok || !cur.policyBin) { await runBuild(treeRoot, false, null); cur = lastBuild.get(treeRoot); }
+    if (!cur || !cur.ok || !cur.policyBin) return { unavailable: 'The working tree does not build; fix its errors (see Problems) and compare again.' };
+    B = { policyBin: cur.policyBin, side: { res: cur } };
+    targetDesc = { working: true, label: 'working tree' };
+  } else {
+    targetInfo = await build.gitInfo(treeRoot, targetRef);
+    if (!targetInfo) return { unavailable: `'${targetRef}' is not a commit, branch or tag of this repository.` };
+    const e = await ensureRefBuild(treeRoot, targetInfo);
+    if (!e.res.ok || !e.res.policyBin) return { unavailable: `${targetRef} (${targetInfo.sha.slice(0, 7)}) does not build with the current settings.`, log: e.res.log };
+    targetDesc = describe(targetInfo);
+    B = { policyBin: e.res.policyBin, side: { res: e.res, map: fromRef(targetDesc.label, e.srcRoot), srcRoot: e.srcRoot } };
+  }
 
   let diff;
-  try { diff = await runPython('policy_diff.py', [base.res.policyBin, cur.policyBin]); } catch (e) { return { unavailable: `Comparing the policies failed: ${e.message}` }; }
+  try { diff = await runPython('policy_diff.py', [A.policyBin, B.policyBin]); } catch (e) { return { unavailable: `Comparing the policies failed: ${e.message}` }; }
   const tDiff = Date.now();
 
-  // Files that differ from HEAD rank first when several statements explain a change.
-  const changedB = new Set(await build.gitChangedFiles(treeRoot, info));
-  for (const d of documents.all()) {
-    const p = toPath(d.uri);
-    if (p.startsWith(treeRoot + path.sep)) { let disk = null; try { disk = fs.readFileSync(p, 'utf8'); } catch { /* new */ } if (disk !== d.getText()) changedB.add(p); }
+  // Files that changed between the two sides rank first when several statements explain a change.
+  let changed = new Set();
+  const info = baseInfo || targetInfo || await build.gitInfo(treeRoot);
+  if (info && baseInfo) {
+    changed = new Set(await build.gitChangedFiles(treeRoot, info, baseInfo.sha, targetInfo ? targetInfo.sha : null));
+    if (!targetInfo) for (const d of documents.all()) {
+      const p = toPath(d.uri);
+      if (p.startsWith(treeRoot + path.sep)) { let disk = null; try { disk = fs.readFileSync(p, 'utf8'); } catch { /* new */ } if (disk !== d.getText()) changed.add(p); }
+    }
   }
-  const toHead = (p) => path.join(base.srcRoot, path.relative(treeRoot, p));
-  // HEAD-side origins point into the exported copy; also give the working-tree path.
-  const fromHead = (o) => ({ ...o, head: true, real: path.join(treeRoot, path.relative(base.srcRoot, o.path)), because: o.because && o.because.map(fromHead) });
-  explainDiff(diff, { res: base.res, changed: new Set([...changedB].map(toHead)), map: fromHead }, { res: cur, changed: changedB });
+  const inCopy = (s) => (s && s.srcRoot ? new Set([...changed].map(p => path.join(s.srcRoot, path.relative(treeRoot, p)))) : changed);
+  explainDiff(diff,
+    A.side && { ...A.side, changed: inCopy(A.side) },
+    B.side && { ...B.side, changed: inCopy(B.side) });
   return {
     ...diff,
-    head: { sha: info.sha, short, subject: info.subject },
-    builtAt: fs.statSync(cur.policyBin).mtimeMs,
+    base: baseDesc, target: targetDesc,
+    head: baseInfo ? { sha: baseInfo.sha, short: baseDesc.short, subject: baseInfo.subject } : null, // (older clients)
+    builtAt: fs.statSync(B.policyBin).mtimeMs,
     ms: { total: Date.now() - t0, diff: tDiff - t0 },
   };
 });

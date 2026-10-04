@@ -213,6 +213,11 @@
         "command": "selinux.compareInstalled",
         "title": "SELinux: Compare Build with Installed Policy",
         "icon": "$(server)"
+      },
+      {
+        "command": "selinux.compareWith",
+        "title": "SELinux: Compare Compiled Policy with…",
+        "icon": "$(git-branch)"
       }
     ],
     "menus": {
@@ -254,6 +259,11 @@
         },
         {
           "command": "selinux.compareInstalled",
+          "when": "view == selinuxChanges",
+          "group": "navigation@3"
+        },
+        {
+          "command": "selinux.compareWith",
           "when": "view == selinuxChanges",
           "group": "navigation@2"
         }

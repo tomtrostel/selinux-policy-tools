@@ -79,8 +79,15 @@ what the user finds there first, then items under 4/5.
       `only|never <users> may use <roles>` (policy_query check_rbac).
       Editing preview = save + build + Changes since HEAD (no separate UI).
 4. **Extensions of what's built** (smaller, any time):
-   - Compare with other refs (branch/tag/commit) or a saved build
-     (outputDir), not only HEAD.
+   - Compare with other refs (done, after 0.3.0): `selinux/policyDiff`
+     {base: ref | saved: dir, target: ref | null=working tree};
+     `ensureRefBuild()` (git archive into `head-<hash(root@sha)>` + build,
+     LRU of 3, replaces the single HEAD baseline); `fromRef(label,
+     srcRoot)` maps origins into a ref's copy (o.ref = label);
+     `gitChangedFiles(root, info, from, to)` ranks origins; `gitRefs` feeds
+     the *Compare with…* picker (HEAD, tags, branches, commits, typed ref,
+     two refs, saved build dir). ChangesView `compareWith(params)`,
+     refreshes after builds only when the working tree is a side.
    - Per-window scratch dirs (done, after 0.3.0): `scratchDir()` lives in
      `<tmp>/selinux-policy-tools-<uid>/<server pid>/` (base mode 0700); the
      server removes its whole area on exit (`cleanupScratch`) and sweeps
@@ -347,7 +354,8 @@ Package: `npx @vscode/vsce package`.
   since HEAD confirmed in VS Code on the CLIP clone.
 - Compiled Policy view: rules per type/attribute (Can access / Accessed by
   / Other rules) with on-demand source tracing; confirmed in VS Code.
-  Changes view compares with HEAD (or the installed policy) only.
+  Changes view: any git ref, two refs, a saved build, or the installed
+  policy.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
   without make (Windows local) nothing is decided.

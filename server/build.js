@@ -170,20 +170,41 @@ const git = (cwd, args) => new Promise((resolve) => {
 });
 
 /** { top, prefix, sha, subject } for the git repository containing `root`, or null. */
-async function gitInfo(root) {
+async function gitInfo(root, ref = 'HEAD') {
   const top = await git(root, ['rev-parse', '--show-toplevel']);
   if (!top) return null;
-  const [prefix, head] = await Promise.all([git(root, ['rev-parse', '--show-prefix']), git(root, ['log', '-1', '--format=%H%x00%s'])]);
-  if (!head) return null; // no commits yet
-  const [sha, subject] = head.split('\0');
-  return { top, prefix: (prefix || '').replace(/\/$/, ''), sha, subject };
+  const sha = await git(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  if (!sha) return null; // no commits yet, or not a commit
+  const [prefix, head] = await Promise.all([git(root, ['rev-parse', '--show-prefix']), git(root, ['log', '-1', '--format=%s%x00%cr', sha])]);
+  const [subject, when] = (head || '').split('\0');
+  return { top, prefix: (prefix || '').replace(/\/$/, ''), sha, subject, when, ref };
 }
 
-/** Source files changed between HEAD and the working tree (absolute paths, tracked + untracked). */
-async function gitChangedFiles(root, info) {
-  const out = await git(info.top, ['status', '--porcelain', '--untracked-files=all', '--', info.prefix || '.']);
-  if (out == null) return [];
-  return out.split('\n').filter(Boolean).map(l => path.join(info.top, l.slice(3).replace(/^.* -> /, '')));
+/**
+ * Tree files that differ between commit `from` and `to` (a commit, or null
+ * for the working tree, untracked files included). Absolute paths.
+ */
+async function gitChangedFiles(root, info, from = info.sha, to = null) {
+  const scope = ['--', info.prefix || '.'];
+  const diff = await git(info.top, ['diff', '--name-only', from, ...(to ? [to] : []), ...scope]);
+  const out = (diff || '').split('\n').filter(Boolean);
+  if (!to) {
+    const untracked = await git(info.top, ['ls-files', '--others', '--exclude-standard', ...scope]);
+    out.push(...(untracked || '').split('\n').filter(Boolean));
+  }
+  return out.map(f => path.join(info.top, f));
+}
+
+/** Branches, tags (newest first) and recent commits, for picking a comparison base. */
+async function gitRefs(root, max = 20) {
+  const fmt = '--format=%(refname:short)%00%(objectname:short)%00%(creatordate:relative)%00%(subject)';
+  const [heads, tags, log] = await Promise.all([
+    git(root, ['for-each-ref', '--sort=-committerdate', fmt, 'refs/heads', 'refs/remotes']),
+    git(root, ['for-each-ref', '--sort=-creatordate', fmt, 'refs/tags']),
+    git(root, ['log', `-${max}`, '--format=%h%x00%h%x00%cr%x00%s']),
+  ]);
+  const parse = (s) => (s || '').split('\n').filter(Boolean).map(l => { const [name, short, when, subject] = l.split('\0'); return { name, short, when, subject }; });
+  return { branches: parse(heads).filter(b => !/\/HEAD$/.test(b.name)).slice(0, max), tags: parse(tags).slice(0, max), commits: parse(log) };
 }
 
 /** Export the tree at HEAD into `dest` (git archive | tar); returns the tree root inside it. */
@@ -577,4 +598,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

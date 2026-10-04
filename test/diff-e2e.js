@@ -29,6 +29,7 @@ fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 const g = (...a) => cp.execFileSync('git', a, { cwd: repo, stdio: 'pipe' });
 g('init', '-q'); g('add', '-A'); g('-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '-m', 'baseline');
 const LOGGING = path.join(ws, 'policy/modules/system/logging.te');
+const OUT = path.join(repo, '..', path.basename(repo) + '-out');
 const ORIG = fs.readFileSync(LOGGING, 'utf8');
 const PROC_LINE = 'allow syslogd_t self:process { getcap setcap signal_perms setpgid setrlimit getsched setsched };';
 const EDITED = ORIG.replace(PROC_LINE, 'allow syslogd_t self:process { getcap setcap signal_perms setpgid setrlimit };')
@@ -57,7 +58,7 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
 
 (async () => {
   if (!PROC_LINE || EDITED === ORIG + '\nauth_read_shadow(syslogd_t)\nfiles_manage_etc_files(syslogd_t)\n') { console.log('SKIP: logging.te no longer has the expected line'); process.exit(0); }
-  await conn.sendRequest('initialize', { processId: null, rootUri: uri(ws), capabilities: {}, initializationOptions: { build: { tree: { makeArgs } } } });
+  await conn.sendRequest('initialize', { processId: null, rootUri: uri(ws), capabilities: {}, initializationOptions: { build: { tree: { makeArgs, outputDir: OUT } } } });
   conn.sendNotification('initialized', {});
   await indexed;
 
@@ -129,6 +130,48 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
   const top3 = await view.getChildren();
   check(top3.some(n => /^No effective policy change/.test(n.item.label)), 'view says "No effective policy change"', top3.map(n => n.item.label));
 
+  // 4. Other refs: v1 = baseline, v2 = a commit adding auth_read_shadow; the
+  //    working tree adds files_manage_etc_files on top (unsaved).
+  g('tag', 'v1');
+  const V2 = ORIG + '\nauth_read_shadow(syslogd_t)\n';
+  fs.writeFileSync(LOGGING, V2);
+  g('-c', 'user.name=t', '-c', 'user.email=t@e', 'commit', '-q', '-am', 'second: syslogd reads shadow');
+  g('tag', 'v2');
+  const WORK = V2 + 'files_manage_etc_files(syslogd_t)\n';
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(LOGGING), version: 3 }, contentChanges: [{ text: WORK }] });
+  await sleep(400);
+  const wb = await conn.sendRequest('selinux/build', { uri: uri(LOGGING), package: true }); // package: also exports to OUT
+  check(wb.ok, 'working tree (v2 + unsaved edit) builds');
+  const refs = await conn.sendRequest('selinux/gitRefs');
+  check(refs.tags && ['v1', 'v2'].every(t => refs.tags.some(x => x.name === t)), `refs for the picker: tags ${refs.tags && refs.tags.map(t => t.name).join(', ')}, ${refs.commits && refs.commits.length} commits`);
+  const has = (dd, t, c) => (dd.rules || []).some(r => r.s === 'syslogd_t' && r.t === t && r.c === c);
+  d = await conn.sendRequest('selinux/policyDiff', { base: 'v1' });
+  check(!d.unavailable && has(d, 'shadow_t', 'file') && has(d, 'etc_t', 'file') && d.base.label === 'v1' && d.target.working,
+    `v1 → working tree: committed and unsaved changes (${d.ruleCount} rules)`, d.unavailable || d.rules && d.rules.map(r => `${r.s} ${r.t}:${r.c}`));
+  d = await conn.sendRequest('selinux/policyDiff', { base: 'HEAD' });
+  check(!d.unavailable && !has(d, 'shadow_t', 'file') && has(d, 'etc_t', 'file'), `HEAD (v2) → working tree: only the unsaved change (${d.ruleCount} rules)`, d.rules && d.rules.map(r => `${r.s} ${r.t}:${r.c}`));
+  d = await conn.sendRequest('selinux/policyDiff', { base: 'v1', target: 'v2' });
+  const sh = (d.rules || []).find(r => r.t === 'shadow_t' && r.c === 'file');
+  const o = sh && sh.addFrom.origins[0];
+  check(!d.unavailable && sh && !has(d, 'etc_t', 'file') && d.target.label === 'v2' && o && o.ref === 'v2' && o.real === LOGGING && o.line === V2.split('\n').findIndex(l => l.includes('auth_read_shadow')),
+    `v1 → v2: only the committed change, traced into v2's copy (${o && `${path.relative(ws, o.real)}:${o.line + 1} (${o.ref})`})`, d.unavailable || d.rules && d.rules.map(r => `${r.s} ${r.t}:${r.c}`));
+  d = await conn.sendRequest('selinux/policyDiff', { base: 'nosuchref' });
+  check(d.unavailable && /not a commit, branch or tag/.test(d.unavailable), `unknown ref: ${d.unavailable}`);
+
+  // 5. A saved build (exported by the package build above) vs a later edit.
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(LOGGING), version: 4 }, contentChanges: [{ text: V2 }] });
+  await sleep(400);
+  await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
+  d = await conn.sendRequest('selinux/policyDiff', { saved: OUT });
+  const gone = (d.rules || []).find(r => r.s === 'syslogd_t' && r.t === 'etc_t' && r.c === 'file');
+  check(!d.unavailable && gone && gone.del.includes('write') && gone.delFrom && gone.delFrom.noSource && /^saved build/.test(d.base.label),
+    `saved build → working tree: the removed edit shows as − (no sources on the saved side) (${d.ruleCount} rules)`, d.unavailable || d.rules && d.rules.map(r => `${r.kind} ${r.s} ${r.t}:${r.c}`));
+  // The view's header for two refs.
+  const live = new ChangesView((m, prm) => conn.sendRequest(m, prm));
+  await live.compareWith({ base: 'v1', target: 'v2' });
+  const top4 = await live.getChildren();
+  check(/^v1 \([0-9a-f]{7}\) → v2 \([0-9a-f]{7}\)$/.test(top4[0].item.label), `view header: ${top4[0].item.label}`);
+
   const area = path.dirname((await conn.sendRequest('selinux/build', { uri: uri(LOGGING) })).workDir);
   const inArea = fs.readdirSync(area);
   check(inArea.some(n => /^head-/.test(n)) && inArea.some(n => /^tree-/.test(n)), `HEAD export and both trees live in this server's scratch area (${inArea.join(', ')})`);
@@ -140,5 +183,6 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
   console.log(failures ? `\n${failures} check(s) failed` : '\nall diff checks passed');
   proc.kill();
   fs.rmSync(repo, { recursive: true, force: true });
+  fs.rmSync(OUT, { recursive: true, force: true });
   process.exit(failures ? 1 : 0);
-})().catch(e => { console.error(e); proc.kill(); fs.rmSync(repo, { recursive: true, force: true }); process.exit(1); });
+})().catch(e => { console.error(e); proc.kill(); fs.rmSync(repo, { recursive: true, force: true }); fs.rmSync(OUT, { recursive: true, force: true }); process.exit(1); });

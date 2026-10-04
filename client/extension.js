@@ -309,6 +309,48 @@ function activate(context) {
         vscode.window.showInformationMessage(`Set ${p.module} = ${p.to}. Review and save ${path.basename(p.apply.path)}; saving rebuilds.`);
       }
     }),
+    vscode.commands.registerCommand('selinux.compareWith', async () => {
+      const r = await client.sendRequest('selinux/gitRefs');
+      const refItems = (r.unavailable ? [] : [
+        { label: 'HEAD', description: 'last commit', p: { base: 'HEAD' } },
+        ...r.tags.map(x => ({ label: `$(tag) ${x.name}`, description: `${x.short} · ${x.when}`, detail: x.subject, p: { base: x.name } })),
+        ...r.branches.map(x => ({ label: `$(git-branch) ${x.name}`, description: `${x.short} · ${x.when}`, detail: x.subject, p: { base: x.name } })),
+        ...r.commits.slice(1).map(x => ({ label: `$(git-commit) ${x.short}`, description: x.when, detail: x.subject, p: { base: x.short } })),
+      ]);
+      const items = [
+        ...refItems,
+        { label: '$(edit) Enter a ref…', description: 'branch, tag, commit, HEAD~3, …', kind: 'enter' },
+        ...(r.unavailable ? [] : [{ label: '$(git-compare) Between two refs…', description: 'e.g. two release tags; leaves the working tree out', kind: 'two' }]),
+        { label: '$(save) Saved build…', description: 'a directory exported with selinux.build.tree.outputDir', kind: 'saved' },
+      ];
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Compare the working tree\'s build with…', matchOnDescription: true, matchOnDetail: true });
+      if (!pick) return;
+      let params = pick.p;
+      const pickRef = async (placeHolder) => {
+        const q = await vscode.window.showQuickPick([...refItems, { label: '$(edit) Enter a ref…', kind: 'enter' }], { placeHolder, matchOnDescription: true, matchOnDetail: true });
+        if (!q) return null;
+        if (q.kind === 'enter') return vscode.window.showInputBox({ prompt: 'Git ref (branch, tag, commit, HEAD~3, …)' });
+        return q.p.base;
+      };
+      if (pick.kind === 'enter') {
+        const ref = await vscode.window.showInputBox({ prompt: 'Git ref to compare the working tree with (branch, tag, commit, HEAD~3, …)' });
+        if (!ref) return;
+        params = { base: ref.trim() };
+      } else if (pick.kind === 'two') {
+        const base = await pickRef('Base (older) ref');
+        if (!base) return;
+        const target = await pickRef(`Compare ${base} with… (newer ref)`);
+        if (!target) return;
+        params = { base, target };
+      } else if (pick.kind === 'saved') {
+        const dir = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, openLabel: 'Compare with this build', title: 'Directory with an exported build (policy.bin, build-info.json)' });
+        if (!dir || !dir.length) return;
+        params = { saved: dir[0].fsPath };
+      }
+      vscode.commands.executeCommand('selinuxChanges.focus');
+      const d = await vscode.window.withProgress({ location: { viewId: 'selinuxChanges' } }, () => changes.compareWith(params));
+      if (d && d.unavailable) vscode.window.showWarningMessage(d.unavailable);
+    }),
     vscode.commands.registerCommand('selinux.compareInstalled', async () => {
       const r = await client.sendRequest('selinux/installedPolicies');
       if (!r.policies.length) { vscode.window.showWarningMessage('No installed policy found under /etc/selinux/*/policy on this host.'); return; }
@@ -737,12 +779,19 @@ class ChangesView {
   }
 
   /** Run (or re-run) the comparison with HEAD. */
-  async compare() {
-    this.mode = 'head';
-    this.wanted = true;
+  compare() { return this.compareWith({ base: 'HEAD' }); }
+
+  /**
+   * Compare { base: ref | saved: dir, target: ref | null (working tree) }.
+   * Refreshed after builds when the working tree is one side.
+   */
+  async compareWith(params) {
+    this.mode = 'ref';
+    this.params = params;
+    this.wanted = !params.target;
     this.loading = true;
     this._emitter.fire();
-    try { this.diff = await this.request('selinux/policyDiff'); } finally { this.loading = false; }
+    try { this.diff = await this.request('selinux/policyDiff', params); } finally { this.loading = false; }
     this._emitter.fire();
     return this.diff;
   }
@@ -759,7 +808,7 @@ class ChangesView {
   }
 
   /** After a build: refresh only if a comparison with HEAD is being shown. */
-  afterBuild() { if (this.wanted && this.mode === 'head' && !this.loading) this.compare().catch(() => {}); }
+  afterBuild() { if (this.wanted && this.mode === 'ref' && !this.loading) this.compareWith(this.params).catch(() => {}); }
 
   getTreeItem(n) { return n.item; }
 
@@ -775,12 +824,12 @@ class ChangesView {
   /** A source statement that produces a change; HEAD-side ones open the HEAD copy. */
   origin(o, prefix = '') {
     const file = o.head ? o.real : o.path;
-    const label = `${prefix}${vscode.workspace.asRelativePath(file)}:${o.line + 1}${o.head ? ' (HEAD)' : ''}`;
+    const label = `${prefix}${vscode.workspace.asRelativePath(file)}:${o.line + 1}${o.head ? ` (${o.ref || 'HEAD'})` : ''}`;
     const because = o.because || [];
     return this.item(label, {
       desc: o.via ? `via ${o.via}` : o.text,
       icon: o.head ? 'history' : 'go-to-file',
-      tooltip: `${o.text}${o.chain && o.chain.length ? `\n\nthrough ${o.chain.join(' → ')}` : ''}${o.head ? '\n\nAs of HEAD; opens the HEAD version of the file.' : ''}`,
+      tooltip: `${o.text}${o.chain && o.chain.length ? `\n\nthrough ${o.chain.join(' → ')}` : ''}${o.head ? `\n\nAs of ${o.ref || 'HEAD'}; opens that version of the file.` : ''}`,
       command: { command: 'selinux.openLocation', title: 'Open', arguments: [o.path, o.line, 0] },
       kids: because.length ? () => because.map(b => this.origin(b, 'because: ')) : undefined,
     });
@@ -809,13 +858,19 @@ class ChangesView {
 
   async getChildren(n) {
     if (n) return n.kids ? n.kids() : [];
-    if (this.loading) return [this.item(this.mode === 'installed' ? 'Building with semodule (CIL) and comparing with the installed policy…' : 'Comparing with HEAD… (the first time builds HEAD too)', { icon: 'sync~spin' })];
+    if (this.loading) {
+      const p = this.params || {};
+      const what = this.mode === 'installed' ? 'Building with semodule (CIL) and comparing with the installed policy…'
+        : `Comparing ${p.saved ? 'with a saved build' : `${p.base || 'HEAD'} with ${p.target || 'the working tree'}`}… (builds committed trees the first time)`;
+      return [this.item(what, { icon: 'sync~spin' })];
+    }
     const d = this.diff;
     if (!d) return [
       this.item('Compare the last build with HEAD', { icon: 'git-compare', command: { command: 'selinux.compareHead', title: 'Compare' }, tooltip: 'Build HEAD with the same settings and show what your changes add or remove in the compiled policy.' }),
+      this.item('Compare with a branch, tag, commit or saved build…', { icon: 'git-branch', command: { command: 'selinux.compareWith', title: 'Compare' }, tooltip: 'e.g. what changed since the last release tag, or between two tags.' }),
       this.item('Compare the build with the installed policy', { icon: 'server', command: { command: 'selinux.compareInstalled', title: 'Compare' }, tooltip: 'Build the policy the way an installed system does (semodule, CIL) and show what would change on this host if you installed it.' }),
     ];
-    if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: this.mode === 'installed' ? 'selinux.compareInstalled' : 'selinux.compareHead', title: 'Compare again' } })];
+    if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: this.mode === 'installed' ? 'selinux.compareInstalled' : 'selinux.compareWith', title: 'Compare again' } })];
     if (this.mode === 'installed') {
       const out = [
         this.item(`vs installed ${d.installed.name}`, { icon: 'server', desc: d.installed.policy,
@@ -826,9 +881,14 @@ class ChangesView {
       if (!groups.length) out.push(this.item('No difference: the build compiles to the installed policy.', { icon: 'pass' }));
       return out.concat(groups);
     }
-    const out = [this.item(`vs HEAD ${d.head.short}`, { icon: 'git-commit', desc: d.head.subject, tooltip: `${d.head.sha}\n${d.head.subject}\n\nCurrent side: last build at ${new Date(d.builtAt).toLocaleTimeString()}. Compared in ${(d.ms.total / 1000).toFixed(1)} s.` })];
+    const b = d.base || { label: 'HEAD', short: d.head.short, subject: d.head.subject };
+    const t = d.target || { working: true, label: 'working tree' };
+    const name = (x) => (x.working ? 'working tree' : x.saved ? x.label : `${x.label}${x.short && x.label !== x.short ? ` (${x.short})` : ''}`);
+    const header = b.label === 'HEAD' && t.working ? `vs HEAD ${b.short}` : `${name(b)} → ${name(t)}`;
+    const out = [this.item(header, { icon: b.saved ? 'save' : 'git-commit', desc: b.subject,
+      tooltip: `Base: ${name(b)}${b.subject ? ` — ${b.subject}` : ''}${b.when ? ` (${b.when})` : ''}\nTarget: ${name(t)}${t.subject ? ` — ${t.subject}` : ''}\n\n"+" is in the target and not the base, "−" the reverse.${t.working ? `\nWorking tree side: last build at ${new Date(d.builtAt).toLocaleTimeString()}.` : ''}\nCompared in ${(d.ms.total / 1000).toFixed(1)} s.` })];
     const groups = this.diffGroups(d);
-    if (!groups.length) out.push(this.item('No effective policy change: the build compiles to the same policy as HEAD.', { icon: 'pass' }));
+    if (!groups.length) out.push(this.item(`No effective policy change: ${name(t)} compiles to the same policy as ${name(b)}.`, { icon: 'pass' }));
     return out.concat(groups);
   }
 

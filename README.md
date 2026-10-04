@@ -268,6 +268,16 @@ The first comparison builds `HEAD` too (CLIP: ~20 s for both builds; RHEL
 targeted about a minute); after that a comparison takes 1–2 s plus your
 build, and the view refreshes after each build.
 
+*SELinux: Compare Compiled Policy with…* (also in the view's title bar)
+compares with any other version instead: a tag ("what changed since the
+last release?"), a branch, a recent commit or any ref you type
+(`HEAD~3`), or **two refs** without the working tree (e.g. what the policy
+gained between release tags `v1` and `v2`, traced into each tag's sources),
+or a **saved build** exported with `selinux.build.tree.outputDir` (its side
+has no sources to trace). Committed trees are exported with `git archive`
+and built with your current settings; the last three are kept, so
+switching between them doesn't rebuild.
+
 **Compare with the installed policy** (full trees)
 
 *SELinux: Compare Build with Installed Policy* (also in the Changes view's
@@ -435,6 +445,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   58 host-only types from container-selinux and cockpit, `sandbox_t`
   (shipped separately on RHEL) only in the build, one boolean default
   changed locally.
+* Compare with other refs on CLIP (git repo with tags `v1`, `v2` and an
+  unsaved edit on top): `v1` → working tree shows both changes, `HEAD` →
+  working tree only the unsaved one, `v1` → `v2` only the committed one
+  (traced into `v2`'s copy), a saved build shows a reverted edit as "−".
 * Changes since HEAD on CLIP: an unsaved edit adding two interface calls
   and removing two permissions gives exactly the five changed rules and one
   attribute-membership change, each traced to the right line (removals to
@@ -519,8 +533,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Changes since HEAD**
 
-* Needs the tree to be in a git repository with at least one commit; it
-  compares with `HEAD` only (not other commits or saved builds yet).
+* Comparing with commits needs the tree to be in a git repository; every
+  commit is built with the *current* build settings (a ref whose tree
+  needs different settings may not build). Comparing with a saved build
+  works without git.
 * Tracing finds the statements in the build output that match a changed
   rule; when several do, files you changed rank first and at most six are
   listed. Rules using complements or wildcards (`~{ … }`, `*`) match

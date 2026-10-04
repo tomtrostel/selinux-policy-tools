@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* **Compare Compiled Policy with…**: compare the working tree's build with
+  any tag, branch, commit or typed ref, compare two refs with each other
+  (e.g. two release tags), or compare with a saved build directory;
+  changes are traced into the matching version's sources.
 * **Fix: two VS Code windows on the same tree** no longer share scratch
   build directories: each language server builds in its own area
   (`/tmp/selinux-policy-tools-<uid>/<pid>/`), so builds can't interfere and
