@@ -242,6 +242,31 @@ const hover = async (f, text, needle) => {
       `who can enter syslogd_t: ${inn.transitions && inn.transitions.map(x => x.source).join(', ')}`);
   }
 
+  // 8b. Missing requires in .te files follow modules.conf: a loadable module
+  // (cron = module) gets the warning, a base module (kernel = base) doesn't,
+  // since base modules are compiled together and need no requires.
+  {
+    const CRON = path.join(ws, 'policy/modules/services/cron.te');
+    const KERNEL = path.join(ws, 'policy/modules/kernel/kernel.te');
+    if (fs.existsSync(CRON) && fs.existsSync(KERNEL)) {
+      const line = '\nallow crond_t shadow_history_t:file read;\n';
+      const kline = '\nallow kernel_t shadow_history_t:file read;\n';
+      open(CRON); open(KERNEL);
+      const cronText = fs.readFileSync(CRON, 'utf8'), kernelText = fs.readFileSync(KERNEL, 'utf8');
+      await edit(CRON, cronText + line);
+      await edit(KERNEL, kernelText + kline);
+      await sleep(800);
+      const cronReq = (diags[uri(CRON)] || []).filter(d => d.code === 'missing-te-require');
+      const kernelReq = (diags[uri(KERNEL)] || []).filter(d => d.code === 'missing-te-require');
+      check(cronReq.length === 1 && /'shadow_history_t' comes from the authlogin module/.test(cronReq[0].message) && kernelReq.length === 0,
+        `missing require in loadable cron.te (${cronReq.map(d => d.message.slice(0, 60)).join('; ')}), none in base kernel.te (${kernelReq.length})`, { cron: fmt(CRON), kernel: kernelReq });
+      const none = (diags[uri(CRON)] || []).filter(d => d.code === 'missing-te-require' && d.range.start.line < cronText.split('\n').length - 1);
+      check(none.length === 0, 'the unmodified cron.te has no missing-require warnings', none);
+      await edit(CRON, cronText);
+      await edit(KERNEL, kernelText);
+    }
+  }
+
   // 9. Clean shutdown removes the scratch tree.
   const scratch = treeWork;
   check(fs.existsSync(scratch) && path.basename(path.dirname(scratch)) === String(proc.pid), 'scratch tree exists while the server runs, in its own area');

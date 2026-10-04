@@ -175,7 +175,7 @@ function parsePolicy(text) {
     const def = currentDef();
     if (req) {
       if (def) def.requires.push({ kind, name: tk.v });
-      else out.requires.push({ kind, name: tk.v });
+      else out.requires.push({ kind, name: tk.v, l: tk.l, c: tk.c });
       return null;
     }
     if (tk.v.includes('$')) {

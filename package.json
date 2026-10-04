@@ -368,7 +368,7 @@
         "selinux.diagnostics.genRequire": {
           "type": "boolean",
           "default": true,
-          "description": "In .if files, warn when a type or attribute is used in an interface but missing from its gen_require block."
+          "description": "Warn about missing requires: in .if files, a type or attribute used in an interface but missing from its gen_require block; in .te files of loadable modules, a type or attribute from another module used without a require in its scope."
         },
         "selinux.diagnostics.users": {
           "type": "boolean",

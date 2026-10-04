@@ -138,6 +138,16 @@ Open one of these as the workspace folder:
   * unknown object classes and invalid permissions for a class;
   * in `.if` files, types/attributes used in an interface but missing from
     its `gen_require` block (quick fix inserts the line);
+  * in `.te` files of loadable modules, types/attributes from other modules
+    used without a require in that scope: the module's top level, or the
+    `optional_policy` block the use is in. A require counts for its whole
+    scope and the blocks nested in it, whether it is written in a
+    `require { }` / `gen_require` block or comes from an interface called in
+    that scope (checkmodule works the same way). The quick fix adds the line
+    to a require block in the right scope (or creates one). Standalone
+    modules are always loadable; in a tree, modules marked `module` in
+    `modules.conf` (and `APPS_MODS`) are checked, base modules aren't (they
+    are compiled together and need no requires);
   * unbalanced parentheses / m4 quotes;
   * in `gen_user(...)` lines (`policy/users`): roles that aren't declared
     anywhere, MLS/MCS sensitivities and categories outside what the build
@@ -442,6 +452,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   hand and are real problems in those trees: on RHEL 9, mostly missing
   `gen_require` entries that later Fedora versions fixed; on CLIP, four
   latent bugs in interfaces nothing currently calls.
+* The `.te` require check: no findings on the loadable modules of all three
+  trees (Fedora with `dist/targeted/modules.conf`: 425; RHEL 9 targeted
+  from the spec's module lists: 434; CLIP: 79 incl. `APPS_MODS`), which
+  build, so none of them can lack a require. Treating Fedora's base modules
+  as loadable finds `domain.te` using `unlabeled_t` unrequired. A
+  standalone module with three missing requires (top level and inside
+  `optional_policy`) gets exactly those, checkmodule rejects it, and after
+  the three quick fixes it builds; in a CLIP tree a loadable module
+  (`cron`) is checked and a base one (`kernel`) isn't.
 * Standalone-module builds against `selinux-policy-devel` on Rocky 9.8.
 * Full-tree builds, the Compiled Policy view and the hover/expanded views on
   CLIP for RHEL 9 (90 module packages, linked and validated).
@@ -521,8 +540,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   without Remote-SSH are indexed as if all branches were active.
   `self_contained_policy` and `users_extra`, which the Makefile passes
   only for some build steps, are never decided.
-* `.te` files are not checked for missing `require` blocks, only `.if`
-  interfaces.
+* The `.te` require check needs to know a module is loadable: without a
+  `modules.conf` in the tree (e.g. a bare upstream checkout), tree modules
+  aren't checked. Uses inside `ifdef` branches the build flags don't
+  decide (all of them without `make`) aren't judged, and a scope that calls
+  an interface the index doesn't know isn't judged either.
 
 **Building**
 

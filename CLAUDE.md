@@ -132,7 +132,22 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
      ChangesView `mode: 'installed'` (no auto-refresh). RHEL vs melody's
      installed targeted: 5,132 diffs (container-selinux, cockpit, sandbox,
      a local boolean) vs ~1.3M legacy-vs-CIL noise.
-5. **Hardening**: .te missing-require check, link-error placement,
+5. **Hardening**: .te missing-require check (done, after 0.4.0:
+   diagnostics.js `checkTeRequires`, code `missing-te-require`; scopes =
+   top level / innermost optional_policy; provided = file-level require
+   entries (parser now records their l/c) + `callRequires()` of every
+   top-level call, transitive through bodyCalls with $N/$*/shift
+   substitution, memoized in `idx._teRequires`; generated interfaces
+   provide what their template call site generates (`idx.generatedAt`);
+   .spt defs and structural macros contribute nothing (CLIP's
+   tunable_policy recurses via declare_required_symbols); unknown macro
+   → scope uncertain → silent; uses in undecided ifdef branches skipped.
+   Loadable = `idx.isLoadable(module)`: `idx.allLoadable` in devel mode,
+   else `idx.moduleKinds` from modules.conf + APPS_MODS
+   (`updateModuleKinds()` in server). Devel mode has no decls, so kinds
+   come from `idx.requiredKind()` (interfaces' requires). Quick fix
+   `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
+   Remaining: link-error placement,
    generated corenetwork.te error mapping, several trees per workspace,
    test minimum/mls/automotive variants, RHEL 10, monolithic builds.
 
@@ -263,7 +278,8 @@ is only visible to collaborators; making it public is the user's call.
   queries. Full rebuild is ~180 ms on the Fedora tree; edits rebuild with a
   300 ms debounce.
 - `server/diagnostics.js`: unknown macros, unknown class/perm in AV rules,
-  missing gen_require entries in `.if` interfaces, syntax balance.
+  missing gen_require entries in `.if` interfaces, missing requires in
+  `.te` files of loadable modules, syntax balance.
 - `server/server.js`: LSP features and custom requests
   (`selinux/modules`, `selinux/moduleContents`, `selinux/stats`,
   `selinux/reindex`, `selinux/build`, `selinux/expansion`,
@@ -396,7 +412,8 @@ Package: `npx @vscode/vsce package`.
   / Other rules) with on-demand source tracing; confirmed in VS Code.
   Changes view: any git ref, two refs, a saved build, or the installed
   policy.
-- `.te` files aren't checked for missing `require` blocks.
+- `.te` require check only for modules known to be loadable (devel mode,
+  or `module` in modules.conf / APPS_MODS); none without modules.conf.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
   without make (Windows local) nothing is decided.
 - Windows paths: indexed paths come from `URI.fsPath` (lowercase drive

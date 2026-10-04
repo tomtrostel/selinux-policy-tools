@@ -102,6 +102,7 @@ function reindex() {
       for (const d of documents.all()) idx.setFile(toPath(d.uri), d.getText(), true);
       idx.rebuild();
       findTreeRoot();
+      updateModuleKinds();
       toolchain = null; // the mode (and so the tools needed) may have changed
       if (treeRoot) log(`refpolicy source tree: ${treeRoot}`);
       const stats = { ...idx.stats(), ms: Date.now() - t0, buildMode: usingDevel ? 'module' : treeRoot ? 'tree' : null };
@@ -150,7 +151,22 @@ async function updateM4Defines() {
 let rebuildTimer = null;
 function scheduleRebuild() {
   clearTimeout(rebuildTimer);
-  rebuildTimer = setTimeout(() => { idx.rebuild(); publishAll(); }, 300);
+  rebuildTimer = setTimeout(() => { idx.rebuild(); updateModuleKinds(); publishAll(); }, 300);
+}
+
+/**
+ * Which modules are built as loadable modules, for the .te require check:
+ * standalone modules always; in a tree, `module` in the effective
+ * modules.conf, plus APPS_MODS (built as modules whatever modules.conf says).
+ */
+function updateModuleKinds() {
+  idx.allLoadable = usingDevel;
+  idx.moduleKinds = null;
+  if (usingDevel || !treeRoot) return;
+  const { conf, states, apps } = moduleStates(treeRoot);
+  if (!conf) return;
+  for (const m of apps) states.set(m, 'module');
+  idx.moduleKinds = states;
 }
 
 documents.onDidChangeContent((e) => {
@@ -417,7 +433,7 @@ function buildDiagnosticsFor(p, text, staticDiags) {
   const home = res.tree ? res.trigger : res.tePath;
   // Static checks carry quick fixes; when one already flags a line, the
   // compiler's report of the same problem is redundant.
-  const staticLines = new Set(staticDiags.filter(d => /^unknown-/.test(d.code)).map(d => d.range.start.line));
+  const staticLines = new Set(staticDiags.filter(d => /^unknown-|^missing-te-require$/.test(d.code)).map(d => d.range.start.line));
   const out = [];
   for (const d of res.diagnostics) {
     const own = d.path === p;
@@ -806,6 +822,10 @@ connection.onCodeAction(({ textDocument, context }) => {
       const edit = requireEdit(doc, f, diag.data);
       if (edit) actions.push({ title: `Add '${diag.data.kind} ${diag.data.name};' to gen_require`, kind: CodeActionKind.QuickFix,
         diagnostics: [diag], isPreferred: true, edit: { changes: { [textDocument.uri]: [edit] } } });
+    } else if (diag.code === 'missing-te-require' && diag.data) {
+      const edit = teRequireEdit(doc, f, diag.data);
+      if (edit) actions.push({ title: `Add '${diag.data.kind} ${diag.data.name};' to ${diag.data.scope ? "the optional block's" : "the module's"} require block`, kind: CodeActionKind.QuickFix,
+        diagnostics: [diag], isPreferred: true, edit: { changes: { [textDocument.uri]: [edit] } } });
     } else if (diag.code === 'unknown-perm') {
       const perms = new Set();
       for (const c of (diag.data && diag.data.classes) || []) for (const p of idx.permsOf(c) || []) perms.add(p);
@@ -841,6 +861,42 @@ function requireEdit(doc, f, data) {
   }
   // No gen_require: create one at the top of the body.
   return { range: range(d.callLine + 1, 0, 0), newText: `\tgen_require(\`\n\t\t${line}\n\t')\n\n` };
+}
+
+/**
+ * TextEdit adding `kind name;` to a .te require block in the scope of the
+ * use: after an existing entry of a require/gen_require block directly in
+ * that scope, or a new gen_require block (after policy_module, or at the
+ * start of the optional_policy block).
+ */
+function teRequireEdit(doc, f, data) {
+  const line = `${data.kind} ${data.name};`;
+  const blocks = (f.calls || []).filter(c => c.name === 'optional_policy');
+  const within = (b, l, c) => (l > b.l || (l === b.l && c > b.c)) && (l < b.endL || (l === b.endL && c < b.endC));
+  const scopeOf = (l, c) => {
+    let best = null;
+    for (const b of blocks) if (within(b, l, c) && (!best || within(best, b.l, b.c))) best = b;
+    return best;
+  };
+  const scope = data.scope ? blocks.find(b => b.l === data.scope.l && b.c === data.scope.c) : null;
+  if (data.scope && !scope) return null;
+  const lineText = (l) => doc.getText({ start: { line: l, character: 0 }, end: { line: l + 1, character: 0 } }).replace(/\r?\n$/, '');
+  // An existing entry on a line of its own (`	type foo_t;`), directly in this scope.
+  for (const r of f.requires || []) {
+    if (r.l === undefined || scopeOf(r.l, r.c) !== scope) continue;
+    const t = lineText(r.l);
+    if (!/^\s*(type|attribute|class|role|bool|attribute_role)\s+[^{}`']*;\s*$/.test(t)) continue;
+    const indent = /^(\s*)/.exec(t)[1];
+    return { range: range(r.l + 1, 0, 0), newText: `${indent}${line}\n` };
+  }
+  if (scope) {
+    // optional_policy(` on its own line: the block's body starts on the next line.
+    const indent = (/^(\s*)/.exec(lineText(scope.l))[1]) + '\t';
+    return { range: range(scope.l + 1, 0, 0), newText: `${indent}gen_require(\`\n${indent}\t${line}\n${indent}')\n\n` };
+  }
+  const pm = (f.calls || []).find(c => c.name === 'policy_module');
+  const at = pm ? pm.endL + 1 : 0;
+  return { range: range(at, 0, 0), newText: `\ngen_require(\`\n\t${line}\n')\n` };
 }
 
 /* ---------------- custom requests for the explorer view ---------------- */

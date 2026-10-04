@@ -147,6 +147,52 @@ const hover = async (needle) => {
     'expanded policy shows files_tmp_filetrans and its type_transition', ex.text && ex.text.slice(-800));
   check(ex.text && /category declarations omitted/.test(ex.text) && ex.text.split('\n').length < 800, `expanded policy collapses boilerplate (${ex.text ? ex.text.split('\n').length : 0} lines)`);
 
+  // 10b. Missing requires in the .te: a foreign type used directly needs a
+  // require in its scope (checkmodule agrees); an interface called anywhere in
+  // the scope covers it; the quick fix adds the entry and the module builds.
+  const REQ = GOOD + [
+    'allow myapp_t etc_t:file read;',                 // line 11: no require anywhere -> warning
+    'allow myapp_t bin_t:file execute;',              // line 12: covered by corecmd_exec_bin below
+    'corecmd_exec_bin(myapp_t)',
+    'optional_policy(`',
+    '\tlogging_send_syslog_msg(myapp_t)',
+    "\tallow myapp_t var_log_t:file append;",         // line 16: logging_send_syslog_msg doesn't require var_log_t -> warning
+    "\tallow myapp_t shadow_t:file read;",             // line 17: not required in the block -> warning
+    "')",
+    '',
+  ].join('\n');
+  await setText(REQ);
+  const reqDiags = () => (diags[uri] || []).filter(d => d.code === 'missing-te-require');
+  let rd = reqDiags();
+  const at = (l) => rd.find(d => d.range.start.line === l);
+  check(rd.length === 3 && at(11) && /'etc_t' comes from .* isn't required in this module: add 'type etc_t;'/.test(at(11).message) && !at(12)
+    && at(16) && at(17) && /in this optional_policy block/.test(at(17).message),
+    `missing requires: ${rd.map(d => `${d.range.start.line + 1}: ${d.message.slice(0, 70)}`).join(' | ')}`, rd);
+  r = await save();
+  const buildErr = (diags[uri] || []).filter(d => d.source !== 'selinux');
+  check(!r.ok && rd.every(d => !buildErr.some(e => e.range.start.line === d.range.start.line)),
+    `checkmodule rejects it too (${r.errors} error${r.errors === 1 ? '' : 's'}; the build error on a warned line is folded into the static one)`, fmt());
+  // Quick fixes: top level (new gen_require after policy_module), then the optional block.
+  for (const name of ['etc_t', 'var_log_t', 'shadow_t']) {
+    rd = reqDiags();
+    const d = rd.find(x => x.message.startsWith(`'${name}'`));
+    if (!d) { check(false, `warning for ${name} still there before its fix`, rd); continue; }
+    const l = d.range.start.line;
+    const acts = await conn.sendRequest('textDocument/codeAction', { textDocument: { uri }, range: d.range, context: { diagnostics: [d] } });
+    const fix = acts.find(x => /require block/.test(x.title));
+    check(!!fix, `quick fix offered for line ${l + 1}: ${fix && fix.title}`, acts);
+    if (!fix) continue;
+    const ed = fix.edit.changes[uri][0];
+    const lines = fs.readFileSync(te, 'utf8').split('\n');
+    lines.splice(ed.range.start.line, 0, ...ed.newText.replace(/\n$/, '').split('\n'));
+    await setText(lines.join('\n'));
+  }
+  rd = reqDiags();
+  r = await save();
+  check(rd.length === 0 && r.ok, `after the quick fixes: ${rd.length} warnings, build ${r.ok ? 'ok' : 'failed'}`, { text: fs.readFileSync(te, 'utf8'), diags: fmt() });
+  await setText(GOOD);
+  await save();
+
   // 11. A clean LSP shutdown removes the scratch build directory (and the server's whole scratch area).
   const scratch = (await conn.sendRequest('selinux/build', { uri })).workDir;
   const area = path.dirname(scratch);

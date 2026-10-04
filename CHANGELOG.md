@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* **Missing requires in `.te` files**: in loadable modules (standalone
+  modules, or `module` in `modules.conf` / `APPS_MODS`), a type or
+  attribute from another module used without a require in its scope (the
+  top level or the enclosing `optional_policy` block) is a warning, with
+  a quick fix that adds it to a require block in that scope. Requires
+  that interfaces called in the scope bring in count, as they do for
+  checkmodule. No findings on the Fedora, RHEL 9 and CLIP trees.
+
 ## 0.4.0 (2026-10-04)
 
 Deeper property checks, checks for standalone modules, and comparing the
