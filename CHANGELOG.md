@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.3.0 (2026-10-04)
+
+Lockdown workflows (full policy source trees, Linux).
+
+**New**
+
+* **Module Preview** (*SELinux: Preview Turning a Module Off/On…*, also on
+  Policy Explorer modules): builds the tree with one module flipped in
+  `modules.conf` in a separate scratch copy and shows link errors, the
+  `optional_policy` blocks in other modules that drop out (or come alive),
+  and the resulting rule, type, role and user changes traced to source.
+  *Apply* edits the `modules.conf` line (and can drop the module from
+  `APPS_MODS`).
+* **Domain transition graph** (*SELinux: Show Domain Transition Graph*):
+  interactive graph of the last build's domain transitions from any domain,
+  or who can enter it; automatic, explicit (`setexec`), dynamic and
+  boolean-controlled transitions, entrypoints on hover, click through to
+  source.
+* **Property checks**: assertions in `selinux.checks` at the tree root
+  (`only … may write …`, `never … may …`, `never X reaches Y`,
+  `require … may …`, `only|never <roles> may run <types>`,
+  `only|never <users> may use <roles>`) checked after every build and on
+  save; failures in the Problems panel with links to the source lines that
+  cause them, ✓/✗ above each check, status bar summary.
+* **Users and roles**: `gen_user` validation (undeclared roles, MLS/MCS
+  levels and categories outside what the build defines, high below low,
+  duplicate users); roles, role switching, role transitions, users and
+  their Linux logins (`seusers`) in the Compiled Policy view; hover and
+  completion for users, roles and MLS macros.
+* New settings: `selinux.checks.file`, `selinux.diagnostics.users`.
+
+**Fixed**
+
+* Builds after changing the set of enabled modules (`modules.conf`,
+  `APPS_MODS`): refpolicy's Makefile kept stale outputs (validation failed
+  on removed modules' file contexts, old packages were exported).
+* Link errors are placed on the interface call that brings in the missing
+  requirement, not the module's first line.
+
+**Note:** the features above are covered by automated tests on Rocky 9
+(CLIP for RHEL 9 and the RHEL 9 targeted policy) but have had little
+interactive use in VS Code yet. Please report anything that looks off.
+
 ## 0.2.0 (2026-10-04)
 
 First published release.

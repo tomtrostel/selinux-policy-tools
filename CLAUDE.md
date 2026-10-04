@@ -6,11 +6,11 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
-tag on commit 3605cef). Steps 1 and 2 are done; step 3 in progress (3.1
-module preview, 3.2 transition graph, 3.3 property checks, 3.4 users/roles
-done after the release, not yet in a release). Step 3 is complete; next:
-release 0.3.0 after the user has tried 3.1–3.4, then items under 4/5.
+Status as of 2026-10-04: **v0.3.0 released** (GitHub release `v0.3.0`;
+v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0.
+The 3.x features (module preview, transition graph, property checks,
+users/roles) have automated tests but little interactive use yet; fix
+what the user finds there first, then items under 4/5.
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
