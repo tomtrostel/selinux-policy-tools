@@ -211,7 +211,8 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   indexing, standalone-module builds, and on CLIP the full-tree build
   (compile and link errors), the Compiled Policy view (browsing, navigation,
   find), the "Compiles to" hover and the expanded view; on the RHEL 9 tree,
-  configuring from the spec, the targeted build and its Compiled Policy view.
+  configuring from the spec, the targeted build and its Compiled Policy view,
+  and dimming of inactive build-flag `ifdef` branches.
 
 ## Limitations
 

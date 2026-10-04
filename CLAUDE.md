@@ -199,7 +199,8 @@ Package: `npx @vscode/vsce package`.
   errors), Compiled Policy view (browse, navigate, find, refresh), hover and
   expanded view. All worked as designed; no UX issues reported. RHEL 9
   tree (Configure from Spec → targeted build → Compiled Policy view) used
-  interactively too, after fixing the stale "build first" message.
+  interactively too, after fixing the stale "build first" message; ifdef
+  dimming and flag hover confirmed in VS Code on the RHEL tree.
 - Compiled Policy view shows structure only; allow/dontaudit rules with
   their source lines, and sediff against a commit, are the next steps.
 - `.te` files aren't checked for missing `require` blocks.
