@@ -221,8 +221,7 @@ Package: `npx @vscode/vsce package`.
   dimming and flag hover confirmed in VS Code on the RHEL tree; Changes
   since HEAD confirmed in VS Code on the CLIP clone.
 - Compiled Policy view: rules per type/attribute (Can access / Accessed by
-  / Other rules) with on-demand source tracing; not yet clicked through in
-  VS Code. Changes view compares with HEAD only. Scratch dirs are keyed
+  / Other rules) with on-demand source tracing; confirmed in VS Code. Changes view compares with HEAD only. Scratch dirs are keyed
   by tree path, so two windows on one tree share (and can race on) one.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
