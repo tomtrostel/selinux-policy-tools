@@ -423,7 +423,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.tree.targets` | `[]` | Make targets for full trees; empty means `base.pp modules` then `validate` (`policy` if `MONOLITHIC=y`) |
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
 | `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
-| `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); your tree is not modified |
+| `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); a source can also be `{ "from": "dist/targeted/modules.conf", "disable": ["…/modules-dropped.lst"] }` (that file with the listed non-base modules turned off, as the RHEL 10 spec does); your tree is not modified |
 | `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
@@ -470,6 +470,23 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* RHEL 10 (selinux-policy 42.1.18, from the Rocky Linux 10.2 source RPM),
+  built on the Rocky 9.8 host with RHEL 9's tools: checkpolicy 3.6 compiles
+  the whole tree (it uses no newer language features), writing policy
+  version 33 where RHEL 10's own build writes 35. With settings from its
+  spec (RHEL 10 takes `booleans.conf`, `users` and `modules.conf` from the
+  tree's `dist/` and filters `modules.conf` with the spec's module lists;
+  the filtered file is identical to what the spec's script produces):
+  targeted (419 modules, 28.6 s), mls (254 modules, 20.5 s) and minimum
+  (362 modules) build and validate, with boolean defaults, link errors,
+  build-flag `ifdef` dimming (`enable_mls` in the mls build), rule queries
+  and source locations for all types checked. Compared with the RHEL 9
+  policy installed on the host, the targeted build shows 24,452 rule
+  differences, 239 types added and 301 removed. The source survey finds
+  60 missing `gen_require` entries in interfaces (the same kinds as on
+  RHEL 9, e.g. `device_t` in `devices.if`, `kernel_t` required as
+  `init_t`), all real, and no missing requires in the 419 loadable
+  modules' `.te` files.
 * Users and roles: the `gen_user` checks report nothing on the Fedora,
   RHEL 9 and CLIP users files (with and without build flags, CLIP in MCS
   and MLS mode); a test file with an unknown role, `s3` and `c2000` in an
@@ -550,11 +567,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 * Builds need Linux with the tools above; on Windows/macOS they report
   themselves unavailable (use Remote-SSH).
-* Full-tree builds are verified on CLIP for RHEL 9 and the RHEL 9 targeted
-  policy. The other spec variants (minimum, mls, automotive), RHEL 10 and
-  monolithic (`MONOLITHIC=y`) builds are untested. For *minimum*, the RPM
-  turns most modules off at install time, which the build doesn't
-  reproduce.
+* Full-tree builds are verified on CLIP for RHEL 9, the RHEL 9 targeted
+  policy, and the RHEL 10 targeted, mls and minimum policies. The automotive
+  variant, RHEL 9's minimum and mls, and monolithic (`MONOLITHIC=y`) builds
+  are untested. For *minimum*, the RPM turns most modules off at install
+  time, which the build doesn't reproduce.
+* Built with RHEL 9's checkpolicy, a RHEL 10 policy comes out as policy
+  version 33 (RHEL 10 ships 35). The sources don't use the newer features
+  today; if a future release does (e.g. netlink extended permissions),
+  RHEL 9's tools will reject it and the build needs a RHEL 10 host.
 * `make validate` links with the legacy `semodule_link`/`semodule_expand`
   tools, while an installed policy is built by `semodule` (CIL); the two
   represent attributes differently (comparing them shows ~1.3 million

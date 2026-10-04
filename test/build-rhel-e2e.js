@@ -1,8 +1,10 @@
 // RHEL/Fedora selinux-policy tree build test: settings derived from the
-// source RPM's spec (modules.conf, booleans.conf and users copied in from the
-// spec's directory), built with the tree's Makefile. Usage:
+// source RPM's spec (modules.conf, booleans.conf and users: copied in from the
+// spec's directory on RHEL 9, taken from the tree's dist/ and filtered with
+// the spec's module lists on RHEL 10), built with the tree's Makefile. Usage:
 //   node test/build-rhel-e2e.js [tree-dir] [selinux-policy.spec] [variant]
-// Defaults are the RHEL 9 tree and unpacked source RPM on the test host.
+// Defaults are the RHEL 9 tree and unpacked source RPM on the test host;
+// RHEL 10: ~/sepol-test/rhel10 ~/sepol-test/srpm10/selinux-policy.spec.
 // Needs Linux with make, m4, checkpolicy, policycoreutils-devel and setools; skips otherwise.
 const cp = require('child_process');
 const fs = require('fs');
@@ -10,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
-const { detectToolchain } = require('../server/build');
+const { detectToolchain, overlaySource } = require('../server/build');
 
 const tc = detectToolchain(null);
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
@@ -24,6 +26,14 @@ cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 const LOGGING = path.join(ws, 'policy/modules/system/logging.te');
 const ORIG = fs.readFileSync(LOGGING, 'utf8');
+// The text a selinux.build.tree.files entry stands for (paths relative to the tree root, filtered sources).
+const overlayText = (srcs) => [].concat(srcs).map((x) => {
+  const abs = (q) => (path.isAbsolute(q) ? q : path.join(ws, q));
+  const r = overlaySource(typeof x === 'string' ? abs(x) : { from: abs(x.from), disable: x.disable.map(abs) }, (q) => { try { return fs.readFileSync(q); } catch { return null; } });
+  if (r.missing) throw new Error(`${r.missing} not found`);
+  return String(r.text);
+}).join('');
+const rhel10 = (files) => !path.isAbsolute([].concat(files['policy/booleans.conf'] || [''])[0]);
 
 const proc = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
 const conn = rpc.createMessageConnection(new rpc.StreamMessageReader(proc.stdout), new rpc.StreamMessageWriter(proc.stdin));
@@ -73,7 +83,14 @@ const configure = async (tree) => {
   const sc = await conn.sendRequest('selinux/specBuildConfig', { specPath: spec });
   const cfg = sc.configs && sc.configs.find(c => c.variant === variant);
   check(cfg && cfg.missing.length === 0 && cfg.makeArgs.includes(`NAME=${variant}`) && cfg.files['policy/modules.conf'], `spec variants: ${sc.configs ? sc.configs.map(c => c.variant).join(', ') : sc.error}`, cfg);
-  check(cfg && cfg.files['policy/modules.conf'].length === 2, 'modules.conf = base + contrib lists', cfg && cfg.files);
+  if (cfg && rhel10(cfg.files)) {
+    const mc = cfg.files['policy/modules.conf'][0];
+    check(cfg.files['policy/booleans.conf'][0] === `dist/${variant}/booleans.conf` && cfg.files['policy/users'][0] === `dist/${variant}/users`
+      && mc.from && /^dist\/\w+\/modules\.conf$/.test(mc.from) && mc.disable.some(l => /modules-dropped\.lst$/.test(l)),
+      `RHEL 10 layout: booleans/users from dist/${variant}/, modules.conf = ${mc.from} minus ${mc.disable && mc.disable.map(l => path.basename(l)).join(' + ')}`, cfg.files);
+  } else {
+    check(cfg && cfg.files['policy/modules.conf'].length === 2, 'modules.conf = base + contrib lists', cfg && cfg.files);
+  }
 
   // A missing config source is reported, not built.
   await configure({ makeArgs: cfg.makeArgs, files: { ...cfg.files, 'policy/users': [path.join(ws, 'no-such-users-file')] } });
@@ -85,7 +102,8 @@ const configure = async (tree) => {
   await configure({ makeArgs: cfg.makeArgs, files: cfg.files });
   for (let i = 0; i < 40 && !lastFlags; i++) await sleep(250);
   const flags = lastFlags;
-  check(flags && /-D distro_redhat/.test(flags) && /-D enable_mcs/.test(flags), `m4 flags from the Makefile: ${flags}`);
+  const policyType = (cfg.makeArgs.find(x => /^TYPE=/.test(x)) || 'TYPE=mcs').slice(5);
+  check(flags && /-D distro_redhat/.test(flags) && new RegExp(`-D enable_${policyType}(\\s|$)`).test(flags), `m4 flags from the Makefile (TYPE=${policyType}): ${flags}`);
 
   // ifdef(`distro_redhat', `typealias spamc_t alias pyzor_t ...', `type pyzor_t; ...') in pyzor.te
   const pz = fs.readFileSync(PYZOR, 'utf8').split('\n');
@@ -112,13 +130,14 @@ const configure = async (tree) => {
   r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
   check(r.ok && r.validated, `full ${variant} build + validate (${(r.ms / 1000).toFixed(1)} s, ${r.packages} packages)`, { ...r, log: r.log && r.log.slice(-1500) });
   const work = r.outputDir;
-  const specMods = cfg.files['policy/modules.conf'].map(f => fs.readFileSync(f, 'utf8')).join('\n');
+  const specMods = overlayText(cfg.files['policy/modules.conf']);
   const enabled = new Set([...specMods.matchAll(/^(\w[\w-]*)\s*=\s*(module|base)\s*$/gm)].filter(m => m[2] === 'module').map(m => m[1]));
   const built = new Set(fs.readdirSync(work).filter(n => n.endsWith('.pp') && n !== 'base.pp').map(n => n.slice(0, -3)));
   const extra = [...built].filter(m => !enabled.has(m)), absent = [...enabled].filter(m => !built.has(m) && fs.existsSync(path.join(ws, 'policy/modules')));
   check(extra.length === 0, `no module packages beyond the spec's modules.conf (${built.size} built)`, extra.slice(0, 10));
   check(absent.length < 5, `spec modules that were built: ${enabled.size - absent.length}/${enabled.size}`, absent.slice(0, 10));
-  check(fs.readFileSync(path.join(work, 'policy/booleans.conf'), 'utf8') === fs.readFileSync(cfg.files['policy/booleans.conf'][0], 'utf8'), 'scratch copy has the spec\'s booleans.conf');
+  check(fs.readFileSync(path.join(work, 'policy/booleans.conf'), 'utf8') === overlayText(cfg.files['policy/booleans.conf']), 'scratch copy has the spec\'s booleans.conf');
+  check(fs.readFileSync(path.join(work, 'policy/modules.conf'), 'utf8') === specMods, `scratch copy has the spec's modules.conf (${[...specMods.matchAll(/= off\s*$/gm)].length} modules off)`);
 
   // Incremental: nothing changed -> nothing rewritten (overlays included).
   await edit(ORIG + '\n');
@@ -140,7 +159,7 @@ const configure = async (tree) => {
   const m = await conn.sendRequest('selinux/policyModel');
   check(!m.unavailable && m.types.length > 1000, `policy model (${m.types && m.types.length} types)`, m.unavailable);
   if (!m.unavailable) {
-    const conf = new Map([...fs.readFileSync(cfg.files['policy/booleans.conf'][0], 'utf8').matchAll(/^\s*(\w+)\s*=\s*(\w+)/gm)].map(x => [x[1], /^(true|1|on)$/i.test(x[2])]));
+    const conf = new Map([...overlayText(cfg.files['policy/booleans.conf']).matchAll(/^\s*(\w+)\s*=\s*(\w+)/gm)].map(x => [x[1], /^(true|1|on)$/i.test(x[2])]));
     const mismatched = m.bools.filter(b => conf.has(b.name) && conf.get(b.name) !== b.state).map(b => b.name);
     check(conf.size > 0 && mismatched.length === 0, `boolean defaults follow booleans-${variant}.conf (${[...conf.keys()].filter(k => m.bools.some(b => b.name === k)).length} checked)`, mismatched.slice(0, 10));
     // Rule queries at RHEL scale: indexed once per build, then fast.
@@ -162,11 +181,17 @@ const configure = async (tree) => {
       const ci = await conn.sendRequest('selinux/compareInstalled', { name: variant });
       const hostOnlyRules = (ci.rules || []).filter(r => r.delFrom && r.delFrom.noSource);
       const traced = (ci.rules || []).filter(r => r.addFrom && r.addFrom.origins.length);
-      check(!ci.unavailable && ci.installed.policy === host.policy && ci.ruleCount < 50000,
+      // Only a build of the host's own policy release is expected to be close to it.
+      const specVer = (/^Version:\s*(\S+)/m.exec(fs.readFileSync(spec, 'utf8')) || [])[1];
+      let hostVer = null;
+      try { hostVer = cp.execFileSync('rpm', ['-q', '--qf', '%{VERSION}', `selinux-policy-${variant}`]).toString().trim(); } catch { /* not an rpm host */ }
+      const sameRelease = !!specVer && specVer === hostVer;
+      check(!ci.unavailable && ci.installed.policy === host.policy && (!sameRelease || ci.ruleCount < 50000),
         `vs installed ${variant}: ${ci.ruleCount} rule differences (legacy vs CIL builds of the same sources differ by ~1.3M), types +${ci.types && ci.types.added.length} −${ci.types && ci.types.removed.length}; CIL build ${ci.cil && (ci.cil.ms / 1000).toFixed(1)} s, compare ${ci.ms && (ci.ms.total / 1000).toFixed(1)} s`, ci.unavailable);
       check(!ci.unavailable && hostOnlyRules.length > 0 && (ci.rules.filter(r => r.add.length).length === 0 || traced.length > 0),
         `host-only rules marked as untraceable (${hostOnlyRules.length}); rules only in the build traced to source (${traced.length})`);
-      check(!ci.unavailable && (ci.types.removed.some(t => /^container_|^cockpit_/.test(t)) || ci.types.removed.length === 0),
+      if (!sameRelease) console.log(`     (the host runs selinux-policy ${hostVer}, the tree is ${specVer}: differences include the release change)`);
+      check(!ci.unavailable && (!sameRelease || ci.types.removed.some(t => /^container_|^cockpit_/.test(t)) || ci.types.removed.length === 0),
         `types only on the host include separately packaged modules: ${ci.types && ci.types.removed.slice(0, 5).join(', ')}`);
       // The Changes view in "installed" mode (stub vscode); the CIL build is cached, so this is quick.
       const Module = require('module');

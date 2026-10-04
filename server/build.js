@@ -492,6 +492,46 @@ function treeOption(root, makeArgs, name) {
  * APPS_MODS an RPM spec passes); `targets` default to a modular build plus
  * link validation, or `policy` for MONOLITHIC=y trees.
  */
+/**
+ * modules.conf with the listed modules turned off, base modules excepted:
+ * what the RHEL 10 spec's process-modules-filtered.py does in "disabled"
+ * mode (its comment/blank lines and line order are kept).
+ */
+function disableModules(text, names) {
+  return text.split('\n').map((line) => {
+    if (!line || line[0] === '#') return line;
+    const m = /^(\s*)([\w-]+)(\s*=\s*)(\w+)\s*$/.exec(line);
+    if (!m || m[4] === 'base' || !names.has(m[2])) return line;
+    return `${m[1]}${m[2]} = off`;
+  }).join('\n');
+}
+
+/** Module names in a list file (one per line, '#' comments), as the spec's .lst files have them. */
+const listNames = (text) => new Set(String(text).split('\n').map(l => l.trim()).filter(l => l && l[0] !== '#'));
+
+/**
+ * The text of one selinux.build.tree.files source: a file, or
+ * { from, disable: [list files] } (modules.conf with the modules named in the
+ * lists turned off). `read(p)` returns the file's contents or null.
+ * Returns { text } or { missing: path }.
+ */
+function overlaySource(src, read) {
+  if (typeof src === 'string') {
+    const t = read(src);
+    return t == null ? { missing: src } : { text: t };
+  }
+  if (!src || typeof src.from !== 'string') return { missing: JSON.stringify(src) };
+  const t = read(src.from);
+  if (t == null) return { missing: src.from };
+  const names = new Set();
+  for (const l of [].concat(src.disable || [])) {
+    const lt = read(l);
+    if (lt == null) return { missing: l };
+    for (const n of listNames(lt)) names.add(n);
+  }
+  return { text: Buffer.from(disableModules(String(t), names)) };
+}
+
 async function buildTree(root, readText, { makeArgs = [], targets, files = {}, jobs = os.cpus().length, timeoutMs = 600000, sync = true, variant = '' } = {}) {
   const t0 = Date.now();
   // `variant` builds the same tree in a separate scratch copy (e.g. a module preview).
@@ -502,7 +542,10 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
   const overlays = new Map(), missing = [];
   for (const [rel, srcs] of Object.entries(files || {})) {
     const parts = [];
-    for (const s of [].concat(srcs)) { try { parts.push(fs.readFileSync(s)); } catch { missing.push(s); } }
+    for (const s of [].concat(srcs)) {
+      const r = overlaySource(s, (p) => { try { return fs.readFileSync(p); } catch { return null; } });
+      if (r.missing) missing.push(r.missing); else parts.push(Buffer.from(r.text));
+    }
     overlays.set(rel.replace(/\\/g, '/').replace(/^\/+/, ''), Buffer.concat(parts));
   }
   if (missing.length) {
@@ -712,4 +755,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

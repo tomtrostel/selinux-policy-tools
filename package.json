@@ -425,14 +425,58 @@
                 "type": "string"
               },
               {
+                "type": "object",
+                "required": [
+                  "from"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "modules.conf to start from (relative to the tree root, or absolute)"
+                  },
+                  "disable": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "List files (one module per line, # comments); every non-base module named in them is turned off, as the RHEL 10 spec's process-modules-filtered.py does"
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "from"
+                      ],
+                      "properties": {
+                        "from": {
+                          "type": "string",
+                          "description": "modules.conf to start from (relative to the tree root, or absolute)"
+                        },
+                        "disable": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "List files (one module per line, # comments); every non-base module named in them is turned off, as the RHEL 10 spec's process-modules-filtered.py does"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
                 }
               }
             ]
           },
-          "markdownDescription": "Files to put into the scratch copy of a full tree before building, as `\"tree/relative/path\": \"source\"` or `[\"source1\", \"source2\"]` (concatenated). Your tree is not modified. Used for config a policy RPM copies in at build time, e.g. RHEL's `policy/modules.conf`, `policy/booleans.conf` and `policy/users`. `~/…` is your home directory; relative sources are under the tree root. *SELinux: Configure Build from Spec File…* fills this in."
+          "markdownDescription": "Files to put into the scratch copy of a full tree before building, as `\"tree/relative/path\": \"source\"` or `[\"source1\", \"source2\"]` (concatenated). A source can also be `{ \"from\": \"dist/targeted/modules.conf\", \"disable\": [\"…/modules-dropped.lst\"] }`: that file with every non-base module named in the lists turned off (how the RHEL 10 spec builds modules.conf). Your tree is not modified. Used for config a policy RPM puts in place at build time, e.g. RHEL's `policy/modules.conf`, `policy/booleans.conf` and `policy/users`. `~/…` is your home directory; relative sources are under the tree root. *SELinux: Configure Build from Spec File…* fills this in (RHEL 9 and RHEL 10 spec layouts)."
         },
         "selinux.ifdef.evaluate": {
           "type": "boolean",

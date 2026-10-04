@@ -147,9 +147,10 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    (`updateModuleKinds()` in server). Devel mode has no decls, so kinds
    come from `idx.requiredKind()` (interfaces' requires). Quick fix
    `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
+   RHEL 10 (done, after 0.4.0): see Known limitations.
    Remaining: link-error placement,
    generated corenetwork.te error mapping, several trees per workspace,
-   test minimum/mls/automotive variants, RHEL 10, monolithic builds.
+   test automotive and RHEL 9 minimum/mls variants, monolithic builds.
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
@@ -370,7 +371,22 @@ Package: `npx @vscode/vsce package`.
   `%prep` does, i.e. with container-selinux.tgz extracted into contrib). Survey
   gives 54 missing-require + 1 unknown-class (container.te `user_namespace`,
   absent from el9 flask): all true positives, mostly fixed upstream since.
-  Test host: `ssh melody` (~/sepol-test). RHEL 10 not yet verified.
+  Test host: `ssh melody` (~/sepol-test).
+- RHEL 10 verified (Rocky 10.2 SRPM selinux-policy-42.1.18-4.el10_2.3,
+  unpacked into ~/sepol-test/srpm10, tree in ~/sepol-test/rhel10 with
+  container-selinux.tgz in contrib; the spec has no patches). RHEL 9's
+  checkpolicy 3.6 builds it (policy.33; RHEL 10 ships policy.35, no
+  xperm/newer statements in the sources). RHEL 10 spec layout: makeCmds
+  copies `./dist/%1/booleans.conf` and `./dist/%1/users`; makeModulesConf
+  runs process-modules-filtered.py (Source13) with modules-dropped.lst on
+  `./dist/%1/modules.conf` ("disabled": non-base listed modules → off);
+  minimum/automotive filter again with modules-extra.lst. specconfig.js
+  emits tree-relative `dist/...` paths and `{ from, disable: [lists] }`
+  sources; build.js `overlaySource()` / `disableModules()` apply them
+  (byte-identical to the script's output); server `resolveOverlay()`.
+  build-rhel-e2e.js takes `~/sepol-test/rhel10
+  ~/sepol-test/srpm10/selinux-policy.spec <variant>`; targeted, mls and
+  minimum pass. Survey: 60 missing-require (all real), 0 te-require.
 - CLIP for RHEL 9: github.com/sealingtech/CLIP branch `RHEL9`, cloned on
   melody at ~/sepol-test/clip. Its policy is upstream refpolicy 2.20240226
   (not RHEL's fork) at `packages/selinux-policy/selinux-policy/`; the
@@ -389,8 +405,8 @@ Package: `npx @vscode/vsce package`.
   users-NAME, from the spec's directory). Overlays are applied in syncTree
   as part of the wanted set, so unchanged overlays aren't rewritten. In
   RHEL, container_t exists via virt.te (aliases); use an off module such
-  as timidity for link-error tests. Untested: minimum/mls/automotive,
-  RHEL 10. make validate uses legacy link/expand while installed policies
+  as timidity for link-error tests. Untested: automotive, RHEL 9
+  minimum/mls (RHEL 10 targeted/mls/minimum verified). make validate uses legacy link/expand while installed policies
   are CIL-built, so sediff against /etc/selinux/*/policy is dominated by
   attribute representation; a faithful build would go through
   `make load SEMODULE="semodule -p <scratch root> -X 100"` (works unprivileged).

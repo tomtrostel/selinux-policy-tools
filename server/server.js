@@ -339,6 +339,13 @@ async function moduleBuild(te, pkg) {
   return res;
 }
 
+/** A selinux.build.tree.files source with its paths resolved: a path, or { from, disable: [lists] }. */
+function resolveOverlay(root, src) {
+  if (typeof src === 'string') return resolvePath(root, src);
+  if (src && typeof src.from === 'string') return { from: resolvePath(root, src.from), disable: [].concat(src.disable || []).map(l => resolvePath(root, l)) };
+  return src;
+}
+
 /** A configured path: `~/x` → home, relative → under the tree root, absolute as is. */
 function resolvePath(root, dir) {
   if (dir === '~' || dir.startsWith('~/')) return path.join(require('os').homedir(), dir.slice(1));
@@ -348,7 +355,7 @@ function resolvePath(root, dir) {
 async function treeBuild(root, st) {
   const name = path.basename(root);
   const files = {};
-  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolvePath(root, s));
+  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
   const opts = { makeArgs: settings.build.tree.makeArgs || [], files };
   const readText = (p) => { const d = documents.get(toUri(p)); if (d) return d.getText(); try { return fs.readFileSync(p); } catch { return null; } };
   connection.sendNotification('selinux/build', { state: 'start', module: name });
@@ -957,7 +964,7 @@ connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
 
 // Build settings derived from a Fedora/RHEL selinux-policy.spec, one entry per policy variant.
 connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {
-  try { return { configs: require('./specconfig').specBuildConfigs(specPath) }; } catch (e) { return { error: e.message }; }
+  try { return { configs: require('./specconfig').specBuildConfigs(specPath, treeRoot) }; } catch (e) { return { error: e.message }; }
 });
 
 /* ---------------- what changed since HEAD ---------------- */
@@ -977,7 +984,7 @@ let explainIdle = null;
 
 function treeBuildOptions(root) {
   const files = {};
-  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolvePath(root, s));
+  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
   const makeArgs = settings.build.tree.makeArgs || [];
   const custom = (settings.build.tree.targets || []).length > 0;
   const p1 = custom ? settings.build.tree.targets : phase1Targets(root, makeArgs);
@@ -1203,10 +1210,15 @@ const MODULES_CONF = 'policy/modules.conf';
 function effectiveModulesConf(root) {
   const overlay = settings.build.tree.files && settings.build.tree.files[MODULES_CONF];
   if (overlay) {
-    const parts = [].concat(overlay).map(s => resolvePath(root, s));
-    const texts = parts.map(p => readSource(p));
-    if (texts.some(t => t == null)) return null;
-    return { text: texts.join(''), parts: parts.map((p, i) => ({ path: p, text: texts[i] })) };
+    // A filtered source ({ from, disable }) is edited in its `from` file: the filter keeps line numbers.
+    const srcs = [].concat(overlay).map(s => resolveOverlay(root, s));
+    const parts = [];
+    for (const src of srcs) {
+      const r = build.overlaySource(src, readSource);
+      if (r.missing) return null;
+      parts.push({ path: typeof src === 'string' ? src : src.from, text: String(r.text) });
+    }
+    return { text: parts.map(x => x.text).join(''), parts };
   }
   const p = path.join(root, MODULES_CONF);
   const t = readSource(p);

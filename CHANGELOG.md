@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* **RHEL 10**: *Configure Build from Spec File…* understands the RHEL 10
+  spec layout (`booleans.conf`, `users` and `modules.conf` from the tree's
+  `dist/`, `modules.conf` filtered with the spec's module lists). A
+  `selinux.build.tree.files` source can now be `{ "from": …, "disable":
+  [list files] }` for that. Verified with the RHEL 10.2 source (targeted,
+  mls and minimum builds), which also builds with RHEL 9's tools.
 * **Missing requires in `.te` files**: in loadable modules (standalone
   modules, or `module` in `modules.conf` / `APPS_MODS`), a type or
   attribute from another module used without a require in its scope (the
