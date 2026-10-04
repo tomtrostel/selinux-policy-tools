@@ -18,16 +18,32 @@ It works at two levels:
 
 ## Requirements
 
-Navigation and source diagnostics work anywhere VS Code runs. Building needs a
-Linux host (RHEL, Rocky, Alma, Fedora) with:
+The `.vsix` is self-contained: the language server is plain JavaScript and
+runs on the Node.js that VS Code (or VS Code Server, for Remote-SSH)
+already bundles, so nothing needs compiling and no Node.js install is
+needed. Navigation and source diagnostics work anywhere VS Code runs.
+
+Building and the compiled-policy features run the real SELinux toolchain on
+a Linux host (RHEL, Rocky, Alma, Fedora). Install everything with:
 
 ```
-dnf install make m4 checkpolicy policycoreutils-devel selinux-policy-devel setools-console
+dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-policy-devel setools-console git-core
 ```
 
-`setools-console` brings `python3-setools`, which the Compiled Policy view
-uses. From Windows or macOS, use VS Code **Remote-SSH** to such a host: the
-extension runs on the remote side.
+| Feature | Needs (RHEL packages) |
+| --- | --- |
+| Navigation, completion, diagnostics | nothing |
+| Dimming of inactive build-flag `ifdef`s | `make` |
+| Standalone module builds | `make`, `m4`, `checkpolicy`, `selinux-policy-devel`, `gawk` |
+| Full source-tree builds | `make`, `m4`, `checkpolicy`, `policycoreutils`, `policycoreutils-devel`, `gawk`, `python3` |
+| Compiled Policy view, rules, Changes since HEAD | `python3-setools` (from `setools-console`) |
+| Changes since HEAD | also `git-core`, `tar` |
+
+`policycoreutils`, `gawk`, `python3` and `tar` are present on any normal
+RHEL system with SELinux. From Windows or macOS, use VS Code **Remote-SSH**
+to such a host: the extension runs on the remote side. Remote-SSH installs
+VS Code Server on the host the first time you connect, which needs internet
+access there (or an offline VS Code Server install).
 
 ## Install
 
@@ -53,8 +69,9 @@ The extension isn't on the Marketplace; it ships as a `.vsix` file on the
    module directory; see [Workspaces](#workspaces). The status bar shows
    "SELinux: N modules, N interfaces" once indexing is done, and the shield
    icon in the activity bar opens the SELinux views.
-5. **For building** (optional), install the toolchain on the Linux host:
-   `dnf install make m4 checkpolicy policycoreutils-devel selinux-policy-devel setools-console`,
+5. **For building** (optional), install the toolchain on the Linux host
+   (see [Requirements](#requirements) for what each feature needs):
+   `dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-policy-devel setools-console git-core`,
    and trust the workspace when VS Code asks; builds are off in Restricted
    Mode. For CLIP- or RHEL-style trees, set the build arguments as described
    under [Settings](#settings) or run *SELinux: Configure Build from Spec
