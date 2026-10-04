@@ -6,10 +6,10 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.4.0 released** (GitHub release `v0.4.0`;
+Status as of 2026-10-04: **v0.5.0 released** (GitHub release `v0.5.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
-checks.
+checks; 0.5.0 adds the .te missing-require check and RHEL 10 support.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
 reported. Next: items under 5 (hardening), or new ideas from the user.
@@ -132,7 +132,7 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
      ChangesView `mode: 'installed'` (no auto-refresh). RHEL vs melody's
      installed targeted: 5,132 diffs (container-selinux, cockpit, sandbox,
      a local boolean) vs ~1.3M legacy-vs-CIL noise.
-5. **Hardening**: .te missing-require check (done, after 0.4.0:
+5. **Hardening**: .te missing-require check (done, 0.5.0:
    diagnostics.js `checkTeRequires`, code `missing-te-require`; scopes =
    top level / innermost optional_policy; provided = file-level require
    entries (parser now records their l/c) + `callRequires()` of every
@@ -147,7 +147,7 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    (`updateModuleKinds()` in server). Devel mode has no decls, so kinds
    come from `idx.requiredKind()` (interfaces' requires). Quick fix
    `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
-   RHEL 10 (done, after 0.4.0): see Known limitations.
+   RHEL 10 (done, 0.5.0): see Known limitations.
    Remaining: link-error placement,
    generated corenetwork.te error mapping, several trees per workspace,
    test automotive and RHEL 9 minimum/mls variants, monolithic builds.

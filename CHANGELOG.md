@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.5.0 (2026-10-04)
+
+RHEL 10 support and a check for missing requires in `.te` files.
+
+**New**
+
 * **RHEL 10**: *Configure Build from Spec File…* understands the RHEL 10
   spec layout (`booleans.conf`, `users` and `modules.conf` from the tree's
   `dist/`, `modules.conf` filtered with the spec's module lists). A
@@ -14,7 +20,9 @@
   top level or the enclosing `optional_policy` block) is a warning, with
   a quick fix that adds it to a require block in that scope. Requires
   that interfaces called in the scope bring in count, as they do for
-  checkmodule. No findings on the Fedora, RHEL 9 and CLIP trees.
+  checkmodule. No findings on the Fedora, RHEL 9, RHEL 10 and CLIP trees.
+* `test/diag-survey.js` takes `--modules <modules.conf>` (and `--loadable`)
+  to include the `.te` require check.
 
 ## 0.4.0 (2026-10-04)
 
