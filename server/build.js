@@ -240,6 +240,29 @@ function syncTree(root, work, readText, overlays = new Map()) {
   return written;
 }
 
+/**
+ * refpolicy's Makefile doesn't notice when the set of enabled modules changes
+ * (modules.conf, APPS_MODS, NAME/TYPE): tmp/all_mods.fc keeps contexts of
+ * modules no longer built (validate then fails on "type X is not defined"),
+ * and packages of dropped modules stay behind. When the set changes, remove
+ * the outputs that depend on it; per-module compiles (tmp/<mod>.mod) stay.
+ */
+function forgetStaleModuleSet(work, makeArgs) {
+  let conf = '';
+  try { conf = fs.readFileSync(path.join(work, 'policy', 'modules.conf'), 'utf8'); } catch { /* none */ }
+  const key = crypto.createHash('sha1').update(conf).update(JSON.stringify(makeArgs.filter(a => /^(APPS_MODS|NAME|TYPE|MONOLITHIC)=/.test(a)))).digest('hex');
+  const stamp = path.join(work, 'tmp', '.module-set');
+  let prev = null;
+  try { prev = fs.readFileSync(stamp, 'utf8'); } catch { /* first build */ }
+  if (prev === key) return;
+  if (prev !== null) {
+    for (const n of fs.readdirSync(work)) if (/\.pp$/.test(n) || /^base\.(conf|fc)$/.test(n) || /^policy\.(conf|\d+)$/.test(n)) fs.rmSync(path.join(work, n), { force: true });
+    for (const n of ['all_mods.fc', 'test.lnk', 'policy.bin', 'base.mod', 'base.mod.fc']) fs.rmSync(path.join(work, 'tmp', n), { force: true });
+  }
+  fs.mkdirSync(path.join(work, 'tmp'), { recursive: true });
+  fs.writeFileSync(stamp, key);
+}
+
 function treeOption(root, makeArgs, name) {
   for (const a of makeArgs) { const m = new RegExp(`^${name}=(.*)$`).exec(a); if (m) return m[1].trim(); }
   try {
@@ -254,9 +277,10 @@ function treeOption(root, makeArgs, name) {
  * APPS_MODS an RPM spec passes); `targets` default to a modular build plus
  * link validation, or `policy` for MONOLITHIC=y trees.
  */
-async function buildTree(root, readText, { makeArgs = [], targets, files = {}, jobs = os.cpus().length, timeoutMs = 600000, sync = true } = {}) {
+async function buildTree(root, readText, { makeArgs = [], targets, files = {}, jobs = os.cpus().length, timeoutMs = 600000, sync = true, variant = '' } = {}) {
   const t0 = Date.now();
-  const work = scratchDir('tree', root);
+  // `variant` builds the same tree in a separate scratch copy (e.g. a module preview).
+  const work = scratchDir('tree', variant ? `${root}#${variant}` : root);
   fs.mkdirSync(work, { recursive: true });
   // selinux.build.tree.files: tree-relative path -> source file(s), concatenated,
   // replacing (or adding) that file in the scratch copy only.
@@ -275,6 +299,7 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
       resolveFile: () => null, monolithic: false, policyBin: null, packages: 0 };
   }
   const synced = sync ? syncTree(root, work, readText, overlays) : 0;
+  if (sync) forgetStaleModuleSet(work, makeArgs);
   const monolithic = (treeOption(root, makeArgs, 'MONOLITHIC') || 'n').toLowerCase() === 'y';
   if (!targets || !targets.length) targets = monolithic ? ['policy'] : ['base.pp', 'modules', 'validate'];
   const result = await run([`-j${jobs}`, ...makeArgs, ...targets], work, timeoutMs);

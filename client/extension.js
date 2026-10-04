@@ -61,6 +61,8 @@ function activate(context) {
   context.subscriptions.push(compiledView);
   const changes = new ChangesView();
   context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxChanges', changes));
+  const preview = new ModulePreviewView();
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxModulePreview', preview));
 
   // Dim ifdef/ifndef branches the build flags turn off, like inactive #ifdef code.
   const inactiveDeco = vscode.window.createTextEditorDecorationType({ opacity: '0.45' });
@@ -197,6 +199,54 @@ function activate(context) {
       if (go) vscode.commands.executeCommand('selinux.buildModule');
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
+    vscode.commands.registerCommand('selinux.previewModule', async (arg) => {
+      const st = await client.sendRequest('selinux/moduleStates');
+      if (st.unavailable) { vscode.window.showWarningMessage(st.unavailable); return; }
+      // From the Policy Explorer (module node), a module name, or the active editor's module.
+      let name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : null;
+      const ed = vscode.window.activeTextEditor;
+      const edMod = ed && /\.(te|if|fc)$/.test(ed.document.fileName) ? path.basename(ed.document.fileName).replace(/\.(te|if|fc)$/, '') : null;
+      if (!name) {
+        const items = st.modules.map(m => ({ label: m.module, description: `${m.state}${m.apps ? ' (APPS_MODS)' : ''}`, m }));
+        if (edMod) items.sort((a, b) => (b.label === edMod) - (a.label === edMod));
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Module to preview turning off or on', matchOnDescription: true });
+        if (!pick) return;
+        name = pick.label;
+      }
+      const cur = st.modules.find(m => m.module === name);
+      if (!cur) { vscode.window.showWarningMessage(`${name} is not a module of this tree.`); return; }
+      const targets = ['off', 'module', 'base'].filter(t => t !== cur.state && !(cur.state === 'unlisted' && t === 'off'));
+      const to = targets.length === 1 ? targets[0] : (await vscode.window.showQuickPick(targets.map(t => ({ label: t, description: t === 'off' ? 'turn it off' : t === 'module' ? 'build it as a loadable module' : 'build it into base' })), { placeHolder: `${name} is ${cur.state}${cur.apps ? ' (forced on by APPS_MODS)' : ''}; preview it as…` }) || {}).label;
+      if (!to) return;
+      vscode.commands.executeCommand('selinuxModulePreview.focus');
+      const p = await vscode.window.withProgress({ location: { viewId: 'selinuxModulePreview' } }, () => preview.run(name, to));
+      if (p && p.unavailable) vscode.window.showWarningMessage(p.unavailable);
+    }),
+    vscode.commands.registerCommand('selinux.applyModulePreview', async () => {
+      const p = preview.preview;
+      if (!p || !p.apply) return;
+      const doc = await vscode.workspace.openTextDocument(p.apply.path);
+      const edit = new vscode.WorkspaceEdit();
+      if (p.apply.line != null) {
+        const line = doc.lineAt(p.apply.line);
+        edit.replace(doc.uri, line.range, line.text.replace(/=\s*\w+\s*$/, `= ${p.to}`));
+      } else {
+        edit.insert(doc.uri, doc.lineAt(doc.lineCount - 1).range.end, `${doc.getText().endsWith('\n') ? '' : '\n'}${p.module} = ${p.to}\n`);
+      }
+      await vscode.workspace.applyEdit(edit);
+      const shown = await vscode.window.showTextDocument(doc);
+      if (p.apply.line != null) shown.revealRange(doc.lineAt(p.apply.line).range, vscode.TextEditorRevealType.InCenter);
+      if (p.appsMods && p.to === 'off') {
+        const go = await vscode.window.showInformationMessage(`${p.module} is also forced on by APPS_MODS. Remove it from selinux.build.tree.makeArgs in the workspace settings? (For CLIP, also remove it from SEPARATE_PKGS in packages/selinux-policy/Makefile.)`, 'Remove from APPS_MODS');
+        if (go) {
+          const conf = vscode.workspace.getConfiguration('selinux');
+          const args = (conf.get('build.tree.makeArgs') || []).map(a => (/^APPS_MODS=/.test(a) ? a.replace(new RegExp(`(^APPS_MODS=|\\s)${p.module}(?=\\s|$)`), '$1').replace(/\s+/g, ' ').replace('= ', '=').trim() : a));
+          await conf.update('build.tree.makeArgs', args, vscode.ConfigurationTarget.Workspace);
+        }
+      } else {
+        vscode.window.showInformationMessage(`Set ${p.module} = ${p.to}. Review and save ${path.basename(p.apply.path)}; saving rebuilds.`);
+      }
+    }),
     vscode.commands.registerCommand('selinux.compareHead', async () => {
       vscode.commands.executeCommand('selinuxChanges.focus');
       const d = await vscode.window.withProgress({ location: { viewId: 'selinuxChanges' } }, () => changes.compare());
@@ -582,6 +632,13 @@ class ChangesView {
     if (!d) return [this.item('Compare the last build with HEAD', { icon: 'git-compare', command: { command: 'selinux.compareHead', title: 'Compare' }, tooltip: 'Build HEAD with the same settings and show what your changes add or remove in the compiled policy.' })];
     if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: 'selinux.compareHead', title: 'Compare again' } })];
     const out = [this.item(`vs HEAD ${d.head.short}`, { icon: 'git-commit', desc: d.head.subject, tooltip: `${d.head.sha}\n${d.head.subject}\n\nCurrent side: last build at ${new Date(d.builtAt).toLocaleTimeString()}. Compared in ${(d.ms.total / 1000).toFixed(1)} s.` })];
+    const groups = this.diffGroups(d);
+    if (!groups.length) out.push(this.item('No effective policy change: the build compiles to the same policy as HEAD.', { icon: 'pass' }));
+    return out.concat(groups);
+  }
+
+  /** Tree groups for a policy_diff result (rules by source, membership, elements). */
+  diffGroups(d) {
     const groups = [];
     if (d.ruleCount) {
       const bySource = new Map();
@@ -611,8 +668,71 @@ class ChangesView {
     for (const r of d.roleTypes) elems.push(this.item(`role ${r.role}`, { icon: 'diff-modified', desc: [...r.added.map(t => `+${t}`), ...r.removed.map(t => `−${t}`)].join(' ') }));
     for (const u of d.userRoles) elems.push(this.item(`user ${u.user}`, { icon: 'diff-modified', desc: [...u.added.map(t => `+${t}`), ...u.removed.map(t => `−${t}`)].join(' ') }));
     if (elems.length) groups.push(this.item('Types, roles, users, booleans', { icon: 'symbol-structure', desc: elems.length, expanded: true, kids: () => elems }));
-    if (!groups.length) out.push(this.item('No effective policy change: the build compiles to the same policy as HEAD.', { icon: 'pass' }));
-    return out.concat(groups);
+    return groups;
+  }
+}
+
+/* ---------------- Module Preview (what turning a module off/on would do) ---------------- */
+
+class ModulePreviewView extends ChangesView {
+  constructor(request) {
+    super(request);
+    this.preview = null;
+    this.target = null; // { module, to }
+  }
+
+  async run(module, to) {
+    this.target = { module, to };
+    this.loading = true;
+    this._emitter.fire();
+    try { this.preview = await this.request('selinux/modulePreview', { module, to }); } finally { this.loading = false; }
+    this._emitter.fire();
+    return this.preview;
+  }
+
+  afterBuild() { /* a preview is a snapshot; re-run it explicitly */ }
+
+  async getChildren(n) {
+    if (n) return n.kids ? n.kids() : [];
+    if (this.loading) return [this.item(`Building with ${this.target.module} ${this.target.to === 'off' ? 'turned off' : 'turned on'}…`, { icon: 'sync~spin' })];
+    const p = this.preview;
+    if (!p) return [this.item('Preview turning a module off or on', { icon: 'package', command: { command: 'selinux.previewModule', title: 'Preview' }, tooltip: 'Build the policy with one module flipped in modules.conf and see what it would change, before editing anything.' })];
+    if (p.unavailable && !p.module) return [this.item(p.unavailable, { icon: 'info' })];
+    const verb = p.to === 'off' ? 'off' : `on (${p.to})`;
+    const out = [this.item(`${p.module}: ${p.from} → ${p.to}`, {
+      icon: p.to === 'off' ? 'circle-slash' : 'add', desc: p.ok ? 'links' : 'fails to link',
+      tooltip: `Preview of turning ${p.module} ${verb}${p.appsChanged ? ', also dropping it from APPS_MODS' : ''}. Nothing has been changed yet.${p.ms ? `\nBuilt and compared in ${(p.ms.total / 1000).toFixed(1)} s.` : ''}`,
+    })];
+    if (p.apply) {
+      out.push(this.item(`Apply: set ${p.module} = ${p.to} in ${vscode.workspace.asRelativePath(p.apply.path)}`, {
+        icon: 'check', desc: p.appsMods && p.to === 'off' ? 'also remove it from APPS_MODS' : '',
+        command: { command: 'selinux.applyModulePreview', title: 'Apply' },
+        tooltip: `Edits ${p.apply.path}${p.apply.line != null ? ` line ${p.apply.line + 1}` : ' (adds a line)'}; review and save it yourself.${p.appsMods && p.to === 'off' ? '\nThe module is also forced on by APPS_MODS in selinux.build.tree.makeArgs (and, for CLIP, SEPARATE_PKGS in packages/selinux-policy/Makefile).' : ''}`,
+      }));
+    }
+    if (!p.ok) {
+      out.push(this.item('Link errors', { icon: 'error', expanded: true, desc: (p.errors || []).length, kids: () => (p.errors || []).map(e => this.item(e.path ? `${vscode.workspace.asRelativePath(e.path)}:${e.l + 1}` : e.file || 'build', {
+        icon: 'error', desc: e.msg, tooltip: e.msg,
+        command: e.path ? { command: 'selinux.openLocation', title: 'Open', arguments: [e.path, e.l, 0] } : undefined })) }));
+    }
+    const blocks = p.optionalBlocks || [];
+    if (blocks.length) {
+      const label = p.to === 'off' ? 'optional_policy blocks that drop out' : 'optional_policy blocks that come alive';
+      const byMod = new Map();
+      for (const b of blocks) { if (!byMod.has(b.module)) byMod.set(b.module, []); byMod.get(b.module).push(b); }
+      out.push(this.item(label, { icon: 'symbol-namespace', desc: `${blocks.length} in ${byMod.size} modules`,
+        tooltip: p.to === 'off' ? 'm4 drops a whole optional_policy block when any of its requirements is missing: every statement in these blocks goes, not just the calls into this module.' : 'These blocks are skipped today because they need this module.',
+        kids: () => [...byMod.keys()].sort().map(m => this.item(m, { icon: 'package', desc: byMod.get(m).length,
+          kids: () => byMod.get(m).map(b => this.item(`${vscode.workspace.asRelativePath(b.path)}:${b.l + 1}`, {
+            icon: 'symbol-namespace', desc: `uses ${b.uses.join(', ')}${b.calls > b.uses.length ? ` · ${b.calls} calls in the block` : ''}`,
+            command: { command: 'selinux.openLocation', title: 'Open', arguments: [b.path, b.l, b.c] } })) })) }));
+    }
+    if (p.diff) {
+      const groups = this.diffGroups(p.diff);
+      if (!groups.length) out.push(this.item('No change to the compiled policy.', { icon: 'pass' }));
+      out.push(...groups);
+    }
+    return out;
   }
 }
 
@@ -688,4 +808,4 @@ class PolicyExplorer {
 
 function deactivate() { return client ? client.stop() : undefined; }
 
-module.exports = { activate, deactivate, CompiledPolicyView, ChangesView };
+module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView };

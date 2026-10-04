@@ -106,6 +106,10 @@
         {
           "id": "selinuxChanges",
           "name": "Changes since HEAD"
+        },
+        {
+          "id": "selinuxModulePreview",
+          "name": "Module Preview"
         }
       ]
     },
@@ -166,6 +170,15 @@
         "command": "selinux.compareHead",
         "title": "SELinux: Compare Compiled Policy with HEAD",
         "icon": "$(git-compare)"
+      },
+      {
+        "command": "selinux.previewModule",
+        "title": "SELinux: Preview Turning a Module Off/On…",
+        "icon": "$(package)"
+      },
+      {
+        "command": "selinux.applyModulePreview",
+        "title": "SELinux: Apply Module Preview to modules.conf"
       }
     ],
     "menus": {
@@ -193,6 +206,11 @@
         {
           "command": "selinux.compareHead",
           "when": "view == selinuxChanges",
+          "group": "navigation@1"
+        },
+        {
+          "command": "selinux.previewModule",
+          "when": "view == selinuxModulePreview",
           "group": "navigation@1"
         }
       ],
@@ -224,6 +242,10 @@
         {
           "command": "selinux.installModule",
           "when": "editorLangId =~ /selinux/"
+        },
+        {
+          "command": "selinux.applyModulePreview",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -231,6 +253,13 @@
           "command": "selinux.buildModule",
           "when": "resourceExtname =~ /^\\.(te|if|fc)$/",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "selinux.previewModule",
+          "when": "view == selinuxPolicyExplorer && viewItem == module",
+          "group": "navigation@1"
         }
       ]
     },
@@ -355,6 +384,7 @@
     "test:tree": "node test/build-tree-e2e.js",
     "test:rhel": "node test/build-rhel-e2e.js",
     "test:diff": "node test/diff-e2e.js",
+    "test:preview": "node test/preview-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },

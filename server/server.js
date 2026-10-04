@@ -347,8 +347,23 @@ function mapLinkDiagnostics(res) {
     if (!f) continue;
     d.path = f.path;
     const hit = f.refs && f.refs.get(d.token);
-    d.l = hit ? hit[0][0] : 0;
+    if (hit) { d.l = hit[0][0]; continue; }
+    // Usually the requirement comes from an interface the module calls:
+    // point at the first call whose interface (or one it calls) requires it.
+    const call = (f.calls || []).find(c => interfaceRequires(c.name, d.token, 3) && idx.isActive(f, c.l, c.c));
+    if (call) { d.l = call.l; d.token = call.name; d.msg += ` (required through ${call.name}())`; } else d.l = 0;
   }
+}
+
+/** Does interface `name` (or an interface it calls, up to `depth` levels) gen_require `token`? */
+function interfaceRequires(name, token, depth, seen = new Set()) {
+  if (depth < 0 || seen.has(name)) return false;
+  seen.add(name);
+  for (const d of idx.defs.get(name) || []) {
+    if (d.requires.some(r => r.name === token)) return true;
+    if (d.bodyCalls.some(bc => interfaceRequires(bc.name, token, depth - 1, seen))) return true;
+  }
+  return false;
 }
 
 function buildSummary(res) {
@@ -928,20 +943,36 @@ connection.onRequest('selinux/policyDiff', async () => {
     if (p.startsWith(treeRoot + path.sep)) { let disk = null; try { disk = fs.readFileSync(p, 'utf8'); } catch { /* new */ } if (disk !== d.getText()) changedB.add(p); }
   }
   const toHead = (p) => path.join(base.srcRoot, path.relative(treeRoot, p));
-  const changedA = new Set([...changedB].map(toHead));
-  const side = (res, attrs, gained, changedFiles) => ({ index: explain.byName(explain.indexBuild(build.treeOutputs(res), res.resolveFile)), attrs, gained, changedFiles });
-  const sideB = side(cur, diff.attrsB, new Map(diff.membership.map(m => [m.type, new Set(m.added)])), changedB);
-  const sideA = side(base.res, diff.attrsA, new Map(diff.membership.map(m => [m.type, new Set(m.removed)])), changedA);
   // HEAD-side origins point into the exported copy; also give the working-tree path.
   const fromHead = (o) => ({ ...o, head: true, real: path.join(treeRoot, path.relative(base.srcRoot, o.path)), because: o.because && o.because.map(fromHead) });
-  const headSide = (x) => ({ origins: x.origins.map(fromHead), more: x.more });
+  explainDiff(diff, { res: base.res, changed: new Set([...changedB].map(toHead)), map: fromHead }, { res: cur, changed: changedB });
+  return {
+    ...diff,
+    head: { sha: info.sha, short, subject: info.subject },
+    builtAt: fs.statSync(cur.policyBin).mtimeMs,
+    ms: { total: Date.now() - t0, diff: tDiff - t0 },
+  };
+});
+
+/**
+ * Trace a policy_diff.py result to source: added permissions through side
+ * B's build output, removed ones through side A's. `map` post-processes
+ * origins of a side (e.g. HEAD copies). Mutates `diff` (addFrom/delFrom,
+ * typeLocations) and drops the bulky attribute maps.
+ */
+function explainDiff(diff, a, b) {
+  const side = (s, attrs, gained) => ({ index: explain.byName(explain.indexBuild(build.treeOutputs(s.res), s.res.resolveFile)), attrs, gained, changedFiles: s.changed || null });
+  const sideA = side(a, diff.attrsA, new Map(diff.membership.map(m => [m.type, new Set(m.removed)])));
+  const sideB = side(b, diff.attrsB, new Map(diff.membership.map(m => [m.type, new Set(m.added)])));
+  const mapA = a.map || ((o) => o), mapB = b.map || ((o) => o);
+  const mapped = (x, f) => ({ origins: x.origins.map(f), more: x.more });
   for (const r of diff.rules) {
-    if (r.add.length) r.addFrom = explain.explainRule(r, r.add, sideB);
-    if (r.del.length) r.delFrom = headSide(explain.explainRule(r, r.del, sideA));
+    if (r.add.length) r.addFrom = mapped(explain.explainRule(r, r.add, sideB), mapB);
+    if (r.del.length) r.delFrom = mapped(explain.explainRule(r, r.del, sideA), mapA);
   }
   for (const m of diff.membership) {
-    m.addFrom = m.added.map(a => ({ attr: a, origins: explain.membershipOrigins(m.type, a, sideB) }));
-    m.delFrom = m.removed.map(a => ({ attr: a, origins: explain.membershipOrigins(m.type, a, sideA).map(fromHead) }));
+    m.addFrom = m.added.map(x => ({ attr: x, origins: explain.membershipOrigins(m.type, x, sideB).map(mapB) }));
+    m.delFrom = m.removed.map(x => ({ attr: x, origins: explain.membershipOrigins(m.type, x, sideA).map(mapA) }));
   }
   explain.releaseTexts();
   // The statement index is ~100 MB per side on a RHEL tree: keep it while
@@ -950,12 +981,149 @@ connection.onRequest('selinux/policyDiff', async () => {
   explainIdle = setTimeout(() => { explain.dropCache(); ruleIndex = { key: null, side: null }; }, 120000);
   diff.typeLocations = Object.fromEntries(diff.types.added.map(t => [t, sourceLocation(t, ['type'])]));
   delete diff.attrsA; delete diff.attrsB; delete diff.aliasesA; delete diff.aliasesB;
-  return {
-    ...diff,
-    head: { sha: info.sha, short, subject: info.subject },
-    builtAt: fs.statSync(cur.policyBin).mtimeMs,
-    ms: { total: Date.now() - t0, diff: tDiff - t0 },
-  };
+  return diff;
+}
+
+/* ---------------- module on/off preview ---------------- */
+
+/*
+ * "What happens if this module is turned off (or on)?" The tree is built in
+ * a separate scratch copy with the module's line in modules.conf flipped
+ * (and, if APPS_MODS forces it on, dropped from APPS_MODS), then compared
+ * with the current build like Changes since HEAD. optional_policy blocks
+ * that depend on the module are found statically: m4 drops a whole block
+ * when any of its requirements is missing, unrelated rules included.
+ */
+const MODULES_CONF = 'policy/modules.conf';
+
+/** The modules.conf the build uses: the spec overlay if configured, else the tree's (editor contents win). */
+function effectiveModulesConf(root) {
+  const overlay = settings.build.tree.files && settings.build.tree.files[MODULES_CONF];
+  if (overlay) {
+    const parts = [].concat(overlay).map(s => resolvePath(root, s));
+    const texts = parts.map(p => readSource(p));
+    if (texts.some(t => t == null)) return null;
+    return { text: texts.join(''), parts: parts.map((p, i) => ({ path: p, text: texts[i] })) };
+  }
+  const p = path.join(root, MODULES_CONF);
+  const t = readSource(p);
+  return t == null ? null : { text: t, parts: [{ path: p, text: t }] };
+}
+
+const confLineRe = (mod) => new RegExp(`^(\\s*${mod.replace(/[-.]/g, '\\$&')}\\s*=\\s*)(\\w+)\\s*$`, 'm');
+
+/** module -> 'base' | 'module' | 'off' (modules.conf), plus APPS_MODS (always built as modules). */
+function moduleStates(root) {
+  const conf = effectiveModulesConf(root);
+  const states = new Map();
+  if (conf) for (const m of conf.text.matchAll(/^\s*([\w-]+)\s*=\s*(\w+)\s*$/gm)) states.set(m[1], m[2]);
+  const apps = (settings.build.tree.makeArgs || []).map(a => /^APPS_MODS=(.*)$/.exec(a)).filter(Boolean).flatMap(m => m[1].split(/\s+/).filter(Boolean));
+  return { conf, states, apps: new Set(apps) };
+}
+
+/**
+ * optional_policy blocks in enabled modules (other than `mod`) that depend on
+ * `mod`: they call one of its interfaces, or name one of its types/attributes.
+ * The innermost block around each use is the one m4 drops.
+ */
+function dependentOptionalBlocks(mod, enabled) {
+  const modFiles = [...idx.files.values()].filter(f => f.module === mod && f.path.startsWith(treeRoot + path.sep));
+  const ifaces = new Set(), names = new Set();
+  for (const f of modFiles) {
+    for (const d of f.defs || []) if (/\.if$/.test(f.path)) ifaces.add(d.name);
+    for (const d of f.decls || []) if (/\.te(\.in)?$/.test(f.path) && (d.kind === 'type' || d.kind === 'attribute')) names.add(d.name);
+  }
+  // Interfaces generated by the module's templates count too.
+  for (const [n, list] of idx.defs) if (list.some(d => d.generated && modFiles.some(f => f.path === d.path))) ifaces.add(n);
+  const within = (b, l, c) => (l > b.l || (l === b.l && c > b.c)) && (l < b.endL || (l === b.endL && c < b.endC));
+  const out = [];
+  for (const f of idx.files.values()) {
+    if (!/\.te(\.in)?$/.test(f.path) || f.module === mod || !enabled.has(f.module) || !f.path.startsWith(treeRoot + path.sep)) continue;
+    const blocks = (f.calls || []).filter(c => c.name === 'optional_policy' && idx.isActive(f, c.l, c.c));
+    if (!blocks.length) continue;
+    const innermost = (l, c) => blocks.filter(b => within(b, l, c)).sort((x, y) => (y.l - x.l) || (y.c - x.c))[0];
+    const hits = new Map(); // block -> Set(reasons)
+    const hit = (b, why) => { if (!b) return; if (!hits.has(b)) hits.set(b, new Set()); hits.get(b).add(why); };
+    for (const c of f.calls || []) if (ifaces.has(c.name) && idx.isActive(f, c.l, c.c)) hit(innermost(c.l, c.c), `${c.name}()`);
+    for (const n of names) for (const [l, c] of (f.refs && f.refs.get(n)) || []) if (idx.isActive(f, l, c)) hit(innermost(l, c), n);
+    for (const [b, why] of hits) {
+      const inside = (f.calls || []).filter(c => c !== b && within(b, c.l, c.c) && c.name !== 'gen_require').length;
+      out.push({ path: f.path, module: f.module, l: b.l, c: b.c, endL: b.endL, uses: [...why], calls: inside });
+    }
+  }
+  return out.sort((x, y) => x.module.localeCompare(y.module) || x.l - y.l);
+}
+
+connection.onRequest('selinux/moduleStates', async () => {
+  await indexing;
+  if (!treeRoot) return { unavailable: 'Module previews need a full policy source tree.' };
+  const { conf, states, apps } = moduleStates(treeRoot);
+  if (!conf) return { unavailable: `No ${MODULES_CONF} (and no selinux.build.tree.files entry for it), so module states are unknown.` };
+  const mods = [...idx.files.values()].filter(f => /\.te(\.in)?$/.test(f.path) && f.path.startsWith(treeRoot + path.sep)).map(f => f.module);
+  return { modules: [...new Set(mods)].sort().map(m => ({ module: m, state: apps.has(m) ? 'module' : (states.get(m) || 'unlisted'), apps: apps.has(m), conf: states.get(m) || null })) };
+});
+
+connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
+  await indexing;
+  if (!treeRoot) return { unavailable: 'Module previews need a full policy source tree.' };
+  const why = buildUnavailable();
+  if (why) return { unavailable: why };
+  const t0 = Date.now();
+  const { conf, states, apps } = moduleStates(treeRoot);
+  if (!conf) return { unavailable: `No ${MODULES_CONF} (and no selinux.build.tree.files entry for it), so module states are unknown.` };
+  const inConf = states.get(mod) || null;
+  const from = apps.has(mod) ? 'module' : (inConf || 'off');
+  if (!to) to = from === 'off' ? 'module' : 'off';
+  if (to === from) return { unavailable: `${mod} is already ${from}.` };
+
+  // Current side: the last good build (build now if needed).
+  let cur = lastBuild.get(treeRoot);
+  if (!cur || !cur.ok || !cur.policyBin) { await runBuild(treeRoot, false, null); cur = lastBuild.get(treeRoot); }
+  if (!cur || !cur.ok || !cur.policyBin) return { unavailable: 'The working tree does not build; fix its errors (see Problems) and preview again.' };
+
+  // modules.conf with the module's line flipped (added if missing), in the preview's own scratch area.
+  const re = confLineRe(mod);
+  const newConf = re.test(conf.text) ? conf.text.replace(re, `$1${to}`) : `${conf.text.replace(/\n?$/, '\n')}${mod} = ${to}\n`;
+  const dir = build.scratchDir('preview', treeRoot);
+  fs.mkdirSync(dir, { recursive: true });
+  workDirs.add(dir);
+  const confFile = path.join(dir, 'modules.conf');
+  fs.writeFileSync(confFile, newConf);
+  const opts = treeBuildOptions(treeRoot);
+  opts.files[MODULES_CONF] = [confFile];
+  let appsChanged = false;
+  if (apps.has(mod) && to === 'off') {
+    opts.makeArgs = opts.makeArgs.map(a => (/^APPS_MODS=/.test(a) ? `APPS_MODS=${[...apps].filter(m => m !== mod).join(' ')}` : a));
+    appsChanged = true;
+  }
+  connection.sendNotification('selinux/build', { state: 'preview', module: mod, to });
+  const res = await build.buildTree(treeRoot, (p) => { const t = readSource(p); return t == null ? null : t; }, { ...opts, variant: 'preview' });
+  workDirs.add(res.workDir);
+  mapLinkDiagnostics(res);
+
+  // Where the user would make the change.
+  const lineRe = new RegExp(re.source); // same pattern, one line at a time
+  let apply = { path: conf.parts[conf.parts.length - 1].path, line: null, to };
+  for (const p of conf.parts) {
+    const i = p.text.split('\n').findIndex(l => lineRe.test(l));
+    if (i >= 0) { apply = { path: p.path, line: i, to }; break; }
+  }
+
+  // Blocks that depend on the module: they drop out (off) or come alive (on).
+  const enabledNow = new Set([...states].filter(([, s]) => s === 'base' || s === 'module').map(([m]) => m).concat([...apps]));
+  const blocks = dependentOptionalBlocks(mod, enabledNow);
+
+  const result = { module: mod, from, to, conf: inConf, appsMods: apps.has(mod), appsChanged, apply, optionalBlocks: blocks, ok: res.ok };
+  if (!res.ok) {
+    result.errors = res.diagnostics.filter(d => d.severity === 'error').map(d => ({ path: d.path, l: d.l, msg: d.msg, tool: d.tool, file: d.file }));
+    result.log = res.log.split('\n').slice(-40).join('\n');
+    result.ms = { total: Date.now() - t0 };
+    return result;
+  }
+  let diff;
+  try { diff = await runPython('policy_diff.py', [cur.policyBin, res.policyBin]); } catch (e) { return { ...result, unavailable: `Comparing the policies failed: ${e.message}` }; }
+  explainDiff(diff, { res: cur }, { res });
+  return { ...result, diff, ms: { total: Date.now() - t0 } };
 });
 
 /* ---------------- compiled policy model (setools export of the last build) ---------------- */

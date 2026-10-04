@@ -7,7 +7,8 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 ## Goals and roadmap
 
 Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
-tag on commit 3605cef). Steps 1 and 2 are done; step 3 is next.
+tag on commit 3605cef). Steps 1 and 2 are done; step 3 in progress (3.1
+done after the release, not yet in a release; next is 3.2).
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -17,19 +18,25 @@ tag on commit 3605cef). Steps 1 and 2 are done; step 3 is next.
    settings), compiler/link diagnostics, "Compiles to" hover, expanded
    view, Compiled Policy view (elements + rules per type, traced to
    source), "Changes since HEAD" (own setools diff + source tracing).
-3. **Lockdown workflows** (next). Planned order:
-   1. **Module on/off preview** (start here): pick a module, preview the
-      effect of flipping it in modules.conf before editing: optional_policy
-      blocks elsewhere that drop out, types/rules/transitions that
-      disappear, link failures. Plan: reuse the Changes machinery: build a
-      second scratch tree with a `selinux.build.tree.files`-style overlay of
-      the edited modules.conf (or an APPS_MODS change), diff its policy.bin
-      against the current build with policy_diff.py, trace with explain.js;
-      find the affected optional_policy blocks statically from the parser
-      (calls inside optional_policy to interfaces of the flipped module).
-      UI: command/context menu on a module in Policy Explorer + a results
-      view like Changes since HEAD.
-   2. **Domain-transition graph**: webview graph from the policy model's
+3. **Lockdown workflows** (in progress). Planned order:
+   1. **Module on/off preview** (done): request `selinux/modulePreview`
+      {module, to}. Flips the module's line in the effective modules.conf
+      (the spec overlay if `selinux.build.tree.files` has one, else the
+      tree's; editor contents win), drops it from APPS_MODS if forced on
+      there, builds with `buildTree(..., { variant: 'preview' })` (own
+      scratch copy `tree-<hash(root#preview)>`), then policy_diff.py
+      current vs preview and `explainDiff()` (shared with Changes since
+      HEAD). Dependent optional_policy blocks are found statically
+      (`dependentOptionalBlocks`: innermost active optional_policy around
+      calls to the module's interfaces, incl. template-generated ones, or
+      refs to its types/attributes, in enabled modules). Module Preview
+      view (ModulePreviewView extends ChangesView, reuses diffGroups);
+      Apply edits the conf line via WorkspaceEdit and offers to drop the
+      module from APPS_MODS in settings. Found + fixed on the way: refpolicy
+      doesn't rebuild set-dependent outputs when the module set changes
+      (`forgetStaleModuleSet` in build.js), and link errors now land on the
+      interface call that requires the missing type (`interfaceRequires`).
+   2. **Domain-transition graph** (next): webview graph from the policy model's
       transitions (already exported by policy_model.py), rooted at init_t,
       a login domain or any selected domain; nodes clickable to source.
    3. **Property checks**: saved assertions over the compiled policy (e.g.
@@ -209,6 +216,9 @@ is only visible to collaborators; making it public is the user's call.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
+- `test/preview-e2e.js` (`npm run test:preview`): module preview on a CLIP
+  copy: cron off / mta off (link error placement) / nscd on / ntp off
+  (APPS_MODS, after other previews), plus the view with a stub vscode.
 - `test/diff-e2e.js` (`npm run test:diff`): copies a tree (default CLIP)
   into a fresh git repo, edits logging.te in an unsaved buffer, checks the
   diff vs HEAD, its tracing, and the Changes view (stub vscode).

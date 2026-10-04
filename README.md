@@ -230,6 +230,35 @@ The first comparison builds `HEAD` too (CLIP: ~20 s for both builds; RHEL
 targeted about a minute); after that a comparison takes 1–2 s plus your
 build, and the view refreshes after each build.
 
+**Module Preview** (full trees)
+
+*SELinux: Preview Turning a Module Off/On…* (also on a module's right-click
+menu in the Policy Explorer) shows what flipping a module in `modules.conf`
+would do, before you edit anything. It builds the tree with that one
+change in a separate scratch copy (your normal build is untouched) and
+compares the result with your current build:
+
+* **Link errors** if other modules hard-depend on it, placed on the
+  interface call that brings in the requirement
+  (`postfix.te:313: mta_getattr_spool(postfix_master_t)`).
+* **`optional_policy` blocks that drop out** (or come alive, when turning a
+  module on): blocks in other enabled modules that call the module's
+  interfaces or name its types. m4 drops a whole block when any of its
+  requirements is missing, so every statement in it goes, not just the
+  calls into the module.
+* The resulting **rule, type, attribute, role and user changes**, traced to
+  source like Changes since HEAD (removed rules into the current sources,
+  e.g. a rule inside another module's optional block).
+* **Apply** edits the module's line in `modules.conf` (or in the spec's
+  `modules-*.conf` when the build uses those) for you to review and save.
+  A module that `APPS_MODS` forces on is dropped from `APPS_MODS` in the
+  preview, and Apply offers to remove it from `selinux.build.tree.makeArgs`.
+
+Example on CLIP: turning `cron` off still links, but 22 optional blocks in
+19 other modules drop out, along with 26 types and 1,353 rule changes;
+turning `mta` off fails to link because `postfix` needs `mail_spool_t`.
+A preview is a full build of the changed tree (CLIP ~10 s).
+
 ## Settings
 
 | Setting | Default | Purpose |
@@ -283,6 +312,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* Module Preview on CLIP: `cron` off (links; 22 dependent optional blocks;
+  removed rules traced into them), `mta` off (link error on the requiring
+  interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
+  from `APPS_MODS`), including several previews in a row.
 * Changes since HEAD on CLIP: an unsaved edit adding two interface calls
   and removing two permissions gives exactly the five changed rules and one
   attribute-membership change, each traced to the right line (removals to
@@ -333,7 +366,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   to a test system and install them there. *Install Module* covers
   standalone modules only.
 * Link errors from `semodule_link` carry no line number; the extension
-  places them on the first reference to the missing type in that module.
+  places them on the first reference to the missing type in that module,
+  or on the first interface call whose interface (up to three levels deep)
+  requires it. `semodule_link` stops at the first module that fails, so a
+  build shows one link error at a time.
+* Module Preview finds dependent `optional_policy` blocks statically (calls
+  to the module's interfaces, including template-generated ones, and its
+  type/attribute names); blocks that depend on the module only indirectly,
+  through another module's interface, show up in the rule changes but not
+  in the block list.
   Errors inside the generated `corenetwork.te` are shown without a source
   line.
 * Build results, the "Compiles to" hover and the expanded view describe the
@@ -372,6 +413,7 @@ npm run test:build     # standalone-module builds (Linux; skips elsewhere)
 npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; defaults to a CLIP RHEL 9 checkout)
 npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
 npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Linux; defaults to CLIP RHEL 9)
+npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```
