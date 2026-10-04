@@ -232,12 +232,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* Changes since HEAD on CLIP: an unsaved edit adding two interface calls
+  and removing two permissions gives exactly the five changed rules and one
+  attribute-membership change, each traced to the right line (removals to
+  the HEAD version); an edit granting nothing new reports no change.
 * Interactive use through VS Code Remote-SSH from Windows to Rocky 9:
   indexing, standalone-module builds, and on CLIP the full-tree build
   (compile and link errors), the Compiled Policy view (browsing, navigation,
-  find), the "Compiles to" hover and the expanded view; on the RHEL 9 tree,
-  configuring from the spec, the targeted build and its Compiled Policy view,
-  and dimming of inactive build-flag `ifdef` branches.
+  find), the "Compiles to" hover, the expanded view and Changes since HEAD;
+  on the RHEL 9 tree, configuring from the spec, the targeted build and its
+  Compiled Policy view, and dimming of inactive build-flag `ifdef` branches.
 
 ## Limitations
 

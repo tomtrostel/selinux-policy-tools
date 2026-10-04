@@ -212,7 +212,8 @@ Package: `npx @vscode/vsce package`.
   expanded view. All worked as designed; no UX issues reported. RHEL 9
   tree (Configure from Spec → targeted build → Compiled Policy view) used
   interactively too, after fixing the stale "build first" message; ifdef
-  dimming and flag hover confirmed in VS Code on the RHEL tree.
+  dimming and flag hover confirmed in VS Code on the RHEL tree; Changes
+  since HEAD confirmed in VS Code on the CLIP clone.
 - Compiled Policy view shows structure only; allow/dontaudit rules per
   domain with their source lines are next (explain.js already does the
   tracing). Changes view compares with HEAD only. Scratch dirs are keyed
