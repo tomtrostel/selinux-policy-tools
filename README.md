@@ -31,13 +31,37 @@ extension runs on the remote side.
 
 ## Install
 
-```
-code --install-extension selinux-policy-tools-0.2.0.vsix
-```
+The extension isn't on the Marketplace; it ships as a `.vsix` file on the
+[Releases page](https://github.com/tomtrostel/selinux-policy-tools/releases).
 
-For a Remote-SSH window, install it into the remote: in the Extensions view,
-"⋯" → *Install from VSIX…* and pick the file on the remote host, then reload
-the window.
+1. **Download** `selinux-policy-tools-<version>.vsix` from the latest
+   release. On a host with the GitHub CLI you can also run
+   `gh release download -R tomtrostel/selinux-policy-tools --pattern '*.vsix'`.
+2. **Install it into VS Code** (1.82 or newer):
+   * **Local window:** Extensions view → "⋯" menu → *Install from VSIX…* →
+     pick the file. Or from a terminal:
+     `code --install-extension selinux-policy-tools-<version>.vsix`
+   * **Remote-SSH window** (recommended, so builds run on a Linux host):
+     open the remote window first, then Extensions view → "⋯" →
+     *Install from VSIX…*. The dialog browses the remote host; use
+     *Show Local* to pick a file on your own machine instead. The extension
+     installs on the remote side automatically.
+3. **Reload** the window when VS Code asks (or run *Developer: Reload
+   Window*).
+4. **Open a policy folder**: a full source tree (the folder with
+   `Makefile`, `Rules.modular`, `build.conf` and `policy/`) or a standalone
+   module directory; see [Workspaces](#workspaces). The status bar shows
+   "SELinux: N modules, N interfaces" once indexing is done, and the shield
+   icon in the activity bar opens the SELinux views.
+5. **For building** (optional), install the toolchain on the Linux host:
+   `dnf install make m4 checkpolicy policycoreutils-devel selinux-policy-devel setools-console`,
+   and trust the workspace when VS Code asks; builds are off in Restricted
+   Mode. For CLIP- or RHEL-style trees, set the build arguments as described
+   under [Settings](#settings) or run *SELinux: Configure Build from Spec
+   File…*.
+
+**Updating:** install the newer `.vsix` the same way; it replaces the old
+version. **Removing:** Extensions view → SELinux Policy Tools → *Uninstall*.
 
 ## Workspaces
 
