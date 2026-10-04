@@ -10,9 +10,9 @@ Status as of 2026-10-04: **v0.4.0 released** (GitHub release `v0.4.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks.
-The 3.x features (module preview, transition graph, property checks,
-users/roles) have automated tests but little interactive use yet; fix
-what the user finds there first, then items under 4/5.
+The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
+(Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
+reported. Next: items under 5 (hardening), or new ideas from the user.
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -388,7 +388,10 @@ Package: `npx @vscode/vsce package`.
   tree (Configure from Spec → targeted build → Compiled Policy view) used
   interactively too, after fixing the stale "build first" message; ifdef
   dimming and flag hover confirmed in VS Code on the RHEL tree; Changes
-  since HEAD confirmed in VS Code on the CLIP clone.
+  since HEAD confirmed in VS Code on the CLIP clone. 2026-10-04, after
+  v0.4.0: the user clicked through all features (module preview,
+  transition graph, property checks incl. flows and standalone modules,
+  users/roles, compare with refs / installed policy); all fine.
 - Compiled Policy view: rules per type/attribute (Can access / Accessed by
   / Other rules) with on-demand source tracing; confirmed in VS Code.
   Changes view: any git ref, two refs, a saved build, or the installed
