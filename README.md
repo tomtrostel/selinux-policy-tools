@@ -200,7 +200,8 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Interactive use through VS Code Remote-SSH from Windows to Rocky 9:
   indexing, standalone-module builds, and on CLIP the full-tree build
   (compile and link errors), the Compiled Policy view (browsing, navigation,
-  find), the "Compiles to" hover and the expanded view.
+  find), the "Compiles to" hover and the expanded view; on the RHEL 9 tree,
+  configuring from the spec, the targeted build and its Compiled Policy view.
 
 ## Limitations
 
