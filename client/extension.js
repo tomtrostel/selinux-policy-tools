@@ -135,6 +135,7 @@ function activate(context) {
       if (p.state === 'start') { buildStatus(`$(sync~spin) Building ${p.module}…`, 60000); return; }
       if (p.state === 'validating') { buildStatus(`$(sync~spin) ${p.module} compiled (${p.ms} ms); validating link…`, 60000); return; }
       if (p.state === 'baseline') { buildStatus(`$(sync~spin) Building HEAD (${p.short}) of ${p.module} for comparison…`, 120000); return; }
+      if (p.state === 'cil') { buildStatus(`$(sync~spin) Building ${p.module} with semodule (CIL)…`, 180000); return; }
       const what = p.tree ? `${count(p.packages, 'package')}${p.validated ? ', link validated' : ''}` : '';
       buildOutput.appendLine(`=== ${p.module}: ${p.ok ? 'built' : 'FAILED'} in ${p.ms} ms (${count(p.errors, 'error')}, ${count(p.warnings, 'warning')})${what ? '; ' + what : ''} ===`);
       if (p.tree) buildOutput.appendLine(`Output: ${p.outputDir}${p.policyBin ? `  (kernel policy: ${p.policyBin})` : ''}`);
@@ -307,6 +308,20 @@ function activate(context) {
       } else {
         vscode.window.showInformationMessage(`Set ${p.module} = ${p.to}. Review and save ${path.basename(p.apply.path)}; saving rebuilds.`);
       }
+    }),
+    vscode.commands.registerCommand('selinux.compareInstalled', async () => {
+      const r = await client.sendRequest('selinux/installedPolicies');
+      if (!r.policies.length) { vscode.window.showWarningMessage('No installed policy found under /etc/selinux/*/policy on this host.'); return; }
+      let name = (r.policies.find(p => p.name === r.buildName) || r.policies.find(p => p.active) || r.policies[0]).name;
+      if (r.policies.length > 1) {
+        const pick = await vscode.window.showQuickPick(r.policies.map(p => ({ label: p.name, description: `${p.policy}${p.active ? ' · active' : ''}${p.name === r.buildName ? ' · same NAME as the build' : ''}` })),
+          { placeHolder: `Installed policy to compare the build (NAME=${r.buildName}) with` });
+        if (!pick) return;
+        name = pick.label;
+      }
+      vscode.commands.executeCommand('selinuxChanges.focus');
+      const d = await vscode.window.withProgress({ location: { viewId: 'selinuxChanges' } }, () => changes.compareInstalled(name));
+      if (d && d.unavailable) vscode.window.showWarningMessage(d.unavailable);
     }),
     vscode.commands.registerCommand('selinux.compareHead', async () => {
       vscode.commands.executeCommand('selinuxChanges.focus');
@@ -721,8 +736,9 @@ class ChangesView {
     this.loading = false;
   }
 
-  /** Run (or re-run) the comparison. */
+  /** Run (or re-run) the comparison with HEAD. */
   async compare() {
+    this.mode = 'head';
     this.wanted = true;
     this.loading = true;
     this._emitter.fire();
@@ -731,8 +747,19 @@ class ChangesView {
     return this.diff;
   }
 
-  /** After a build: refresh only if a comparison is being shown. */
-  afterBuild() { if (this.wanted && !this.loading) this.compare().catch(() => {}); }
+  /** Compare a semodule (CIL) build of the tree with an installed policy. */
+  async compareInstalled(name) {
+    this.mode = 'installed';
+    this.wanted = false; // a CIL rebuild takes a while: refresh on request only
+    this.loading = true;
+    this._emitter.fire();
+    try { this.diff = await this.request('selinux/compareInstalled', { name }); } finally { this.loading = false; }
+    this._emitter.fire();
+    return this.diff;
+  }
+
+  /** After a build: refresh only if a comparison with HEAD is being shown. */
+  afterBuild() { if (this.wanted && this.mode === 'head' && !this.loading) this.compare().catch(() => {}); }
 
   getTreeItem(n) { return n.item; }
 
@@ -763,7 +790,8 @@ class ChangesView {
     if (!x) return [];
     const out = x.origins.map(o => this.origin(o, sign));
     if (x.more) out.push(this.item(`… ${x.more} more statement${x.more > 1 ? 's' : ''} also produce this`, { icon: 'ellipsis' }));
-    if (!x.origins.length) out.push(this.item(`${sign}no source statement found`, { icon: 'question', tooltip: 'The rule changed, but no single statement in the build output matches it (e.g. it comes from an attribute rule whose membership changed elsewhere, or uses a complement/wildcard).' }));
+    if (!x.origins.length && x.noSource) out.push(this.item(`${sign}only in the installed policy (no sources to trace)`, { icon: 'server', tooltip: 'This comes from the policy installed on the host: e.g. a separately packaged module (container-selinux, cockpit, …), a local module, or a local customization (semanage / setsebool -P).' }));
+    else if (!x.origins.length) out.push(this.item(`${sign}no source statement found`, { icon: 'question', tooltip: 'The rule changed, but no single statement in the build output matches it (e.g. it comes from an attribute rule whose membership changed elsewhere, or uses a complement/wildcard).' }));
     return out;
   }
 
@@ -781,10 +809,23 @@ class ChangesView {
 
   async getChildren(n) {
     if (n) return n.kids ? n.kids() : [];
-    if (this.loading) return [this.item('Comparing with HEAD… (the first time builds HEAD too)', { icon: 'sync~spin' })];
+    if (this.loading) return [this.item(this.mode === 'installed' ? 'Building with semodule (CIL) and comparing with the installed policy…' : 'Comparing with HEAD… (the first time builds HEAD too)', { icon: 'sync~spin' })];
     const d = this.diff;
-    if (!d) return [this.item('Compare the last build with HEAD', { icon: 'git-compare', command: { command: 'selinux.compareHead', title: 'Compare' }, tooltip: 'Build HEAD with the same settings and show what your changes add or remove in the compiled policy.' })];
-    if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: 'selinux.compareHead', title: 'Compare again' } })];
+    if (!d) return [
+      this.item('Compare the last build with HEAD', { icon: 'git-compare', command: { command: 'selinux.compareHead', title: 'Compare' }, tooltip: 'Build HEAD with the same settings and show what your changes add or remove in the compiled policy.' }),
+      this.item('Compare the build with the installed policy', { icon: 'server', command: { command: 'selinux.compareInstalled', title: 'Compare' }, tooltip: 'Build the policy the way an installed system does (semodule, CIL) and show what would change on this host if you installed it.' }),
+    ];
+    if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: this.mode === 'installed' ? 'selinux.compareInstalled' : 'selinux.compareHead', title: 'Compare again' } })];
+    if (this.mode === 'installed') {
+      const out = [
+        this.item(`vs installed ${d.installed.name}`, { icon: 'server', desc: d.installed.policy,
+          tooltip: `Installed: ${d.installed.policy}${d.installed.active ? ' (the active policy)' : ''}\nBuild: ${d.cil.policy} (semodule, ${d.cil.packages} packages, ${(d.cil.ms / 1000).toFixed(1)} s)\nCompared in ${(d.ms.total / 1000).toFixed(1)} s. Run the command again after changes; it doesn't refresh on its own.` }),
+        this.item('+ only in your build · − only on this host', { icon: 'info', tooltip: '"+" would be added to this host by installing your build. "−" exists on the host but not in your build: separately packaged modules, local modules or customizations, or things your build removes.' }),
+      ];
+      const groups = this.diffGroups(d);
+      if (!groups.length) out.push(this.item('No difference: the build compiles to the installed policy.', { icon: 'pass' }));
+      return out.concat(groups);
+    }
     const out = [this.item(`vs HEAD ${d.head.short}`, { icon: 'git-commit', desc: d.head.subject, tooltip: `${d.head.sha}\n${d.head.subject}\n\nCurrent side: last build at ${new Date(d.builtAt).toLocaleTimeString()}. Compared in ${(d.ms.total / 1000).toFixed(1)} s.` })];
     const groups = this.diffGroups(d);
     if (!groups.length) out.push(this.item('No effective policy change: the build compiles to the same policy as HEAD.', { icon: 'pass' }));

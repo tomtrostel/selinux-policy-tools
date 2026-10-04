@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+* **Compare Build with Installed Policy**: rebuilds the tree with
+  `semodule` (CIL) into a scratch store, the way an installed system is
+  built, and shows in the Changes view what installing it would add (traced
+  to source) or remove compared with `/etc/selinux/<name>/policy`.
+
 ## 0.3.0 (2026-10-04)
 
 Lockdown workflows (full policy source trees, Linux).

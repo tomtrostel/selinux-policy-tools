@@ -170,6 +170,56 @@ function exportHead(info, dest) {
   });
 }
 
+/**
+ * Build the kernel policy the way an installed system does: load every module
+ * package of a (modular) tree build into a scratch policy store with semodule
+ * (CIL), like the RPM's `make load SEMODULE="semodule -p <buildroot> -X 100"`
+ * but with all packages the build produced (APPS_MODS ones included). Works
+ * unprivileged. Uses the host's semanage.conf so store options (e.g.
+ * optimize-policy) match the installed policy.
+ */
+async function cilBuild(res, { name, timeoutMs = 900000 } = {}) {
+  const t0 = Date.now();
+  const work = res.workDir;
+  let pkgs = [];
+  try { pkgs = fs.readdirSync(work).filter(n => n.endsWith('.pp')); } catch { /* none */ }
+  if (!pkgs.includes('base.pp')) return { ok: false, log: 'No base.pp: a modular build is needed (MONOLITHIC=n).', ms: Date.now() - t0 };
+  const root = path.join(work, 'cil-root');
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.mkdirSync(path.join(root, 'var', 'lib', 'selinux'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'etc', 'selinux'), { recursive: true });
+  try { fs.copyFileSync('/etc/selinux/semanage.conf', path.join(root, 'etc', 'selinux', 'semanage.conf')); } catch { /* defaults */ }
+  const args = ['-p', root, '-X', '100', '-s', name, '-i', 'base.pp', ...pkgs.filter(n => n !== 'base.pp').sort().flatMap(n => ['-i', n])];
+  const r = await new Promise((resolve) => {
+    execFile('semodule', args, { cwd: work, timeout: timeoutMs, maxBuffer: 16 << 20 },
+      (err, stdout, stderr) => resolve({ code: err ? (err.code || 1) : 0, out: `${stdout}${stderr}` }));
+  });
+  if (r.code === 'ENOENT') return { ok: false, log: 'semodule not found: install policycoreutils.', ms: Date.now() - t0 };
+  // Ownership warnings are expected when not running as root.
+  const log = r.out.split('\n').filter(l => l && !/Could not set ownership/.test(l)).join('\n');
+  const polDir = path.join(root, 'etc', 'selinux', name, 'policy');
+  let policy = null;
+  try { const f = fs.readdirSync(polDir).filter(n => /^policy\.\d+$/.test(n)).sort().pop(); if (f) policy = path.join(polDir, f); } catch { /* failed */ }
+  return { ok: r.code === 0 && !!policy, policy, root, log, packages: pkgs.length, ms: Date.now() - t0 };
+}
+
+/** Installed policies on this host: [{ name, policy }] from /etc/selinux/<name>/policy/policy.NN. */
+function installedPolicies() {
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync('/etc/selinux'); } catch { return out; }
+  for (const n of names) {
+    const dir = path.join('/etc/selinux', n, 'policy');
+    try {
+      const f = fs.readdirSync(dir).filter(x => /^policy\.\d+$/.test(x)).sort().pop();
+      if (f) out.push({ name: n, policy: path.join(dir, f) });
+    } catch { /* not a policy dir */ }
+  }
+  let active = null;
+  try { const m = /^\s*SELINUXTYPE\s*=\s*(\S+)/m.exec(fs.readFileSync('/etc/selinux/config', 'utf8')); if (m) active = m[1]; } catch { /* none */ }
+  return out.map(x => ({ ...x, active: x.name === active }));
+}
+
 /** The m4 output files of a tree build (for explaining its rules). */
 function treeOutputs(res) {
   const tmp = path.join(res.workDir, 'tmp');
@@ -497,4 +547,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, scratchDir, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, scratchDir, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

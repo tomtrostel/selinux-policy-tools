@@ -43,6 +43,7 @@ dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-po
 | Full source-tree builds | `make`, `m4`, `checkpolicy`, `policycoreutils`, `policycoreutils-devel`, `gawk`, `python3` |
 | Compiled Policy view, rules, Changes since HEAD | `python3-setools` (from `setools-console`) |
 | Changes since HEAD | also `git-core`, `tar` |
+| Compare with installed policy | also `policycoreutils` (`semodule`) |
 
 `policycoreutils`, `gawk`, `python3` and `tar` are present on any normal
 RHEL system with SELinux. From Windows or macOS, use VS Code **Remote-SSH**
@@ -267,6 +268,22 @@ The first comparison builds `HEAD` too (CLIP: ~20 s for both builds; RHEL
 targeted about a minute); after that a comparison takes 1–2 s plus your
 build, and the view refreshes after each build.
 
+**Compare with the installed policy** (full trees)
+
+*SELinux: Compare Build with Installed Policy* (also in the Changes view's
+title bar) answers "what would change on this host if I installed my
+build?". It rebuilds the policy the way an installed system does, loading
+every module package of the build into a scratch policy store with
+`semodule` (CIL; no root needed, the host's `semanage.conf` is used), and
+compares it with `/etc/selinux/<name>/policy/policy.NN` (pick which when
+there are several). The result appears in the Changes view: "+" would be
+added by installing your build and is traced to your source lines, "−"
+exists only on the host (separately packaged modules such as
+container-selinux or cockpit, local modules, `semanage`/`setsebool -P`
+customizations, or things your build removes). The `semodule` build takes
+~8 s for CLIP and ~25 s for RHEL targeted; it is redone only when the
+build's packages change, and the comparison runs on request.
+
 **Property checks** (full trees)
 
 Write down security properties once, in a `selinux.checks` file at the tree
@@ -412,6 +429,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   removed rules traced into them), `mta` off (link error on the requiring
   interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
   from `APPS_MODS`), including several previews in a row.
+* Compare with installed policy: a `semodule` build of the RHEL 9 targeted
+  tree against the policy installed on the same Rocky 9.8 host shows 5,132
+  rule differences (instead of ~1.3 million with the Makefile's build):
+  58 host-only types from container-selinux and cockpit, `sandbox_t`
+  (shipped separately on RHEL) only in the build, one boolean default
+  changed locally.
 * Changes since HEAD on CLIP: an unsaved edit adding two interface calls
   and removing two permissions gives exactly the five changed rules and one
   attribute-membership change, each traced to the right line (removals to
@@ -453,9 +476,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns most modules off at install time, which the build doesn't
   reproduce.
 * `make validate` links with the legacy `semodule_link`/`semodule_expand`
-  tools, while an installed policy is built by `semodule` (CIL). The two
-  represent attributes differently, so rule-level comparisons between a
-  build and an installed policy (e.g. with `sediff`) aren't meaningful yet.
+  tools, while an installed policy is built by `semodule` (CIL); the two
+  represent attributes differently (comparing them shows ~1.3 million
+  spurious rule differences on RHEL). *Compare Build with Installed Policy*
+  therefore rebuilds with `semodule` first; the regular build, Changes
+  since HEAD and the Compiled Policy view use the Makefile's build.
 * One source tree per workspace: if the workspace contains several, the
   first one found is built.
 * Without `selinux.build.tree.outputDir`, full-tree outputs stay in the

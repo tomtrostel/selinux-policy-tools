@@ -155,6 +155,45 @@ const configure = async (tree) => {
     const tOrig = Date.now() - t0;
     check(q1.count > 500 && q2.count > 50 && first < 15000 && next < 1000 && o && o.origins.length,
       `rule queries: init_t can access ${q1.count} rules (first ${first} ms incl. indexing, next ${next} ms); origins of "${sample && `${sample.t}:${sample.c}`}" in ${tOrig} ms → ${o && o.origins[0] && `${path.basename(o.origins[0].path)}:${o.origins[0].line + 1}`}`, { q1: q1.unavailable, q2: q2.unavailable });
+    // Compare a semodule (CIL) build with the policy installed on this host.
+    const inst = await conn.sendRequest('selinux/installedPolicies');
+    const host = inst.policies.find(p => p.name === variant);
+    if (host) {
+      const ci = await conn.sendRequest('selinux/compareInstalled', { name: variant });
+      const hostOnlyRules = (ci.rules || []).filter(r => r.delFrom && r.delFrom.noSource);
+      const traced = (ci.rules || []).filter(r => r.addFrom && r.addFrom.origins.length);
+      check(!ci.unavailable && ci.installed.policy === host.policy && ci.ruleCount < 50000,
+        `vs installed ${variant}: ${ci.ruleCount} rule differences (legacy vs CIL builds of the same sources differ by ~1.3M), types +${ci.types && ci.types.added.length} −${ci.types && ci.types.removed.length}; CIL build ${ci.cil && (ci.cil.ms / 1000).toFixed(1)} s, compare ${ci.ms && (ci.ms.total / 1000).toFixed(1)} s`, ci.unavailable);
+      check(!ci.unavailable && hostOnlyRules.length > 0 && (ci.rules.filter(r => r.add.length).length === 0 || traced.length > 0),
+        `host-only rules marked as untraceable (${hostOnlyRules.length}); rules only in the build traced to source (${traced.length})`);
+      check(!ci.unavailable && (ci.types.removed.some(t => /^container_|^cockpit_/.test(t)) || ci.types.removed.length === 0),
+        `types only on the host include separately packaged modules: ${ci.types && ci.types.removed.slice(0, 5).join(', ')}`);
+      // The Changes view in "installed" mode (stub vscode); the CIL build is cached, so this is quick.
+      const Module = require('module');
+      const stub = {
+        EventEmitter: class { constructor() { this.event = () => {}; } fire() {} },
+        TreeItem: class { constructor(label, state) { this.label = label; this.collapsibleState = state; } },
+        ThemeIcon: class { constructor(id) { this.id = id; } }, ThemeColor: class { constructor(id) { this.id = id; } },
+        TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+        workspace: { asRelativePath: (p) => p },
+      };
+      const load = Module._load;
+      Module._load = function (req, ...rest) { return req === 'vscode' ? stub : req === 'vscode-languageclient/node' ? { LanguageClient: class {}, TransportKind: {} } : load.call(this, req, ...rest); };
+      const { ChangesView } = require('../client/extension');
+      Module._load = load;
+      const view = new ChangesView((mth, prm) => conn.sendRequest(mth, prm));
+      t0 = Date.now();
+      await view.compareInstalled(variant);
+      const top = await view.getChildren();
+      const rules = top.find(n => n.item.label === 'Rules');
+      const firstSrc = rules && (await view.getChildren(rules))[0];
+      const firstRule = firstSrc && (await view.getChildren(firstSrc))[0];
+      const why = firstRule ? await view.getChildren(firstRule) : [];
+      check(top[0].item.label === `vs installed ${variant}` && /only in your build/.test(top[1].item.label) && why.length > 0 && Date.now() - t0 < 20000,
+        `view: ${top.slice(0, 2).map(n => n.item.label).join(' | ')} › ${firstSrc && firstSrc.item.label} › ${firstRule && firstRule.item.label} › ${why[0] && why[0].item.label} (${Date.now() - t0} ms, CIL build reused)`);
+    } else {
+      check(true, `SKIP compare with installed: no /etc/selinux/${variant} on this host`);
+    }
     const located = m.types.filter(x => x.loc).length;
     check(located / m.types.length > 0.95, `source location for ${located}/${m.types.length} types`, m.types.filter(x => !x.loc).slice(0, 15).map(x => x.name));
   }

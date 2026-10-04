@@ -208,6 +208,11 @@
       {
         "command": "selinux.openChecks",
         "title": "SELinux: Open Property Checks"
+      },
+      {
+        "command": "selinux.compareInstalled",
+        "title": "SELinux: Compare Build with Installed Policy",
+        "icon": "$(server)"
       }
     ],
     "menus": {
@@ -246,6 +251,11 @@
           "command": "selinux.transitionGraph",
           "when": "view == selinuxCompiledPolicy",
           "group": "navigation@4"
+        },
+        {
+          "command": "selinux.compareInstalled",
+          "when": "view == selinuxChanges",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [

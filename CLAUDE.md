@@ -83,8 +83,18 @@ what the user finds there first, then items under 4/5.
      (outputDir), not only HEAD.
    - Per-window scratch dirs (scratch is keyed by tree path, so two
      windows on one tree share and can race on one).
-   - Build through semodule/CIL (`make load SEMODULE="semodule -p
-     <scratch> -X 100"`) for faithful comparison with installed policies.
+   - Build through semodule/CIL (done, after 0.3.0): `build.cilBuild()`
+     runs `semodule -p <work>/cil-root -X 100 -s <NAME> -i base.pp -i
+     <every .pp>` (not `make load`, which only loads modules.conf modules,
+     so CLIP's APPS_MODS packages would be missing); needs
+     `<root>/var/lib/selinux`; copies the host's semanage.conf; works
+     unprivileged (ownership warnings filtered). Request
+     `selinux/compareInstalled` {name} diffs /etc/selinux/<name>/policy
+     (A, no sources → `explainDiff(diff, null, b)`, origins marked
+     noSource) vs the CIL build (B); cached by the build's .pp set.
+     ChangesView `mode: 'installed'` (no auto-refresh). RHEL vs melody's
+     installed targeted: 5,132 diffs (container-selinux, cockpit, sandbox,
+     a local boolean) vs ~1.3M legacy-vs-CIL noise.
 5. **Hardening**: .te missing-require check, link-error placement,
    generated corenetwork.te error mapping, several trees per workspace,
    test minimum/mls/automotive variants, RHEL 10, monolithic builds.
@@ -261,7 +271,8 @@ is only visible to collaborators; making it public is the user's call.
 - `test/diff-e2e.js` (`npm run test:diff`): copies a tree (default CLIP)
   into a fresh git repo, edits logging.te in an unsaved buffer, checks the
   diff vs HEAD, its tracing, and the Changes view (stub vscode).
-- `test/build-rhel-e2e.js` (`npm run test:rhel`): RHEL tree build with
+- `test/build-rhel-e2e.js` (`npm run test:rhel`): RHEL tree build (+ compare
+  with the installed targeted policy via semodule/CIL, and the view) with
   settings from the spec (default ~/sepol-test/rhel9 + srpm on melody),
   trust gating, overlays, booleans, link errors; ~2 min.
 - `test/build-tree-e2e.js` (`npm run test:tree`): full-tree build checks on

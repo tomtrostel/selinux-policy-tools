@@ -983,18 +983,20 @@ connection.onRequest('selinux/policyDiff', async () => {
  * typeLocations) and drops the bulky attribute maps.
  */
 function explainDiff(diff, a, b) {
-  const side = (s, attrs, gained) => ({ index: explain.byName(explain.indexBuild(build.treeOutputs(s.res), s.res.resolveFile)), attrs, gained, changedFiles: s.changed || null });
+  // A side without sources (an installed policy) is passed as null: its changes aren't traced.
+  const side = (s, attrs, gained) => (s ? { index: explain.byName(explain.indexBuild(build.treeOutputs(s.res), s.res.resolveFile)), attrs, gained, changedFiles: s.changed || null } : null);
   const sideA = side(a, diff.attrsA, new Map(diff.membership.map(m => [m.type, new Set(m.removed)])));
   const sideB = side(b, diff.attrsB, new Map(diff.membership.map(m => [m.type, new Set(m.added)])));
-  const mapA = a.map || ((o) => o), mapB = b.map || ((o) => o);
+  const mapA = (a && a.map) || ((o) => o), mapB = (b && b.map) || ((o) => o);
   const mapped = (x, f) => ({ origins: x.origins.map(f), more: x.more });
+  const noSource = { origins: [], more: 0, noSource: true };
   for (const r of diff.rules) {
-    if (r.add.length) r.addFrom = mapped(explain.explainRule(r, r.add, sideB), mapB);
-    if (r.del.length) r.delFrom = mapped(explain.explainRule(r, r.del, sideA), mapA);
+    if (r.add.length) r.addFrom = sideB ? mapped(explain.explainRule(r, r.add, sideB), mapB) : noSource;
+    if (r.del.length) r.delFrom = sideA ? mapped(explain.explainRule(r, r.del, sideA), mapA) : noSource;
   }
   for (const m of diff.membership) {
-    m.addFrom = m.added.map(x => ({ attr: x, origins: explain.membershipOrigins(m.type, x, sideB).map(mapB) }));
-    m.delFrom = m.removed.map(x => ({ attr: x, origins: explain.membershipOrigins(m.type, x, sideA).map(mapA) }));
+    m.addFrom = m.added.map(x => ({ attr: x, origins: sideB ? explain.membershipOrigins(m.type, x, sideB).map(mapB) : [], noSource: !sideB }));
+    m.delFrom = m.removed.map(x => ({ attr: x, origins: sideA ? explain.membershipOrigins(m.type, x, sideA).map(mapA) : [], noSource: !sideA }));
   }
   explain.releaseTexts();
   // The statement index is ~100 MB per side on a RHEL tree: keep it while
@@ -1005,6 +1007,59 @@ function explainDiff(diff, a, b) {
   delete diff.attrsA; delete diff.attrsB; delete diff.aliasesA; delete diff.aliasesB;
   return diff;
 }
+
+/* ---------------- compare with an installed policy (CIL build) ---------------- */
+
+/*
+ * Installed policies are built by semodule (CIL), which represents attributes
+ * differently from the Makefile's semodule_link/semodule_expand, so the
+ * working tree is rebuilt the same way (build.cilBuild) and diffed against
+ * /etc/selinux/<name>/policy/policy.NN. "+" = only in the build (installing
+ * it adds this), "−" = only on the host (separately packaged modules, local
+ * customizations, or things the build removes).
+ */
+let cilCache = { key: null, res: null };
+
+function buildName(root) {
+  for (const a of settings.build.tree.makeArgs || []) { const m = /^NAME=(\S+)/.exec(a); if (m) return m[1]; }
+  try { const m = /^\s*NAME\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) return m[1]; } catch { /* none */ }
+  return 'refpolicy';
+}
+
+connection.onRequest('selinux/installedPolicies', async () => ({ policies: build.installedPolicies(), buildName: treeRoot ? buildName(treeRoot) : null }));
+
+connection.onRequest('selinux/compareInstalled', async ({ name }) => {
+  await indexing;
+  if (!treeRoot) return { unavailable: 'Comparing with an installed policy needs a full policy source tree.' };
+  const why = buildUnavailable();
+  if (why) return { unavailable: why };
+  const installed = build.installedPolicies();
+  const target = installed.find(p => p.name === name) || installed.find(p => p.name === buildName(treeRoot)) || installed.find(p => p.active);
+  if (!target) return { unavailable: 'No installed policy found under /etc/selinux/*/policy on this host.' };
+  const t0 = Date.now();
+  let cur = lastBuild.get(treeRoot);
+  if (!cur || !cur.ok) { await runBuild(treeRoot, false, null); cur = lastBuild.get(treeRoot); }
+  if (!cur || !cur.ok) return { unavailable: 'The working tree does not build; fix its errors (see Problems) and compare again.' };
+  // Rebuild the CIL policy only when the build's packages changed.
+  const pkgs = fs.readdirSync(cur.workDir).filter(n => n.endsWith('.pp'));
+  const key = `${cur.workDir}:${pkgs.length}:${Math.max(...pkgs.map(n => fs.statSync(path.join(cur.workDir, n)).mtimeMs))}`;
+  if (cilCache.key !== key || !cilCache.res || !cilCache.res.ok) {
+    connection.sendNotification('selinux/build', { state: 'cil', module: path.basename(treeRoot) });
+    cilCache = { key, res: await build.cilBuild(cur, { name: buildName(treeRoot) }) };
+  }
+  const cil = cilCache.res;
+  if (!cil.ok) return { unavailable: `Building the policy with semodule failed: ${(cil.log || '').split('\n').slice(-6).join(' ')}` };
+  let diff;
+  try { diff = await runPython('policy_diff.py', [target.policy, cil.policy]); } catch (e) { return { unavailable: `Comparing the policies failed: ${e.message}` }; }
+  explainDiff(diff, null, { res: cur });
+  return {
+    ...diff,
+    installed: { name: target.name, policy: target.policy, active: target.active, others: installed.map(p => p.name) },
+    cil: { policy: cil.policy, packages: cil.packages, ms: cil.ms },
+    builtAt: fs.statSync(cil.policy).mtimeMs,
+    ms: { total: Date.now() - t0 },
+  };
+});
 
 /* ---------------- module on/off preview ---------------- */
 
