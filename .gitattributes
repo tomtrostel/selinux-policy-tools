@@ -1,0 +1,3 @@
+# Keep LF everywhere: the server and scripts run on Linux hosts.
+* text=auto eol=lf
+*.svg text eol=lf
