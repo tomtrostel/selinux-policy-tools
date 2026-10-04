@@ -133,6 +133,51 @@ function m4Defines({ cwd, makefile, makeArgs = [], timeoutMs = 20000 }) {
   });
 }
 
+/* ---------- git: the tree as of HEAD (baseline for "what did this change") ---------- */
+
+const git = (cwd, args) => new Promise((resolve) => {
+  execFile('git', args, { cwd, maxBuffer: 16 << 20 }, (err, stdout) => resolve(err ? null : stdout.trim()));
+});
+
+/** { top, prefix, sha, subject } for the git repository containing `root`, or null. */
+async function gitInfo(root) {
+  const top = await git(root, ['rev-parse', '--show-toplevel']);
+  if (!top) return null;
+  const [prefix, head] = await Promise.all([git(root, ['rev-parse', '--show-prefix']), git(root, ['log', '-1', '--format=%H%x00%s'])]);
+  if (!head) return null; // no commits yet
+  const [sha, subject] = head.split('\0');
+  return { top, prefix: (prefix || '').replace(/\/$/, ''), sha, subject };
+}
+
+/** Source files changed between HEAD and the working tree (absolute paths, tracked + untracked). */
+async function gitChangedFiles(root, info) {
+  const out = await git(info.top, ['status', '--porcelain', '--untracked-files=all', '--', info.prefix || '.']);
+  if (out == null) return [];
+  return out.split('\n').filter(Boolean).map(l => path.join(info.top, l.slice(3).replace(/^.* -> /, '')));
+}
+
+/** Export the tree at HEAD into `dest` (git archive | tar); returns the tree root inside it. */
+function exportHead(info, dest) {
+  return new Promise((resolve, reject) => {
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.mkdirSync(dest, { recursive: true });
+    const archive = require('child_process').spawn('git', ['archive', info.sha, ...(info.prefix ? ['--', info.prefix] : [])], { cwd: info.top });
+    const tar = require('child_process').spawn('tar', ['-x', '-C', dest]);
+    archive.stdout.pipe(tar.stdin);
+    let err = '';
+    archive.stderr.on('data', d => { err += d; });
+    tar.on('close', (code) => (code === 0 ? resolve(path.join(dest, info.prefix)) : reject(new Error(`git archive failed: ${err.trim() || code}`))));
+  });
+}
+
+/** The m4 output files of a tree build (for explaining its rules). */
+function treeOutputs(res) {
+  const tmp = path.join(res.workDir, 'tmp');
+  let mods = [];
+  try { mods = fs.readdirSync(tmp).filter(n => n.endsWith('.tmp')).map(n => path.join(tmp, n)); } catch { /* none */ }
+  return [...mods, path.join(res.workDir, res.monolithic ? 'policy.conf' : 'base.conf')];
+}
+
 /* ---------- full source trees (refpolicy Makefile) ---------- */
 
 /** The refpolicy tree root for an indexed support file path, or null. */
@@ -427,4 +472,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, m4Defines, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, scratchDir, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

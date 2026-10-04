@@ -59,6 +59,8 @@ function activate(context) {
   const compiled = new CompiledPolicyView();
   const compiledView = vscode.window.createTreeView('selinuxCompiledPolicy', { treeDataProvider: compiled, showCollapseAll: true });
   context.subscriptions.push(compiledView);
+  const changes = new ChangesView();
+  context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxChanges', changes));
 
   // Dim ifdef/ifndef branches the build flags turn off, like inactive #ifdef code.
   const inactiveDeco = vscode.window.createTextEditorDecorationType({ opacity: '0.45' });
@@ -98,6 +100,7 @@ function activate(context) {
     client.onNotification('selinux/build', (p) => {
       if (p.state === 'start') { buildStatus(`$(sync~spin) Building ${p.module}…`, 60000); return; }
       if (p.state === 'validating') { buildStatus(`$(sync~spin) ${p.module} compiled (${p.ms} ms); validating link…`, 60000); return; }
+      if (p.state === 'baseline') { buildStatus(`$(sync~spin) Building HEAD (${p.short}) of ${p.module} for comparison…`, 120000); return; }
       const what = p.tree ? `${count(p.packages, 'package')}${p.validated ? ', link validated' : ''}` : '';
       buildOutput.appendLine(`=== ${p.module}: ${p.ok ? 'built' : 'FAILED'} in ${p.ms} ms (${count(p.errors, 'error')}, ${count(p.warnings, 'warning')})${what ? '; ' + what : ''} ===`);
       if (p.tree) buildOutput.appendLine(`Output: ${p.outputDir}${p.policyBin ? `  (kernel policy: ${p.policyBin})` : ''}`);
@@ -105,6 +108,7 @@ function activate(context) {
       buildStatus(p.ok ? `$(check) ${p.module} built (${p.ms} ms${what ? ', ' + what : ''})` : `$(error) ${p.module}: build failed, see Problems`, 8000);
       expanded.refresh();
       if (p.tree) compiled.refresh();
+      if (p.tree && p.ok) changes.afterBuild();
     });
   });
 
@@ -193,6 +197,11 @@ function activate(context) {
       if (go) vscode.commands.executeCommand('selinux.buildModule');
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
+    vscode.commands.registerCommand('selinux.compareHead', async () => {
+      vscode.commands.executeCommand('selinuxChanges.focus');
+      const d = await vscode.window.withProgress({ location: { viewId: 'selinuxChanges' } }, () => changes.compare());
+      if (d && d.unavailable) vscode.window.showWarningMessage(d.unavailable);
+    }),
     vscode.commands.registerCommand('selinux.findInPolicy', async () => {
       await compiled.getChildren();
       const m = compiled.model;
@@ -441,6 +450,118 @@ class CompiledPolicyView {
   }
 }
 
+/* ---------------- Changes since HEAD (compiled policy diff, traced to source) ---------------- */
+
+class ChangesView {
+  /** `request` is injectable so tests can drive the tree without VS Code. */
+  constructor(request) {
+    this.request = request || ((method, params) => client.sendRequest(method, params));
+    this._emitter = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this._emitter.event;
+    this.diff = null;      // last result
+    this.wanted = false;   // the user asked for a comparison; refresh it after builds
+    this.loading = false;
+  }
+
+  /** Run (or re-run) the comparison. */
+  async compare() {
+    this.wanted = true;
+    this.loading = true;
+    this._emitter.fire();
+    try { this.diff = await this.request('selinux/policyDiff'); } finally { this.loading = false; }
+    this._emitter.fire();
+    return this.diff;
+  }
+
+  /** After a build: refresh only if a comparison is being shown. */
+  afterBuild() { if (this.wanted && !this.loading) this.compare().catch(() => {}); }
+
+  getTreeItem(n) { return n.item; }
+
+  item(label, opts = {}) {
+    const it = new vscode.TreeItem(label, opts.kids ? (opts.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed) : vscode.TreeItemCollapsibleState.None);
+    if (opts.desc !== undefined) it.description = String(opts.desc);
+    if (opts.icon) it.iconPath = new vscode.ThemeIcon(opts.icon, opts.color ? new vscode.ThemeColor(opts.color) : undefined);
+    if (opts.tooltip) it.tooltip = opts.tooltip;
+    if (opts.command) it.command = opts.command;
+    return { item: it, kids: opts.kids };
+  }
+
+  /** A source statement that produces a change; HEAD-side ones open the HEAD copy. */
+  origin(o, prefix = '') {
+    const file = o.head ? o.real : o.path;
+    const label = `${prefix}${vscode.workspace.asRelativePath(file)}:${o.line + 1}${o.head ? ' (HEAD)' : ''}`;
+    const because = o.because || [];
+    return this.item(label, {
+      desc: o.via ? `via ${o.via}` : o.text,
+      icon: o.head ? 'history' : 'go-to-file',
+      tooltip: `${o.text}${o.chain && o.chain.length ? `\n\nthrough ${o.chain.join(' → ')}` : ''}${o.head ? '\n\nAs of HEAD; opens the HEAD version of the file.' : ''}`,
+      command: { command: 'selinux.openLocation', title: 'Open', arguments: [o.path, o.line, 0] },
+      kids: because.length ? () => because.map(b => this.origin(b, 'because: ')) : undefined,
+    });
+  }
+
+  explained(x, sign) {
+    if (!x) return [];
+    const out = x.origins.map(o => this.origin(o, sign));
+    if (x.more) out.push(this.item(`… ${x.more} more statement${x.more > 1 ? 's' : ''} also produce this`, { icon: 'ellipsis' }));
+    if (!x.origins.length) out.push(this.item(`${sign}no source statement found`, { icon: 'question', tooltip: 'The rule changed, but no single statement in the build output matches it (e.g. it comes from an attribute rule whose membership changed elsewhere, or uses a complement/wildcard).' }));
+    return out;
+  }
+
+  ruleNode(r) {
+    const icon = { added: 'diff-added', removed: 'diff-removed', modified: 'diff-modified' }[r.kind];
+    const color = { added: 'gitDecoration.addedResourceForeground', removed: 'gitDecoration.deletedResourceForeground', modified: 'gitDecoration.modifiedResourceForeground' }[r.kind];
+    const perms = [...r.add.map(p => `+${p}`), ...r.del.map(p => `−${p}`)].join(' ');
+    const cond = r.cond ? `  [${r.cond}]` : '';
+    return this.item(`${r.rt} ${r.s} ${r.t}:${r.c}`, {
+      icon, color, desc: perms + cond,
+      tooltip: `${r.kind} ${r.rt} ${r.s} ${r.t}:${r.c}${cond}\n${r.add.length ? `added: ${r.add.join(' ')}\n` : ''}${r.del.length ? `removed: ${r.del.join(' ')}\n` : ''}${r.had.length ? `unchanged: ${r.had.join(' ')}` : ''}`,
+      kids: () => [...this.explained(r.addFrom, r.del.length ? '+ ' : ''), ...this.explained(r.delFrom, '− ')],
+    });
+  }
+
+  async getChildren(n) {
+    if (n) return n.kids ? n.kids() : [];
+    if (this.loading) return [this.item('Comparing with HEAD… (the first time builds HEAD too)', { icon: 'sync~spin' })];
+    const d = this.diff;
+    if (!d) return [this.item('Compare the last build with HEAD', { icon: 'git-compare', command: { command: 'selinux.compareHead', title: 'Compare' }, tooltip: 'Build HEAD with the same settings and show what your changes add or remove in the compiled policy.' })];
+    if (d.unavailable) return [this.item(d.unavailable, { icon: 'info', command: { command: 'selinux.compareHead', title: 'Compare again' } })];
+    const out = [this.item(`vs HEAD ${d.head.short}`, { icon: 'git-commit', desc: d.head.subject, tooltip: `${d.head.sha}\n${d.head.subject}\n\nCurrent side: last build at ${new Date(d.builtAt).toLocaleTimeString()}. Compared in ${(d.ms.total / 1000).toFixed(1)} s.` })];
+    const groups = [];
+    if (d.ruleCount) {
+      const bySource = new Map();
+      for (const r of d.rules) { if (!bySource.has(r.s)) bySource.set(r.s, []); bySource.get(r.s).push(r); }
+      groups.push(this.item('Rules', { icon: 'list-tree', expanded: true, desc: `${d.ruleCount}${d.truncated ? ` (first ${d.rules.length} shown)` : ''}`,
+        kids: () => [...bySource.keys()].sort().map(s => this.item(s, { icon: 'symbol-class', desc: bySource.get(s).length, expanded: bySource.size <= 5,
+          kids: () => bySource.get(s).map(r => this.ruleNode(r)) })) }));
+    }
+    if (d.membership.length) {
+      groups.push(this.item('Attribute membership', { icon: 'symbol-interface', desc: d.membership.length, kids: () => d.membership.flatMap(m => [
+        ...m.addFrom.map(x => this.item(`${m.type} +${x.attr}`, { icon: 'diff-added', kids: () => this.explained({ origins: x.origins, more: 0 }, '') })),
+        ...m.delFrom.map(x => this.item(`${m.type} −${x.attr}`, { icon: 'diff-removed', kids: () => this.explained({ origins: x.origins, more: 0 }, '') })),
+      ]) }));
+    }
+    const elems = [];
+    const both = (label, sd, icon, loc) => {
+      for (const n of sd.added) elems.push(this.item(`+ ${label} ${n}`, { icon: 'diff-added', command: loc && loc[n] ? { command: 'selinux.openLocation', title: 'Open', arguments: [loc[n].p, loc[n].l, loc[n].c] } : undefined }));
+      for (const n of sd.removed) elems.push(this.item(`− ${label} ${n}`, { icon: 'diff-removed' }));
+    };
+    both('type', d.types, 'symbol-class', d.typeLocations);
+    both('attribute', d.attributes);
+    both('role', d.roles);
+    both('user', d.users);
+    both('boolean', d.bools);
+    both('class', d.classes);
+    for (const b of d.boolDefaults) elems.push(this.item(`boolean ${b.name}`, { icon: 'diff-modified', desc: `default ${b.from} → ${b.to}` }));
+    for (const r of d.roleTypes) elems.push(this.item(`role ${r.role}`, { icon: 'diff-modified', desc: [...r.added.map(t => `+${t}`), ...r.removed.map(t => `−${t}`)].join(' ') }));
+    for (const u of d.userRoles) elems.push(this.item(`user ${u.user}`, { icon: 'diff-modified', desc: [...u.added.map(t => `+${t}`), ...u.removed.map(t => `−${t}`)].join(' ') }));
+    if (elems.length) groups.push(this.item('Types, roles, users, booleans', { icon: 'symbol-structure', desc: elems.length, expanded: true, kids: () => elems }));
+    if (!groups.length) out.push(this.item('No effective policy change: the build compiles to the same policy as HEAD.', { icon: 'pass' }));
+    return out.concat(groups);
+  }
+}
+
 /* ---------------- Policy Explorer tree ---------------- */
 
 class PolicyExplorer {
@@ -513,4 +634,4 @@ class PolicyExplorer {
 
 function deactivate() { return client ? client.stop() : undefined; }
 
-module.exports = { activate, deactivate, CompiledPolicyView };
+module.exports = { activate, deactivate, CompiledPolicyView, ChangesView };

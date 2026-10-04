@@ -102,6 +102,10 @@
         {
           "id": "selinuxCompiledPolicy",
           "name": "Compiled Policy"
+        },
+        {
+          "id": "selinuxChanges",
+          "name": "Changes since HEAD"
         }
       ]
     },
@@ -157,6 +161,11 @@
       {
         "command": "selinux.configureFromSpec",
         "title": "SELinux: Configure Build from Spec File…"
+      },
+      {
+        "command": "selinux.compareHead",
+        "title": "SELinux: Compare Compiled Policy with HEAD",
+        "icon": "$(git-compare)"
       }
     ],
     "menus": {
@@ -180,6 +189,11 @@
           "command": "selinux.refreshCompiled",
           "when": "view == selinuxCompiledPolicy",
           "group": "navigation@3"
+        },
+        {
+          "command": "selinux.compareHead",
+          "when": "view == selinuxChanges",
+          "group": "navigation@1"
         }
       ],
       "commandPalette": [
@@ -340,6 +354,7 @@
     "test:build": "node test/build-e2e.js",
     "test:tree": "node test/build-tree-e2e.js",
     "test:rhel": "node test/build-rhel-e2e.js",
+    "test:diff": "node test/diff-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },

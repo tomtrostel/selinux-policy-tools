@@ -9,13 +9,13 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 1. **Navigation and authoring help** (v0.1, done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
    diagnostics with quick fixes.
-2. **"What did this change actually grant"** (in progress): run the real build
+2. **"What did this change actually grant"** (done): run the real build
    (m4 + checkpolicy, refpolicy Makefile), map compiled rules back to source
-   lines, show `sediff` against the last commit, show the expanded rules
-   behind an interface call on hover. Done for standalone modules (devel
-   headers) and full refpolicy trees (verified on CLIP RHEL 9): build on
-   save, compiler + link diagnostics, "Compiles to" hover, expanded view.
-   Next: sediff against the last commit (setools-console is on melody).
+   lines, diff against the last commit, show the expanded rules behind an
+   interface call on hover. Standalone modules and full trees (CLIP, RHEL
+   9): build on save, compiler + link diagnostics, "Compiles to" hover,
+   expanded view, Compiled Policy view, "Changes since HEAD" (own setools
+   diff, ~4x faster than sediff, + tracing to source statements).
 3. **Lockdown workflows**: module enable/disable with dependency warnings
    (removing a module silently disables `optional_policy` blocks elsewhere),
    users/roles/MLS editing, domain-transition graph, property checks via
@@ -123,6 +123,15 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
   variant from a Fedora/RHEL selinux-policy.spec (request
   `selinux/specBuildConfig`, command "Configure Build from Spec File…").
+- `server/policy_diff.py`: setools diff of two compiled policies (TE rules
+  keyed by type/source/target/class/conditional, compared per permission;
+  element and membership changes) → JSON (request `selinux/policyDiff`).
+- `server/explain.js`: indexes a build's m4 output statements (allow & co,
+  type_* rules, typeattribute / `type T, attrs`) with source line + call
+  chain, and traces changed rules to them (direct, or attribute rule +
+  the membership statement). Names are interned and statement text is read
+  back lazily; RHEL ≈ 242k statements, ~110 MB, 2.5 s cold / 0.15 s cached;
+  dropped after 2 idle minutes.
 - `server/policy_model.py`: setools export of a compiled policy to JSON
   (request `selinux/policyModel`).
 - `client/extension.js`: language client, status bar, commands, Policy
@@ -135,6 +144,9 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
+- `test/diff-e2e.js` (`npm run test:diff`): copies a tree (default CLIP)
+  into a fresh git repo, edits logging.te in an unsaved buffer, checks the
+  diff vs HEAD, its tracing, and the Changes view (stub vscode).
 - `test/build-rhel-e2e.js` (`npm run test:rhel`): RHEL tree build with
   settings from the spec (default ~/sepol-test/rhel9 + srpm on melody),
   trust gating, overlays, booleans, link errors; ~2 min.
@@ -201,8 +213,10 @@ Package: `npx @vscode/vsce package`.
   tree (Configure from Spec → targeted build → Compiled Policy view) used
   interactively too, after fixing the stale "build first" message; ifdef
   dimming and flag hover confirmed in VS Code on the RHEL tree.
-- Compiled Policy view shows structure only; allow/dontaudit rules with
-  their source lines, and sediff against a commit, are the next steps.
+- Compiled Policy view shows structure only; allow/dontaudit rules per
+  domain with their source lines are next (explain.js already does the
+  tracing). Changes view compares with HEAD only. Scratch dirs are keyed
+  by tree path, so two windows on one tree share (and can race on) one.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
   without make (Windows local) nothing is decided.

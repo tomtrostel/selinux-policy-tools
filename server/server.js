@@ -855,18 +855,120 @@ connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {
   try { return { configs: require('./specconfig').specBuildConfigs(specPath) }; } catch (e) { return { error: e.message }; }
 });
 
+/* ---------------- what changed since HEAD ---------------- */
+
+/*
+ * Baseline: the tree exported at HEAD (git archive) and built with the same
+ * settings in its own scratch tree, cached per commit + settings. The current
+ * side is the last build of the working tree. The compiled policies are
+ * diffed with setools (policy_diff.py) and each change is traced to source
+ * statements in the matching side's m4 output (explain.js).
+ */
+const explain = require('./explain');
+const baseline = { key: null, res: null, info: null, srcRoot: null, pending: null, pendingKey: null };
+let explainIdle = null;
+
+function treeBuildOptions(root) {
+  const files = {};
+  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolvePath(root, s));
+  const makeArgs = settings.build.tree.makeArgs || [];
+  const custom = (settings.build.tree.targets || []).length > 0;
+  const p1 = custom ? settings.build.tree.targets : phase1Targets(root, makeArgs);
+  return { makeArgs, files, targets: custom || p1.includes('policy') ? p1 : [...p1, 'validate'] };
+}
+
+async function ensureBaseline(root, info) {
+  const opts = treeBuildOptions(root);
+  const key = JSON.stringify({ root, sha: info.sha, opts });
+  if (baseline.key === key && baseline.res) return baseline;
+  if (baseline.pending && baseline.pendingKey === key) { await baseline.pending; return baseline; }
+  baseline.pendingKey = key;
+  baseline.pending = (async () => {
+    connection.sendNotification('selinux/build', { state: 'baseline', module: path.basename(root), short: info.sha.slice(0, 7) });
+    const dest = build.scratchDir('head', root);
+    workDirs.add(dest);
+    const srcRoot = await build.exportHead(info, dest);
+    const res = await build.buildTree(srcRoot, (p) => { try { return fs.readFileSync(p); } catch { return null; } }, opts);
+    workDirs.add(res.workDir);
+    Object.assign(baseline, { key, res, info, srcRoot });
+  })();
+  try { await baseline.pending; } finally { baseline.pending = null; }
+  return baseline;
+}
+
+connection.onRequest('selinux/policyDiff', async () => {
+  await indexing;
+  if (!treeRoot) return { unavailable: 'Comparing with HEAD needs a full policy source tree.' };
+  const why = buildUnavailable();
+  if (why) return { unavailable: why };
+  const info = await build.gitInfo(treeRoot);
+  if (!info) return { unavailable: `${treeRoot} is not in a git repository with commits, so there is no HEAD to compare with.` };
+  const t0 = Date.now();
+
+  // Current side: the last build of the working tree (build now if there is none or it failed).
+  let cur = lastBuild.get(treeRoot);
+  if (!cur || !cur.ok || !cur.policyBin) { await runBuild(treeRoot, false, null); cur = lastBuild.get(treeRoot); }
+  if (!cur || !cur.ok || !cur.policyBin) return { unavailable: 'The working tree does not build; fix its errors (see Problems) and compare again.' };
+
+  const base = await ensureBaseline(treeRoot, info);
+  const short = info.sha.slice(0, 7);
+  if (!base.res.ok || !base.res.policyBin) return { unavailable: `HEAD (${short}) does not build with the current settings, so there is nothing to compare with.`, log: base.res.log };
+
+  let diff;
+  try { diff = await runPython('policy_diff.py', [base.res.policyBin, cur.policyBin]); } catch (e) { return { unavailable: `Comparing the policies failed: ${e.message}` }; }
+  const tDiff = Date.now();
+
+  // Files that differ from HEAD rank first when several statements explain a change.
+  const changedB = new Set(await build.gitChangedFiles(treeRoot, info));
+  for (const d of documents.all()) {
+    const p = toPath(d.uri);
+    if (p.startsWith(treeRoot + path.sep)) { let disk = null; try { disk = fs.readFileSync(p, 'utf8'); } catch { /* new */ } if (disk !== d.getText()) changedB.add(p); }
+  }
+  const toHead = (p) => path.join(base.srcRoot, path.relative(treeRoot, p));
+  const changedA = new Set([...changedB].map(toHead));
+  const side = (res, attrs, gained, changedFiles) => ({ index: explain.byName(explain.indexBuild(build.treeOutputs(res), res.resolveFile)), attrs, gained, changedFiles });
+  const sideB = side(cur, diff.attrsB, new Map(diff.membership.map(m => [m.type, new Set(m.added)])), changedB);
+  const sideA = side(base.res, diff.attrsA, new Map(diff.membership.map(m => [m.type, new Set(m.removed)])), changedA);
+  // HEAD-side origins point into the exported copy; also give the working-tree path.
+  const fromHead = (o) => ({ ...o, head: true, real: path.join(treeRoot, path.relative(base.srcRoot, o.path)), because: o.because && o.because.map(fromHead) });
+  const headSide = (x) => ({ origins: x.origins.map(fromHead), more: x.more });
+  for (const r of diff.rules) {
+    if (r.add.length) r.addFrom = explain.explainRule(r, r.add, sideB);
+    if (r.del.length) r.delFrom = headSide(explain.explainRule(r, r.del, sideA));
+  }
+  for (const m of diff.membership) {
+    m.addFrom = m.added.map(a => ({ attr: a, origins: explain.membershipOrigins(m.type, a, sideB) }));
+    m.delFrom = m.removed.map(a => ({ attr: a, origins: explain.membershipOrigins(m.type, a, sideA).map(fromHead) }));
+  }
+  explain.releaseTexts();
+  // The statement index is ~100 MB per side on a RHEL tree: keep it while
+  // comparisons are being refreshed, drop it when they go idle.
+  clearTimeout(explainIdle);
+  explainIdle = setTimeout(() => explain.dropCache(), 120000);
+  diff.typeLocations = Object.fromEntries(diff.types.added.map(t => [t, sourceLocation(t, ['type'])]));
+  delete diff.attrsA; delete diff.attrsB; delete diff.aliasesA; delete diff.aliasesB;
+  return {
+    ...diff,
+    head: { sha: info.sha, short, subject: info.subject },
+    builtAt: fs.statSync(cur.policyBin).mtimeMs,
+    ms: { total: Date.now() - t0, diff: tDiff - t0 },
+  };
+});
+
 /* ---------------- compiled policy model (setools export of the last build) ---------------- */
 
 const policyModelCache = { bin: null, mtimeMs: 0, model: null };
 
-function exportPolicy(bin) {
+/** Run one of the setools scripts next to this file; resolves with its JSON output. */
+function runPython(script, args) {
   return new Promise((resolve, reject) => {
-    require('child_process').execFile('python3', [path.join(__dirname, 'policy_model.py'), bin], { maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
+    require('child_process').execFile('python3', [path.join(__dirname, script), ...args], { maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
       if (err) reject(new Error(/No module named 'setools'/.test(stderr) ? 'python3-setools is not installed (dnf install setools-console).' : (stderr || err.message).trim()));
       else resolve(JSON.parse(stdout));
     });
   });
 }
+const exportPolicy = (bin) => runPython('policy_model.py', [bin]);
 
 /** Where a compiled element is declared: { p, l, c, len, m (module) }, preferring the tree being built. */
 function sourceLocation(name, kinds) {

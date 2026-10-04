@@ -154,6 +154,31 @@ what the sources declare.
 * *SELinux: Find in Compiled Policy* searches all elements and reveals the
   one you pick.
 
+**Changes since HEAD** (full trees in git)
+
+*SELinux: Compare Compiled Policy with HEAD* answers "what did my edit
+actually change in the compiled policy?". It builds the tree as of `HEAD`
+(exported with `git archive`, same build settings, cached per commit) and
+compares its kernel policy with your latest build:
+
+* Rules added, removed or changed, down to individual permissions
+  (`~ allow syslogd_t etc_t:dir +add_name +remove_name +write`), grouped by
+  source type, including side effects you didn't write: one
+  `auth_read_shadow(syslogd_t)` line also grants `shadow_history_t`.
+* Each change is traced to the source: the line and the interface call
+  that produce it (`logging.te:650 via files_manage_etc_files(syslogd_t)`).
+  Rules that come from an attribute rule also show the line that put the
+  type into the attribute. Removed permissions point at the `HEAD` version
+  of the line.
+* Attribute membership, and added/removed types, attributes, roles, users,
+  booleans and classes; changed boolean defaults and role/user assignments.
+* An edit that grants nothing new is reported as "No effective policy
+  change".
+
+The first comparison builds `HEAD` too (CLIP: ~20 s for both builds; RHEL
+targeted about a minute); after that a comparison takes 1–2 s plus your
+build, and the view refreshes after each build.
+
 ## Settings
 
 | Setting | Default | Purpose |
@@ -264,7 +289,19 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * It shows structure (types, attributes, roles, users, booleans, classes,
   domain transitions), not yet the allow/dontaudit rules or which source
   lines produced them.
-* No comparison against a previous build or commit yet (`sediff`).
+
+**Changes since HEAD**
+
+* Needs the tree to be in a git repository with at least one commit; it
+  compares with `HEAD` only (not other commits or saved builds yet).
+* Tracing finds the statements in the build output that match a changed
+  rule; when several do, files you changed rank first and at most six are
+  listed. Rules using complements or wildcards (`~{ … }`, `*`) match
+  loosely.
+* The statement index takes about 100 MB per side on a RHEL tree while
+  comparisons are active; it is dropped after two idle minutes.
+* Two VS Code windows on the same tree share one scratch build directory;
+  building in both at once can interfere.
 
 ## Development
 
@@ -276,6 +313,7 @@ npm test               # LSP features against a policy tree with a seeded test m
 npm run test:build     # standalone-module builds (Linux; skips elsewhere)
 npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; defaults to a CLIP RHEL 9 checkout)
 npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
+npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Linux; defaults to CLIP RHEL 9)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```
