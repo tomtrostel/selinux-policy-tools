@@ -286,6 +286,9 @@ function runBuild(key, pkg = false, trigger = null) {
     }
     publishBuild(res);
     const summary = buildSummary(res);
+    // If rules have been browsed this session, re-index the new policy in the
+    // background so the next expand doesn't wait for it (RHEL: ~5 s).
+    if (res.tree && res.ok && res.policyBin && policyQuery.proc) policyQuery.request({ op: 'rules', bin: res.policyBin, name: '', dir: 'source', kinds: ['allow'] });
     connection.sendNotification('selinux/build', { state: 'done', ...summary });
     return summary;
   })();
@@ -944,7 +947,7 @@ connection.onRequest('selinux/policyDiff', async () => {
   // The statement index is ~100 MB per side on a RHEL tree: keep it while
   // comparisons are being refreshed, drop it when they go idle.
   clearTimeout(explainIdle);
-  explainIdle = setTimeout(() => explain.dropCache(), 120000);
+  explainIdle = setTimeout(() => { explain.dropCache(); ruleIndex = { key: null, side: null }; }, 120000);
   diff.typeLocations = Object.fromEntries(diff.types.added.map(t => [t, sourceLocation(t, ['type'])]));
   delete diff.attrsA; delete diff.attrsB; delete diff.aliasesA; delete diff.aliasesB;
   return {
@@ -991,8 +994,10 @@ function userLocations() {
   return out;
 }
 
-connection.onRequest('selinux/policyModel', async () => {
-  await indexing;
+connection.onRequest('selinux/policyModel', async () => { await indexing; return getPolicyModel(); });
+
+/** The compiled policy of the last tree build with source locations, or { unavailable }. */
+async function getPolicyModel() {
   if (usingDevel) return { unavailable: 'The compiled policy view needs a full policy source tree: standalone modules are not linked into a kernel policy.' };
   if (!treeRoot) return { unavailable: 'Open a refpolicy source tree to see its compiled policy.' };
   const res = lastBuild.get(treeRoot);
@@ -1016,6 +1021,68 @@ connection.onRequest('selinux/policyModel', async () => {
     Object.assign(policyModelCache, { bin: res.policyBin, mtimeMs, model });
   }
   return policyModelCache.model;
+}
+
+/* ---------------- rules of a type (Compiled Policy view) ---------------- */
+
+/** policy_query.py, kept running so the policy is indexed once per build. */
+const policyQuery = {
+  proc: null, next: 1, waiting: new Map(), buf: '',
+  request(msg) {
+    if (!this.proc) {
+      this.proc = require('child_process').spawn('python3', [path.join(__dirname, 'policy_query.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
+      this.proc.stdout.on('data', (d) => {
+        this.buf += d;
+        let nl;
+        while ((nl = this.buf.indexOf('\n')) >= 0) {
+          const line = this.buf.slice(0, nl); this.buf = this.buf.slice(nl + 1);
+          let r; try { r = JSON.parse(line); } catch { continue; }
+          const w = this.waiting.get(r.id); this.waiting.delete(r.id);
+          if (w) w(r);
+        }
+      });
+      this.proc.on('exit', () => { for (const w of this.waiting.values()) w({ error: 'policy query helper exited' }); this.waiting.clear(); this.proc = null; this.buf = ''; });
+      this.proc.stderr.on('data', (d) => { if (/No module named 'setools'/.test(d)) log('policy_query.py: python3-setools is not installed'); });
+    }
+    const id = this.next++;
+    return new Promise((resolve) => { this.waiting.set(id, resolve); this.proc.stdin.write(JSON.stringify({ id, ...msg }) + '\n'); });
+  },
+};
+process.on('exit', () => { if (policyQuery.proc) policyQuery.proc.kill(); });
+
+// Rules with `name` as source or target (directly or through its attributes), from the last build.
+connection.onRequest('selinux/typeRules', async ({ name, dir, kinds }) => {
+  await indexing;
+  const model = await getPolicyModel();
+  if (model.unavailable) return model;
+  const r = await policyQuery.request({ op: 'rules', bin: model.bin, name, dir, kinds });
+  return r.error ? { unavailable: `Rule query failed: ${r.error}` } : r;
+});
+
+/** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */
+let ruleIndex = { key: null, side: null };
+async function currentSide() {
+  const res = lastBuild.get(treeRoot);
+  const model = await getPolicyModel();
+  if (!res || model.unavailable) return null;
+  const key = `${res.workDir}:${model.builtAt}`;
+  if (ruleIndex.key !== key || !ruleIndex.side) {
+    const attrs = Object.fromEntries(model.types.map(t => [t.name, t.attrs]));
+    ruleIndex = { key, side: { index: explain.byName(explain.indexBuild(build.treeOutputs(res), res.resolveFile)), attrs, gained: null, changedFiles: null } };
+  }
+  clearTimeout(explainIdle);
+  explainIdle = setTimeout(() => { explain.dropCache(); ruleIndex = { key: null, side: null }; }, 120000);
+  return ruleIndex.side;
+}
+
+// The source statements that produce one compiled rule (expanded on demand in the view).
+connection.onRequest('selinux/ruleOrigins', async ({ rule }) => {
+  await indexing;
+  const side = await currentSide();
+  if (!side) return { origins: [], more: 0 };
+  const x = explain.explainRule(rule, rule.perms, side, 8);
+  explain.releaseTexts();
+  return x;
 });
 
 documents.listen(connection);

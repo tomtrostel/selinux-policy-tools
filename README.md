@@ -151,6 +151,16 @@ what the sources declare.
   further.
 * Clicking any element opens its declaration; template-generated types open
   the call that generated them.
+* **Rules.** Every type and attribute has *Can access* (allow rules with it
+  as source, grouped by target), *Accessed by* (as target, grouped by
+  source) and *Other rules* (dontaudit, auditallow, type transitions).
+  Rules written for an attribute the type belongs to are included and
+  marked "via domain" etc.; conditional rules show their boolean. Expanding
+  a rule lists the source statements that produce it, with the interface
+  call they came through (`logging.te:77 via init_daemon_domain(…)`).
+  The policy is indexed once per build (CLIP under a second, RHEL targeted
+  about 5 s, done in the background after later builds); after that a
+  query takes milliseconds.
 * *SELinux: Find in Compiled Policy* searches all elements and reveals the
   one you pick.
 
@@ -290,9 +300,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 **Compiled Policy view**
 
 * Full trees only; a standalone module isn't linked into a kernel policy.
-* It shows structure (types, attributes, roles, users, booleans, classes,
-  domain transitions), not yet the allow/dontaudit rules or which source
-  lines produced them.
+* Rules are shown as the compiled policy stores them: some attribute rules
+  are expanded per type by the build, others stay written for the
+  attribute (marked "via …"). Finding a rule's source statements takes a
+  few seconds the first time after a build on a RHEL-sized tree, and lists
+  at most eight.
 
 **Changes since HEAD**
 

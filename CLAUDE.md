@@ -132,6 +132,12 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
   the membership statement). Names are interned and statement text is read
   back lazily; RHEL ≈ 242k statements, ~110 MB, 2.5 s cold / 0.15 s cached;
   dropped after 2 idle minutes.
+- `server/policy_query.py`: long-running setools helper (JSON lines on
+  stdin/stdout). Indexes the policy once per policy.bin (rules bucketed by
+  source/target name + type attributes; CLIP 0.7 s, RHEL ~5 s) and answers
+  `rules` queries in ms (requests `selinux/typeRules`; origins via
+  `selinux/ruleOrigins` → explain.js on the current build's index). Warmed
+  in the background after builds once used.
 - `server/policy_model.py`: setools export of a compiled policy to JSON
   (request `selinux/policyModel`).
 - `client/extension.js`: language client, status bar, commands, Policy
@@ -214,9 +220,9 @@ Package: `npx @vscode/vsce package`.
   interactively too, after fixing the stale "build first" message; ifdef
   dimming and flag hover confirmed in VS Code on the RHEL tree; Changes
   since HEAD confirmed in VS Code on the CLIP clone.
-- Compiled Policy view shows structure only; allow/dontaudit rules per
-  domain with their source lines are next (explain.js already does the
-  tracing). Changes view compares with HEAD only. Scratch dirs are keyed
+- Compiled Policy view: rules per type/attribute (Can access / Accessed by
+  / Other rules) with on-demand source tracing; not yet clicked through in
+  VS Code. Changes view compares with HEAD only. Scratch dirs are keyed
   by tree path, so two windows on one tree share (and can race on) one.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;

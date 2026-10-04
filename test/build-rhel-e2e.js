@@ -143,6 +143,18 @@ const configure = async (tree) => {
     const conf = new Map([...fs.readFileSync(cfg.files['policy/booleans.conf'][0], 'utf8').matchAll(/^\s*(\w+)\s*=\s*(\w+)/gm)].map(x => [x[1], /^(true|1|on)$/i.test(x[2])]));
     const mismatched = m.bools.filter(b => conf.has(b.name) && conf.get(b.name) !== b.state).map(b => b.name);
     check(conf.size > 0 && mismatched.length === 0, `boolean defaults follow booleans-${variant}.conf (${[...conf.keys()].filter(k => m.bools.some(b => b.name === k)).length} checked)`, mismatched.slice(0, 10));
+    // Rule queries at RHEL scale: indexed once per build, then fast.
+    let t0 = Date.now();
+    const q1 = await conn.sendRequest('selinux/typeRules', { name: 'init_t', dir: 'source', kinds: ['allow'] });
+    const first = Date.now() - t0; t0 = Date.now();
+    const q2 = await conn.sendRequest('selinux/typeRules', { name: 'syslogd_t', dir: 'target', kinds: ['allow'] });
+    const next = Date.now() - t0;
+    const sample = q1.rules && q1.rules.find(r => r.s === 'init_t' && !r.cond);
+    t0 = Date.now();
+    const o = sample && await conn.sendRequest('selinux/ruleOrigins', { rule: sample });
+    const tOrig = Date.now() - t0;
+    check(q1.count > 500 && q2.count > 50 && first < 15000 && next < 1000 && o && o.origins.length,
+      `rule queries: init_t can access ${q1.count} rules (first ${first} ms incl. indexing, next ${next} ms); origins of "${sample && `${sample.t}:${sample.c}`}" in ${tOrig} ms → ${o && o.origins[0] && `${path.basename(o.origins[0].path)}:${o.origins[0].line + 1}`}`, { q1: q1.unavailable, q2: q2.unavailable });
     const located = m.types.filter(x => x.loc).length;
     check(located / m.types.length > 0.95, `source location for ${located}/${m.types.length} types`, m.types.filter(x => !x.loc).slice(0, 15).map(x => x.name));
   }

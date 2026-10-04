@@ -405,7 +405,7 @@ class CompiledPolicyView {
         if (outT.length) out.push(this.group(n, 'out', 'Transitions to', outT, (k, x) => this.typeRef(k, x.result, `via ${x.entry}`), 'arrow-right'));
         const inT = m.transIn.get(t.name) || [];
         if (inT.length) out.push(this.group(n, 'in', 'Entered from', inT, (k, x) => this.typeRef(k, x.source, `via ${x.entry}`), 'arrow-left'));
-        return out;
+        return out.concat(this.ruleGroups(n, t.name));
       },
     });
   }
@@ -414,7 +414,61 @@ class CompiledPolicyView {
     const members = (this.model.members.get(a.name) || []).slice().sort();
     return this.node(parent, `a:${a.name}`, a.name, { icon: 'symbol-interface', loc: a.loc, desc: `${members.length} types`,
       tooltip: `attribute ${a.name}\n${this.where(a.loc)}`,
-      kids: members.length ? (n) => members.map(t => this.typeRef(n, t)) : undefined });
+      kids: (n) => [...(members.length ? [this.group(n, 'members', 'Member types', members, (k, t) => this.typeRef(k, t), 'symbol-class')] : []),
+        ...this.ruleGroups(n, a.name)] });
+  }
+
+  /* ----- rules (queried on demand from the last build) ----- */
+
+  /** "Can access" / "Accessed by" / "Other rules" groups for a type or attribute. */
+  ruleGroups(parent, name) {
+    const OTHER = ['dontaudit', 'auditallow', 'type_transition', 'type_change', 'type_member'];
+    return [
+      this.rulesNode(parent, 'r-src', 'Can access', name, 'source', ['allow'], r => r.t, 'arrow-right'),
+      this.rulesNode(parent, 'r-tgt', 'Accessed by', name, 'target', ['allow'], r => r.s, 'arrow-left'),
+      this.rulesNode(parent, 'r-oth', 'Other rules', name, 'source', OTHER, r => r.rt, 'list-unordered'),
+    ];
+  }
+
+  rulesNode(parent, key, label, name, dir, kinds, groupOf, icon) {
+    return this.node(parent, key, label, { icon, tooltip: `${label}: rules from the last build where ${name} (or one of its attributes) is the ${dir}.`,
+      kids: async (n) => {
+        const r = await this.request('selinux/typeRules', { name, dir, kinds });
+        if (r.unavailable) return [this.node(n, 'na', r.unavailable, { icon: 'info' })];
+        if (!r.rules.length) return [this.node(n, 'none', 'none', { icon: 'circle-slash' })];
+        n.item.description = String(r.count);
+        const groups = new Map();
+        for (const rule of r.rules) { const g = groupOf(rule); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(rule); }
+        return [...groups.keys()].sort().map((g) => {
+          const ref = this.model.typeByName.get(g) || this.model.attrByName.get(g);
+          return this.node(n, `g:${g}`, g, { icon: this.model.attrByName.has(g) ? 'symbol-interface' : kinds.includes('allow') ? 'symbol-class' : 'symbol-event',
+            desc: groups.get(g).length, loc: ref && ref.loc, tooltip: ref ? this.where(ref.loc) : undefined,
+            kids: (k) => groups.get(g).map((rule, i) => this.ruleNode(k, rule, i, name, dir)) });
+        });
+      } });
+  }
+
+  ruleNode(parent, r, i, name, dir) {
+    const own = dir === 'source' ? r.s : r.t;
+    const isTT = /^type_/.test(r.rt);
+    const perms = isTT ? `→ ${r.perms[0]}` : `{ ${r.perms.join(' ')} }`;
+    const label = `${r.rt === 'allow' ? '' : r.rt + ' '}${dir === 'source' && r.rt !== 'allow' ? r.t + ':' : ''}${r.c} ${perms}`;
+    const via = own !== name && own !== 'self' ? `via ${own}` : '';
+    const text = `${r.rt} ${r.s} ${r.t}:${r.c} ${isTT ? r.perms[0] : `{ ${r.perms.join(' ')} }`};`;
+    return this.node(parent, `rule:${i}`, label, {
+      icon: r.rt === 'allow' ? 'pass' : r.rt === 'dontaudit' ? 'mute' : isTT ? 'arrow-swap' : 'eye',
+      desc: [via, r.cond ? `[${r.cond}]` : ''].filter(Boolean).join(' '),
+      tooltip: `${text}${r.cond ? `\nonly when ${r.cond}` : ''}\n\nExpand to see the source statements that produce it.`,
+      kids: async (n) => {
+        const x = await this.request('selinux/ruleOrigins', { rule: r });
+        const out = x.origins.map((o, j) => this.node(n, `o:${j}`, `${vscode.workspace.asRelativePath(o.path)}:${o.line + 1}`, {
+          icon: 'go-to-file', loc: { p: o.path, l: o.line, c: 0 }, desc: o.via ? `via ${o.via}` : o.text,
+          tooltip: `${o.text}${o.chain && o.chain.length ? `\n\nthrough ${o.chain.join(' → ')}` : ''}` }));
+        if (x.more) out.push(this.node(n, 'more', `… ${x.more} more statements also produce this`, { icon: 'ellipsis' }));
+        if (!out.length) out.push(this.node(n, 'none', 'no source statement found', { icon: 'question' }));
+        return out;
+      },
+    });
   }
 
   roleNode(parent, r) {

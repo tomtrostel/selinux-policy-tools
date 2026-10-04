@@ -177,7 +177,7 @@ const hover = async (f, text, needle) => {
     const after = await early.getChildren();
     check(before.length === 1 && /Build the policy/.test(before[0].item.label) && after.some(n => n.item.label === 'Modules'),
       'view opened before the first build shows the policy after the build refreshes it', { before: before.map(n => n.item.label), after: after.map(n => n.item.label) });
-    const view = new CompiledPolicyView(async () => m);
+    const view = new CompiledPolicyView((method, params) => (method === 'selinux/policyModel' ? m : conn.sendRequest(method, params)));
     const roots = await view.getChildren();
     const labels = (ns) => ns.map(n => n.item.label);
     const child = async (n, label) => (await view.getChildren(n)).find(k => k.item.label === label);
@@ -194,6 +194,30 @@ const hover = async (f, text, needle) => {
     check(sysU && /types/.test(sysU.item.description), 'Users › system_u › system_r (role with its types)', sysU && sysU.item);
     const canon = view.canonical('type', 'syslogd_t');
     check(canon && canon.parent && canon.parent.key === 'types' && canon.item.id === '/types/t:syslogd_t', 'canonical node for reveal: Types › syslogd_t', canon && canon.item.id);
+
+    // 8b. Rules of a type, queried from the last build, and their source statements.
+    let t0 = Date.now();
+    const asSrc = await conn.sendRequest('selinux/typeRules', { name: 'syslogd_t', dir: 'source', kinds: ['allow'] });
+    const tFirst = Date.now() - t0; t0 = Date.now();
+    const asTgt = await conn.sendRequest('selinux/typeRules', { name: 'syslogd_t', dir: 'target', kinds: ['allow'] });
+    const tNext = Date.now() - t0;
+    const entry = asSrc.rules && asSrc.rules.find(r => r.t === 'syslogd_exec_t' && r.c === 'file' && r.perms.includes('entrypoint'));
+    check(asSrc.count > 50 && entry && asSrc.rules.some(r => r.s !== 'syslogd_t') && asSrc.via.includes('domain'),
+      `syslogd_t can access: ${asSrc.count} rules incl. ones via its ${asSrc.via && asSrc.via.length} attributes (first query ${tFirst} ms, next ${tNext} ms)`, asSrc.unavailable);
+    check(asTgt.count > 5 && asTgt.rules.some(r => r.t === 'syslogd_t' || r.t === 'self' || asTgt.via.includes(r.t)), `syslogd_t accessed by: ${asTgt.count} rules`, asTgt.unavailable);
+    const daemonLine = ORIG[LOGGING].split('\n').findIndex(l => l.includes('init_daemon_domain(syslogd_t'));
+    const orig = entry && await conn.sendRequest('selinux/ruleOrigins', { rule: entry });
+    check(orig && orig.origins.some(o => o.path === LOGGING && o.line === daemonLine && /init_daemon_domain/.test(o.via)),
+      `allow syslogd_t syslogd_exec_t:file entrypoint ← logging.te:${daemonLine + 1} via init_daemon_domain`, orig && orig.origins.map(o => `${path.relative(ws, o.path)}:${o.line + 1} ${o.via}`));
+    // ...and the same walk in the view: Types › syslogd_t › Can access › syslogd_exec_t › file {…} › origin
+    const canAccess = (await view.getChildren(canon)).find(k => k.item.label === 'Can access');
+    const exec = canAccess && (await view.getChildren(canAccess)).find(k => k.item.label === 'syslogd_exec_t');
+    const ruleItem = exec && (await view.getChildren(exec)).find(k => /entrypoint/.test(k.item.label));
+    const origins = ruleItem ? await view.getChildren(ruleItem) : [];
+    check(origins.some(o => o.item.label === `${LOGGING}:${daemonLine + 1}` && o.item.command && o.item.command.arguments[0] === LOGGING),
+      `view: Types › syslogd_t › Can access › syslogd_exec_t › ${ruleItem && ruleItem.item.label} › ${origins[0] && origins[0].item.label}`);
+    const viaRule = canAccess && (await Promise.all((await view.getChildren(canAccess)).slice(0, 40).map(g => view.getChildren(g)))).flat().find(r => /^via /.test(r.item.description || ''));
+    check(viaRule, `view marks rules that come through an attribute (${viaRule && viaRule.item.label} ${viaRule && viaRule.item.description})`);
   }
 
   // 9. Clean shutdown removes the scratch tree.
