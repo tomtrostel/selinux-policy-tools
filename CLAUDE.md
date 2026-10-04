@@ -6,21 +6,80 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-1. **Navigation and authoring help** (v0.1, done): definition, references,
+Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
+tag on commit 3605cef). Steps 1 and 2 are done; step 3 is next.
+
+1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
-   diagnostics with quick fixes.
-2. **"What did this change actually grant"** (done): run the real build
-   (m4 + checkpolicy, refpolicy Makefile), map compiled rules back to source
-   lines, diff against the last commit, show the expanded rules behind an
-   interface call on hover. Standalone modules and full trees (CLIP, RHEL
-   9): build on save, compiler + link diagnostics, "Compiles to" hover,
-   expanded view, Compiled Policy view, "Changes since HEAD" (own setools
-   diff, ~4x faster than sediff, + tracing to source statements).
-3. **Lockdown workflows**: module enable/disable with dependency warnings
-   (removing a module silently disables `optional_policy` blocks elsewhere),
-   users/roles/MLS editing, domain-transition graph, property checks via
-   Datalog (Soufflé) and SMT (Z3) on the compiled policy (setools export).
-4. Hardening: test against real RHEL 9/10 trees, performance, docs.
+   diagnostics with quick fixes, build-flag ifdef evaluation.
+2. **"What did this change actually grant"** (done): real builds
+   (standalone modules + full trees: CLIP RHEL 9, RHEL 9 targeted via spec
+   settings), compiler/link diagnostics, "Compiles to" hover, expanded
+   view, Compiled Policy view (elements + rules per type, traced to
+   source), "Changes since HEAD" (own setools diff + source tracing).
+3. **Lockdown workflows** (next). Planned order:
+   1. **Module on/off preview** (start here): pick a module, preview the
+      effect of flipping it in modules.conf before editing: optional_policy
+      blocks elsewhere that drop out, types/rules/transitions that
+      disappear, link failures. Plan: reuse the Changes machinery: build a
+      second scratch tree with a `selinux.build.tree.files`-style overlay of
+      the edited modules.conf (or an APPS_MODS change), diff its policy.bin
+      against the current build with policy_diff.py, trace with explain.js;
+      find the affected optional_policy blocks statically from the parser
+      (calls inside optional_policy to interfaces of the flipped module).
+      UI: command/context menu on a module in Policy Explorer + a results
+      view like Changes since HEAD.
+   2. **Domain-transition graph**: webview graph from the policy model's
+      transitions (already exported by policy_model.py), rooted at init_t,
+      a login domain or any selected domain; nodes clickable to source.
+   3. **Property checks**: saved assertions over the compiled policy (e.g.
+      "only auditd_t may write auditd_log_t", "no transition path
+      user_t → sysadm_t"), re-checked after each build, failures as
+      diagnostics/notifications. Start with setools (TERuleQuery,
+      DomainTransitionAnalysis, InfoFlowAnalysis); Soufflé/Z3 only if needed.
+   4. **Users / roles / MLS editing** with validation.
+4. **Extensions of what's built** (smaller, any time):
+   - Compare with other refs (branch/tag/commit) or a saved build
+     (outputDir), not only HEAD.
+   - Per-window scratch dirs (scratch is keyed by tree path, so two
+     windows on one tree share and can race on one).
+   - Build through semodule/CIL (`make load SEMODULE="semodule -p
+     <scratch> -X 100"`) for faithful comparison with installed policies.
+5. **Hardening**: .te missing-require check, link-error placement,
+   generated corenetwork.te error mapping, several trees per workspace,
+   test minimum/mls/automotive variants, RHEL 10, monolithic builds.
+
+Open decision for the user: the GitHub repo
+(github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
+is only visible to collaborators; making it public is the user's call.
+
+## Working setup (how this project is developed and tested)
+
+- Dev machine is Windows (D:\src\selinux-policy-tools, Git Bash +
+  PowerShell); `npm test` runs locally (build tests skip on Windows).
+- Linux test host: `ssh melody` (Rocky 9.8, key auth, user ttrostel; sudo
+  needs a password, so ask the user for package installs). Test copy of the
+  extension at ~/sepol-test/tools (sync with
+  `tar czf - server test client package.json | ssh melody 'cd ~/sepol-test/tools && tar xzf -'`),
+  trees: ~/sepol-test/rhel9 (+ ~/sepol-test/srpm unpacked SRPM),
+  ~/sepol-test/clip (git clone, tree in packages/selinux-policy/selinux-policy),
+  ~/sepol-test/mymodule (standalone module).
+- Run on melody: `node test/build-e2e.js`, `test/build-tree-e2e.js`,
+  `test/build-rhel-e2e.js`, `test/diff-e2e.js`; survey with `--make`.
+- Interactive testing: the user runs VS Code on Windows with Remote-SSH to
+  melody. Install a fresh build there with `npx @vscode/vsce package`, scp
+  the .vsix to ~/sepol-test/, then
+  `~/.vscode-server/cli/servers/Stable-<commit>/server/bin/code-server --install-extension <vsix> --force`
+  (commit = `code --version` line 2), and ask the user to *Developer:
+  Reload Window*.
+- Workflow the user expects after each feature: tests pass on melody,
+  README/CLAUDE.md updated (features, tested, limitations), commit + push
+  to GitHub (`gh` is at "C:\Program Files\GitHub CLI\gh.exe", logged in as
+  tomtrostel). Keep LF line endings (.gitattributes); if git warns about
+  CRLF in the working copy, delete and re-checkout the files.
+- Release: bump package.json version, add a CHANGELOG.md entry, package,
+  `gh release create v<version> <vsix> --notes-file <notes>` with install
+  instructions (see the v0.2.0 notes).
 
 ## Key design decisions (don't undo without discussion)
 
@@ -221,7 +280,8 @@ Package: `npx @vscode/vsce package`.
   dimming and flag hover confirmed in VS Code on the RHEL tree; Changes
   since HEAD confirmed in VS Code on the CLIP clone.
 - Compiled Policy view: rules per type/attribute (Can access / Accessed by
-  / Other rules) with on-demand source tracing; confirmed in VS Code. Changes view compares with HEAD only. Scratch dirs are keyed
+  / Other rules) with on-demand source tracing; confirmed in VS Code.
+  Changes view compares with HEAD only. Scratch dirs are keyed
   by tree path, so two windows on one tree share (and can race on) one.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
