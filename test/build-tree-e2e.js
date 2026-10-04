@@ -169,6 +169,14 @@ const hover = async (f, text, needle) => {
     Module._load = function (req, ...rest) { return req === 'vscode' ? stub : req === 'vscode-languageclient/node' ? lcStub : load.call(this, req, ...rest); };
     const { CompiledPolicyView } = require('../client/extension');
     Module._load = load;
+    // Opened before the first build: shows "build first"; after a build's refresh it must show the policy.
+    const answers = [{ unavailable: 'Build the policy (SELinux: Build) to see what it contains.', needsBuild: true }, m];
+    const early = new CompiledPolicyView(async () => answers.shift() || m);
+    const before = await early.getChildren();
+    early.refresh();
+    const after = await early.getChildren();
+    check(before.length === 1 && /Build the policy/.test(before[0].item.label) && after.some(n => n.item.label === 'Modules'),
+      'view opened before the first build shows the policy after the build refreshes it', { before: before.map(n => n.item.label), after: after.map(n => n.item.label) });
     const view = new CompiledPolicyView(async () => m);
     const roots = await view.getChildren();
     const labels = (ns) => ns.map(n => n.item.label);

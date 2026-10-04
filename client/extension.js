@@ -244,7 +244,8 @@ class CompiledPolicyView {
     this.roots = null;
   }
 
-  refresh() { this.model = null; this.roots = null; this._emitter.fire(); }
+  /** Forget everything loaded, including a "build first" message, and reload on next render. */
+  refresh() { this.model = null; this.message = null; this.roots = null; this._emitter.fire(); }
 
   async load() {
     if (this.model || this.message) return;
