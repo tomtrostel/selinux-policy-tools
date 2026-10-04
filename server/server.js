@@ -24,7 +24,11 @@ let settings = {
   develHeadersPath: '/usr/share/selinux/devel/include',
   diagnostics: { unknownMacros: true, classPerms: true, genRequire: true },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
-    tree: { makeArgs: [], targets: [], validate: true, outputDir: '' } },
+    tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} } },
+  // Set by the client from vscode.workspace.isTrusted. Building runs the tree's
+  // Makefile and the build settings can carry commands, so untrusted
+  // workspaces never build. Defaults to trusted for non-VS Code clients.
+  trusted: true,
 };
 let usingDevel = false; // index came from the devel headers (standalone modules)
 let indexing = Promise.resolve();
@@ -200,6 +204,7 @@ function buildTarget(p) {
 }
 
 function buildUnavailable() {
+  if (settings.trusted === false) return 'Builds are off in Restricted Mode: building runs the policy tree\'s Makefile. Trust this workspace (Manage Workspace Trust) to enable them.';
   if (!settings.build.enabled) return 'Builds are disabled (selinux.build.enabled).';
   if (!usingDevel && !treeRoot) return 'No buildable policy found: open a standalone module directory, or a refpolicy source tree (with Makefile, Rules.modular, build.conf and policy/).';
   const t = getToolchain();
@@ -237,7 +242,7 @@ function runBuild(key, pkg = false, trigger = null) {
         res = isTreeKey(key) ? await treeBuild(key, st) : await moduleBuild(key, wantPkg);
         // Explicit builds of a tree keep their outputs (builds on save are checks only).
         if (res.tree && wantPkg && res.ok && settings.build.tree.outputDir) {
-          try { res.exported = build.exportTreeOutputs(res, resolveOutputDir(key, settings.build.tree.outputDir), settings.build.tree.makeArgs || []); } catch (e) { res.exportError = e.message; }
+          try { res.exported = build.exportTreeOutputs(res, resolvePath(key, settings.build.tree.outputDir), settings.build.tree.makeArgs || []); } catch (e) { res.exportError = e.message; }
         }
         res.trigger = st.trigger;
         lastBuild.set(key, res);
@@ -263,15 +268,17 @@ async function moduleBuild(te, pkg) {
   return res;
 }
 
-/** `~/x` → home, relative → under the tree root, absolute as is. */
-function resolveOutputDir(root, dir) {
+/** A configured path: `~/x` → home, relative → under the tree root, absolute as is. */
+function resolvePath(root, dir) {
   if (dir === '~' || dir.startsWith('~/')) return path.join(require('os').homedir(), dir.slice(1));
   return path.resolve(root, dir);
 }
 
 async function treeBuild(root, st) {
   const name = path.basename(root);
-  const opts = { makeArgs: settings.build.tree.makeArgs || [] };
+  const files = {};
+  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolvePath(root, s));
+  const opts = { makeArgs: settings.build.tree.makeArgs || [], files };
   const readText = (p) => { const d = documents.get(toUri(p)); if (d) return d.getText(); try { return fs.readFileSync(p); } catch { return null; } };
   connection.sendNotification('selinux/build', { state: 'start', module: name });
   const custom = (settings.build.tree.targets || []).length > 0;
@@ -782,6 +789,14 @@ connection.onRequest('selinux/expandedPolicy', async ({ uri }) => {
   return text.trim() ? { module: name, text } : { module: name, unavailable: `${name} produced no policy in the last build: its module is probably off in modules.conf.` };
 });
 connection.onRequest('selinux/expansion', async ({ uri, line }) => expansionAt(toPath(uri), line));
+
+// Workspace trust can be granted while the server runs.
+connection.onNotification('selinux/setTrusted', ({ trusted }) => { settings.trusted = !!trusted; });
+
+// Build settings derived from a Fedora/RHEL selinux-policy.spec, one entry per policy variant.
+connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {
+  try { return { configs: require('./specconfig').specBuildConfigs(specPath) }; } catch (e) { return { error: e.message }; }
+});
 
 /* ---------------- compiled policy model (setools export of the last build) ---------------- */
 

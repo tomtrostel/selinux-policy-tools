@@ -144,13 +144,13 @@ function treeSources(root) {
  * Only files whose content differs are rewritten, so make's incremental
  * rebuild sees exactly what changed.
  */
-function syncTree(root, work, readText) {
+function syncTree(root, work, readText, overlays = new Map()) {
   const want = new Set();
   let written = 0;
-  for (const rel of treeSources(root)) {
+  for (const rel of new Set([...treeSources(root), ...overlays.keys()])) {
     want.add(rel);
     const src = path.join(root, rel), dst = path.join(work, rel);
-    const t = readText(src, true);
+    const t = overlays.has(rel) ? overlays.get(rel) : readText(src, true);
     if (t == null) continue;
     const buf = Buffer.isBuffer(t) ? t : Buffer.from(t);
     let cur = null;
@@ -179,11 +179,27 @@ function treeOption(root, makeArgs, name) {
  * APPS_MODS an RPM spec passes); `targets` default to a modular build plus
  * link validation, or `policy` for MONOLITHIC=y trees.
  */
-async function buildTree(root, readText, { makeArgs = [], targets, jobs = os.cpus().length, timeoutMs = 600000, sync = true } = {}) {
+async function buildTree(root, readText, { makeArgs = [], targets, files = {}, jobs = os.cpus().length, timeoutMs = 600000, sync = true } = {}) {
   const t0 = Date.now();
   const work = scratchDir('tree', root);
   fs.mkdirSync(work, { recursive: true });
-  const synced = sync ? syncTree(root, work, readText) : 0;
+  // selinux.build.tree.files: tree-relative path -> source file(s), concatenated,
+  // replacing (or adding) that file in the scratch copy only.
+  const overlays = new Map(), missing = [];
+  for (const [rel, srcs] of Object.entries(files || {})) {
+    const parts = [];
+    for (const s of [].concat(srcs)) { try { parts.push(fs.readFileSync(s)); } catch { missing.push(s); } }
+    overlays.set(rel.replace(/\\/g, '/').replace(/^\/+/, ''), Buffer.concat(parts));
+  }
+  if (missing.length) {
+    // Sync anyway (make doesn't run), so the error is attached to current file contents.
+    if (sync) syncTree(root, work, readText, overlays);
+    const msgs = missing.map(m => `selinux.build.tree.files: ${m} not found`);
+    return { ok: false, tree: true, module: path.basename(root), root, workDir: work, ms: Date.now() - t0, synced: 0, log: msgs.join('\n'),
+      diagnostics: msgs.map(msg => ({ file: null, l: 0, severity: 'error', tool: 'settings', msg })),
+      resolveFile: () => null, monolithic: false, policyBin: null, packages: 0 };
+  }
+  const synced = sync ? syncTree(root, work, readText, overlays) : 0;
   const monolithic = (treeOption(root, makeArgs, 'MONOLITHIC') || 'n').toLowerCase() === 'y';
   if (!targets || !targets.length) targets = monolithic ? ['policy'] : ['base.pp', 'modules', 'validate'];
   const result = await run([`-j${jobs}`, ...makeArgs, ...targets], work, timeoutMs);

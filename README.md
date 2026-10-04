@@ -99,7 +99,17 @@ Open one of these as the workspace folder:
   seconds). Validation catches modules that require a type whose module is
   disabled in `modules.conf`; the error lands on the line that requires it.
   Build arguments that a policy's RPM spec passes (NAME, TYPE, APPS_MODS, …)
-  go in `selinux.build.tree.makeArgs`.
+  go in `selinux.build.tree.makeArgs`; config files the RPM copies in at
+  build time go in `selinux.build.tree.files` (applied to the scratch copy
+  only).
+* **RHEL / Fedora `selinux-policy` trees.** *SELinux: Configure Build from
+  Spec File…* reads `selinux-policy.spec` (from an unpacked source RPM or
+  the dist-git checkout, next to its `modules-*.conf`, `booleans-*.conf` and
+  `users-*` files), asks for the variant (targeted, minimum, mls,
+  automotive) and writes the matching `makeArgs` and `files` (the spec's
+  `modules.conf`, `booleans.conf` and `users`) into the workspace settings.
+  The RHEL 9 targeted build takes about 30 s from scratch (435 module
+  packages; most of it is `validate`).
 * **Keeping full-tree outputs.** Set `selinux.build.tree.outputDir` and the
   *SELinux: Build* command copies the module packages, `policy.bin` and a
   `build-info.json` record (time, tree, make arguments, file list) there
@@ -150,6 +160,13 @@ what the sources declare.
 | `selinux.build.tree.targets` | `[]` | Make targets for full trees; empty means `base.pp modules` then `validate` (`policy` if `MONOLITHIC=y`) |
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
 | `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
+| `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); your tree is not modified |
+
+**Workspace trust.** Building runs the policy tree's Makefile, and the build
+settings can carry commands. In VS Code's Restricted Mode, navigation and
+diagnostics still work, but builds are off and workspace values of the
+`selinux.build.*` settings above are ignored. Trust the workspace to enable
+them.
 
 Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 `.vscode/settings.json`:
@@ -174,6 +191,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Standalone-module builds against `selinux-policy-devel` on Rocky 9.8.
 * Full-tree builds, the Compiled Policy view and the hover/expanded views on
   CLIP for RHEL 9 (90 module packages, linked and validated).
+* The RHEL 9 targeted build (selinux-policy 38.1.75) with settings from its
+  spec: exactly the spec's 434 modules plus base, boolean defaults from
+  `booleans-targeted.conf`, link errors for types from modules the spec
+  turns off. Compared with the policy installed on the same host, the
+  types, booleans and roles differ only by the separately packaged
+  `container-selinux` module.
 * Interactive use through VS Code Remote-SSH from Windows to Rocky 9:
   indexing, standalone-module builds, and on CLIP the full-tree build
   (compile and link errors), the Compiled Policy view (browsing, navigation,
@@ -194,10 +217,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 * Builds need Linux with the tools above; on Windows/macOS they report
   themselves unavailable (use Remote-SSH).
-* Full-tree builds are verified on CLIP (upstream refpolicy layout) only.
-  The RHEL/Fedora `selinux-policy` tree is untested: it ships without
-  `policy/modules.conf` (its RPM copies one in at build time), so you'd need
-  to provide one. Monolithic (`MONOLITHIC=y`) builds are untested.
+* Full-tree builds are verified on CLIP for RHEL 9 and the RHEL 9 targeted
+  policy. The other spec variants (minimum, mls, automotive), RHEL 10 and
+  monolithic (`MONOLITHIC=y`) builds are untested. For *minimum*, the RPM
+  turns most modules off at install time, which the build doesn't
+  reproduce.
+* `make validate` links with the legacy `semodule_link`/`semodule_expand`
+  tools, while an installed policy is built by `semodule` (CIL). The two
+  represent attributes differently, so rule-level comparisons between a
+  build and an installed policy (e.g. with `sediff`) aren't meaningful yet.
 * One source tree per workspace: if the workspace contains several, the
   first one found is built.
 * Without `selinux.build.tree.outputDir`, full-tree outputs stay in the
@@ -230,6 +258,7 @@ npm install
 npm test               # LSP features against a policy tree with a seeded test module
 npm run test:build     # standalone-module builds (Linux; skips elsewhere)
 npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; defaults to a CLIP RHEL 9 checkout)
+npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```

@@ -107,6 +107,9 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 - `server/build.js`: toolchain detection, scratch-dir module build, tree
   build with scratch sync, parsers for checkmodule/m4/refpolicywarn/
   semodule_link output and the m4 `#line` expansion map.
+- `server/specconfig.js`: build settings (makeArgs + files overlays) per
+  variant from a Fedora/RHEL selinux-policy.spec (request
+  `selinux/specBuildConfig`, command "Configure Build from Spec File…").
 - `server/policy_model.py`: setools export of a compiled policy to JSON
   (request `selinux/policyModel`).
 - `client/extension.js`: language client, status bar, commands, Policy
@@ -119,6 +122,9 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
+- `test/build-rhel-e2e.js` (`npm run test:rhel`): RHEL tree build with
+  settings from the spec (default ~/sepol-test/rhel9 + srpm on melody),
+  trust gating, overlays, booleans, link errors; ~2 min.
 - `test/build-tree-e2e.js` (`npm run test:tree`): full-tree build checks on
   a copy of a refpolicy tree (default: the CLIP RHEL 9 clone on melody, with
   CLIP's RPM make arguments built in); same conventions as build-e2e.
@@ -157,8 +163,24 @@ Package: `npx @vscode/vsce package`.
   unknown-macro, all real latent bugs in uncalled interfaces. Builds
   90 packages, policy.33 with 1973 types. The tree has VS Code settings
   with CLIP's makeArgs in `.vscode/settings.json` (gitignored).
-- Tree builds of the RHEL selinux-policy tree are untested (it ships no
-  modules.conf; the spec copies modules-targeted-*.conf in).
+- RHEL selinux-policy tree builds (verified: RHEL 9 targeted, ~30 s cold,
+  435 packages; validate is ~22 s of it): the git tree ships a modules.conf
+  and users that differ from the RPM's, and no booleans.conf (optional to
+  the Makefile). `server/specconfig.js` reads the spec's `%common_params`,
+  `%makeCmds NAME TYPE UNK` and `%makeModulesConf` lines (not the shell in
+  the macro bodies) into makeArgs + `selinux.build.tree.files` overlays
+  (modules-X-base.conf + modules-X-contrib.conf, booleans-NAME.conf,
+  users-NAME, from the spec's directory). Overlays are applied in syncTree
+  as part of the wanted set, so unchanged overlays aren't rewritten. In
+  RHEL, container_t exists via virt.te (aliases); use an off module such
+  as timidity for link-error tests. Untested: minimum/mls/automotive,
+  RHEL 10. make validate uses legacy link/expand while installed policies
+  are CIL-built, so sediff against /etc/selinux/*/policy is dominated by
+  attribute representation; a faithful build would go through
+  `make load SEMODULE="semodule -p <scratch root> -X 100"` (works unprivileged).
+- Workspace trust: builds refused when the client reports
+  `trusted: false` (initializationOptions / `selinux/setTrusted`); the
+  build settings are `restrictedConfigurations` in package.json.
 - VS Code UI: clicked through over Remote-SSH (Windows → melody) on
   2026-10-03: standalone builds, and on CLIP the tree build (compile + link
   errors), Compiled Policy view (browse, navigate, find, refresh), hover and

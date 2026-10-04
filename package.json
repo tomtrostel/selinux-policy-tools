@@ -153,6 +153,10 @@
       {
         "command": "selinux.installModule",
         "title": "SELinux: Install Module"
+      },
+      {
+        "command": "selinux.configureFromSpec",
+        "title": "SELinux: Configure Build from Spec File…"
       }
     ],
     "menus": {
@@ -304,6 +308,24 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Where the **SELinux: Build** command copies a full tree's outputs (module packages, `policy.bin`, file contexts, plus `build-info.json`). `~/…` is your home directory; a relative path is under the tree root. Empty: outputs stay in a scratch directory that is removed when VS Code closes. Builds on save never write here."
+        },
+        "selinux.build.tree.files": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "markdownDescription": "Files to put into the scratch copy of a full tree before building, as `\"tree/relative/path\": \"source\"` or `[\"source1\", \"source2\"]` (concatenated). Your tree is not modified. Used for config a policy RPM copies in at build time, e.g. RHEL's `policy/modules.conf`, `policy/booleans.conf` and `policy/users`. `~/…` is your home directory; relative sources are under the tree root. *SELinux: Configure Build from Spec File…* fills this in."
         }
       }
     }
@@ -312,6 +334,7 @@
     "test": "node test/lsp-e2e.js",
     "test:build": "node test/build-e2e.js",
     "test:tree": "node test/build-tree-e2e.js",
+    "test:rhel": "node test/build-rhel-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },
@@ -320,5 +343,19 @@
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.15",
     "vscode-uri": "^3.2.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode, navigation and diagnostics work but policy builds are off, because building runs the policy tree's Makefile.",
+      "restrictedConfigurations": [
+        "selinux.build.enabled",
+        "selinux.build.develMakefile",
+        "selinux.build.tree.makeArgs",
+        "selinux.build.tree.targets",
+        "selinux.build.tree.files",
+        "selinux.build.tree.outputDir"
+      ]
+    }
   }
 }

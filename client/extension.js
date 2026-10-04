@@ -36,8 +36,12 @@ function activate(context) {
       develHeadersPath: cfg().get('develHeadersPath'),
       diagnostics: cfg().get('diagnostics'),
       build: cfg().get('build'),
+      trusted: vscode.workspace.isTrusted,
     },
   });
+  context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
+    if (client && client.isRunning()) client.sendNotification('selinux/setTrusted', { trusted: true });
+  }));
   const buildOutput = vscode.window.createOutputChannel('SELinux Build');
   context.subscriptions.push(buildOutput);
   const expanded = new ExpandedPolicyProvider();
@@ -144,6 +148,25 @@ function activate(context) {
       if (r.tree) { vscode.window.showWarningMessage('Install Module is for standalone modules. For a full policy, copy its outputs (selinux.build.tree.outputDir) to a test system and install them there.'); return; }
       if (!r.ok) { buildOutput.show(true); vscode.window.showErrorMessage(`${r.module} did not build; fix the errors first.`); return; }
       installPackage(r.package);
+    }),
+    vscode.commands.registerCommand('selinux.configureFromSpec', async () => {
+      const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Use this spec',
+        title: 'selinux-policy.spec (from an unpacked source RPM or a dist-git checkout, next to its modules-*.conf files)',
+        filters: { 'RPM spec': ['spec'] } });
+      if (!picked || !picked.length) return;
+      const r = await client.sendRequest('selinux/specBuildConfig', { specPath: picked[0].fsPath });
+      if (r.error || !r.configs || !r.configs.length) { vscode.window.showErrorMessage(r.error || 'No %makeCmds policy variants found in that spec.'); return; }
+      const pick = await vscode.window.showQuickPick(r.configs.map(c => ({
+        label: c.variant, description: c.makeArgs.filter(a => /^(NAME|TYPE|UNK_PERMS)=/.test(a)).join(' '),
+        detail: `${Object.keys(c.files).join(', ')}${c.missing.length ? `   ⚠ missing: ${c.missing.map(m => path.basename(m)).join(', ')}` : ''}`, c,
+      })), { placeHolder: 'Policy variant to build' });
+      if (!pick) return;
+      const conf = vscode.workspace.getConfiguration('selinux');
+      await conf.update('build.tree.makeArgs', pick.c.makeArgs, vscode.ConfigurationTarget.Workspace);
+      await conf.update('build.tree.files', pick.c.files, vscode.ConfigurationTarget.Workspace);
+      const go = await vscode.window.showInformationMessage(
+        `Workspace build settings now match the spec's ${pick.c.variant} build (${count(pick.c.makeArgs.length, 'make variable')}, ${count(Object.keys(pick.c.files).length, 'config file')}).`, 'Build Now');
+      if (go) vscode.commands.executeCommand('selinux.buildModule');
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
     vscode.commands.registerCommand('selinux.findInPolicy', async () => {
