@@ -474,9 +474,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Property checks**
 
-* Checks look at allow rules as compiled; conditional rules count whatever
-  their boolean's current default (the related information names the
-  boolean).
+* Checks look at allow rules as compiled. Rules that depend on a boolean
+  count regardless of the boolean's state (a property must hold with any
+  boolean setting); the related information names the boolean.
 * `reaches` follows domain transitions only (not, e.g., writing a file
   another domain executes) and up to eight steps.
 * Checks run on the full tree's last good build; standalone modules aren't
