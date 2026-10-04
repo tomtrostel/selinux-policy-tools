@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+* **Information-flow checks**: `never shadow_t flows to user_t [except
+  passwd_t …] [weight N]` in `selinux.checks` fails if data can move from
+  one type to another through any chain of domains and objects (reads and
+  writes, setools' permission map). The failure shows the shortest path,
+  each step traced to the statement that grants it; `except` lists types
+  trusted to pass the data on.
+* **Property checks for standalone modules**: in a module directory, the
+  module is linked with the host's installed policy after each build
+  (decompiled kernel policy + module, compiled with `semodule -p`, no root
+  needed), and `selinux.checks` at the workspace folder is checked against
+  it. The Compiled Policy view shows that linked policy too.
+* **Fix:** in checks, `{ read }` now means only the `read` permission;
+  previously braces still expanded the `read` group (read, open, map).
 * **Compare Compiled Policy with…**: compare the working tree's build with
   any tag, branch, commit or typed ref, compare two refs with each other
   (e.g. two release tags), or compare with a saved build directory;

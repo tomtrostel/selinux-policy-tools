@@ -62,8 +62,32 @@ what the user finds there first, then items under 4/5.
       `runChecks()` after each good tree build and on edit/save/disk change
       of the checks file (no rebuild): diagnostics with relatedInformation
       (explainRule origins / path steps), code lenses ✓/✗, notification
-      `selinux/checks` → status bar item. Not yet done: info-flow checks,
-      checks in standalone-module mode.
+      `selinux/checks` → status bar item.
+      - Info-flow checks (after 0.3.0): `never <types> flows to <types>
+        [except <types>] [weight N]` (kind `flows`). policy_query.py
+        `flow_path()`: BFS over types; rule read-weight (from setools
+        PermissionMap, `rule_flow()` cached per rule) moves target → source,
+        write-weight source → target; each (rule, direction) is expanded
+        only once (later visits would reach only seen types), so attribute
+        rules like `domain file_type` stay cheap (~4 s incl. indexing on
+        RHEL). Default weight 10. Steps carry the rule + contributing perms;
+        server traces each step with explainRule (relatedInformation
+        "A → B: B reads (allow …) (via …)").
+      - Standalone modules (after 0.3.0): `build.linkWithInstalled(res,
+        {isAttribute})`: `checkpolicy -b -C` decompiles the installed
+        kernel policy (world-readable; cached per mtime), `semodule_package`
+        + `/usr/libexec/selinux/hll/pp` turn tmp/<mod>.mod into CIL, a shim
+        declares `cil_gen_require` and required attributes the kernel
+        policy expanded away (isAttribute from `requiredAttributes()`: decls
+        + gen_require kinds in the devel headers; a missing *type* fails
+        with a message), declarations already in the base (module
+        installed) are dropped, then `semodule -p <work>/linked/root -s
+        linked -i base.cil shim.cil mod.cil` (~8 s). Server:
+        `checksRoot()` = tree root or roots[0] in devel mode;
+        `linkedPolicy()` links the last good module build once
+        (`lastModule`, keyed by the result object); `getPolicyModel()` uses
+        it in devel mode (model.linked); `currentSide()` explains from
+        `res.expandedPath`. Notifications `linking`/`linked`.
    4. **Users / roles / MLS** (done): parser keeps `argTokens` for
       gen_user calls (TOKENIZED_CALLS); diagnostics.js `checkUsers`: roles
       not declared anywhere (`idx.knownRoles()`, any branch + generated),
@@ -121,12 +145,17 @@ is only visible to collaborators; making it public is the user's call.
 - Linux test host: `ssh melody` (Rocky 9.8, key auth, user ttrostel; sudo
   needs a password, so ask the user for package installs). Test copy of the
   extension at ~/sepol-test/tools (sync with
-  `tar czf - server test client package.json | ssh melody 'cd ~/sepol-test/tools && tar xzf -'`),
+  `tar czf - server test client package.json syntaxes | ssh melody 'cd ~/sepol-test/tools && tar xzf -'`),
   trees: ~/sepol-test/rhel9 (+ ~/sepol-test/srpm unpacked SRPM),
   ~/sepol-test/clip (git clone, tree in packages/selinux-policy/selinux-policy),
   ~/sepol-test/mymodule (standalone module).
 - Run on melody: `node test/build-e2e.js`, `test/build-tree-e2e.js`,
-  `test/build-rhel-e2e.js`, `test/diff-e2e.js`; survey with `--make`.
+  `test/build-rhel-e2e.js`, `test/diff-e2e.js`, `test/preview-e2e.js`,
+  `test/checks-e2e.js`, `test/module-checks-e2e.js`, `test/scratch-e2e.js`;
+  survey with `--make`.
+- Writing edit scripts: the Bash tool's heredocs collapse `\\` to `\`, which
+  breaks regexes in generated JS; write scripts with the Write tool into the
+  scratchpad and run them.
 - Interactive testing: the user runs VS Code on Windows with Remote-SSH to
   melody. Install a fresh build there with `npx @vscode/vsce package`, scp
   the .vsix to ~/sepol-test/, then
@@ -205,7 +234,8 @@ is only visible to collaborators; making it public is the user's call.
   template-generated names via their call site, users from gen_user calls),
   cached by policy.bin mtime. The client tree is lazy and path-keyed;
   relationships (attributes, members, roles, domain transitions in/out) are
-  derived client-side. Standalone-module mode has no linked policy.
+  derived client-side. Standalone-module mode shows the module linked with
+  the installed policy (`linkWithInstalled`, model.linked).
 - **ifdef/ifndef on build flags only.** The parser records every
   ifdef/ifndef branch as a range + condition (`f.branches`, also for .fc).
   The server asks the Makefile for the real flags (`make --eval` printing
@@ -273,7 +303,12 @@ is only visible to collaborators; making it public is the user's call.
 - `test/checks-e2e.js` (`npm run test:checks`): gen_user validation (unsaved
   bad users lines), then property checks incl. roles/users on a CLIP
   copy (holding/failing/unknown/syntax, alias, tracing, edit+save without
-  rebuild, completion).
+  rebuild, completion), info flow (`flows to`, path traced, `except` with
+  the reported intermediates reroutes or holds).
+- `test/module-checks-e2e.js` (`npm run test:modchecks`): standalone module
+  in a temp workspace linked with the installed policy; checks file at the
+  workspace root, violations and a flow traced to the module, policyModel
+  `linked`, edit + build relinks.
 - `test/scratch-e2e.js` (`npm run test:scratch`): two servers on one
   workspace build in separate areas; exit/kill/sweep behaviour.
 - `test/webview-transitions-test.js` (`npm run test:webview`, any OS):

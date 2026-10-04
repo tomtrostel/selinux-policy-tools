@@ -41,6 +41,7 @@ class Index:
             self.classperms[str(c)] = perms
         self.rules = []
         self.by_src, self.by_tgt = {}, {}
+        self._pmap, self._rflow = None, {}
         for r in p.terules():
             try:
                 cond = "%s:%s" % (r.conditional, str(r.conditional_block).lower())
@@ -207,6 +208,78 @@ class Index:
                 break
         return None
 
+    # ----- information flow (setools' permission map: each permission reads, writes, both or neither) -----
+
+    def permmap(self):
+        if self._pmap is None:
+            pm = setools.PermissionMap()
+            self._pmap = {(str(c), x.perm): (x.direction, x.weight if x.enabled else 0) for c in pm.classes() for x in pm.perms(c)}
+        return self._pmap
+
+    def rule_flow(self, i):
+        """Strongest read and write weights among an allow rule's permissions."""
+        f = self._rflow.get(i)
+        if f is None:
+            r, pm, rd, wr = self.rules[i], self.permmap(), 0, 0
+            for p in r["perms"]:
+                d, w = pm.get((r["c"], p), ("n", 0))
+                if d in ("r", "b"):
+                    rd = max(rd, w)
+                if d in ("w", "b"):
+                    wr = max(wr, w)
+            f = self._rflow[i] = (rd, wr)
+        return f
+
+    def flow_perms(self, i, d, min_weight):
+        """The permissions of rule i that carry information in direction d ('r'/'w') at min_weight or more."""
+        r, pm = self.rules[i], self.permmap()
+        want = ("r", "b") if d == "r" else ("w", "b")
+        out = []
+        for p in r["perms"]:
+            direction, weight = pm.get((r["c"], p), ("n", 0))
+            if direction in want and weight >= min_weight:
+                out.append(p)
+        return out
+
+    def flow_path(self, sources, targets, min_weight=10, exclude=frozenset()):
+        """Shortest information-flow path from any source type to any target type, or None.
+
+        A domain reads from the target of a rule granting a read-like permission
+        (data flows target -> domain) and writes to it with a write-like one
+        (domain -> target). Each rule is expanded once per direction: later
+        visits through it would only reach types already seen.
+        """
+        prev = {s: None for s in sources}
+        used = set()
+        frontier = sorted(sources)
+        while frontier:
+            nxt = []
+            for x in frontier:
+                for n in [x] + self.attrs.get(x, []):
+                    for d, bucket in (("w", self.by_src), ("r", self.by_tgt)):
+                        for i in bucket.get(n, ()):
+                            r = self.rules[i]
+                            if r["rt"] != "allow" or r["t"] == "self" or (i, d) in used:
+                                continue
+                            if self.rule_flow(i)[0 if d == "r" else 1] < min_weight:
+                                continue
+                            used.add((i, d))
+                            for y in self.expand(r["t"] if d == "w" else r["s"]):
+                                if y in prev or y in exclude:
+                                    continue
+                                prev[y] = (x, i, d)
+                                if y in targets:
+                                    steps = []
+                                    while prev[y] is not None:
+                                        x0, i0, d0 = prev[y]
+                                        steps.append({"from": x0, "to": y, "rule": self.rules[i0], "perms": self.flow_perms(i0, d0, min_weight),
+                                                      "dir": "write" if d0 == "w" else "read"})
+                                        y = x0
+                                    return list(reversed(steps))
+                                nxt.append(y)
+            frontier = nxt
+        return None
+
     def check_rbac(self, kind, sources, targets):
         """only|never <roles> may run <types> / only|never <users> may use <roles>."""
         mode, what = kind.split("-")
@@ -241,6 +314,14 @@ class Index:
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
                 p = self.transition_path(srcs, tgts)
                 return {"ok": p is None, "path": p}
+            if kind == "flows":
+                srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
+                exclude = self.names(c.get("except") or [])
+                both = srcs & tgts
+                if both:
+                    return {"ok": False, "error": "%s is both a source and a target" % sorted(both)[0]}
+                p = self.flow_path(srcs, tgts, c.get("weight") or 10, frozenset(exclude - srcs - tgts))
+                return {"ok": p is None, "flow": p}
             tgts = self.names(c["targets"])
             perms = c["perms"]
             classes = set(c.get("classes") or [])

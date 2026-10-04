@@ -44,6 +44,7 @@ dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-po
 | Compiled Policy view, rules, Changes since HEAD | `python3-setools` (from `setools-console`) |
 | Changes since HEAD | also `git-core`, `tar` |
 | Compare with installed policy | also `policycoreutils` (`semodule`) |
+| Property checks and Compiled Policy view for standalone modules | `policycoreutils` (`semodule`, `semodule_package`), `checkpolicy`, `python3-setools`, an installed policy |
 
 `policycoreutils`, `gawk`, `python3` and `tar` are present on any normal
 RHEL system with SELinux. From Windows or macOS, use VS Code **Remote-SSH**
@@ -294,7 +295,7 @@ customizations, or things your build removes). The `semodule` build takes
 ~8 s for CLIP and ~25 s for RHEL targeted; it is redone only when the
 build's packages change, and the comparison runs on request.
 
-**Property checks** (full trees)
+**Property checks** (full trees and standalone modules)
 
 Write down security properties once, in a `selinux.checks` file at the tree
 root (versioned with the policy); they are checked against the compiled
@@ -308,6 +309,9 @@ only auditd_t may write auditd_log_t
 never user_t, staff_t may write shadow_t
 # no domain-transition path from user_t to sysadm_t, direct or indirect
 never user_t reaches sysadm_t
+# password hashes must not end up anywhere user_t can read, by any chain of
+# domains and files (passwd_t and chkpwd_t are trusted to handle them)
+never shadow_t flows to user_t except passwd_t chkpwd_t
 # a lockdown must not break logging
 require syslogd_t may { append create } var_log_t:file
 ```
@@ -318,13 +322,25 @@ require syslogd_t may { append create } var_log_t:file
   `never <names> may …`: none of these may (`*` = every domain);
   `never <names> reaches <names>`: no transition path;
   `require <names> may …`: must stay allowed.
+* `never <types> flows to <types> [except <types>] [weight N]`: no
+  information flow, through any chain of domains and objects. A domain
+  reads from a type when it holds a read-like permission on it and writes
+  to it with a write-like one (setools' permission map, the same model as
+  `apol`'s information-flow analysis): `shadow_t → systemd_userdbd_t →
+  staff_t` means `systemd_userdbd_t` reads `shadow_t` and something
+  `staff_t` reads is written by it. `except` lists types trusted to pass
+  the data on (they are left out of the path search). By default only
+  strong flows count (weight 10: reading and writing data); `weight 1`
+  counts every permission, including covert channels such as signals or
+  `getattr`. A failure shows the shortest path, each step traced to the
+  statement that grants it.
 * Names are types, aliases or attributes (an attribute stands for all its
   member types). Permissions are `read` (read open map), `write` (write
   append create unlink link rename setattr add_name remove_name rmdir
   reparent relabelfrom relabelto), `execute` (execute execute_no_trans
-  entrypoint), `any`, a single permission, or `{ perm perm … }`. Classes
-  default to the file-like ones (`require`: `file`); a permission group
-  only asks for what each class has.
+  entrypoint), `any`, a single permission, or `{ perm perm … }` (exactly
+  those: `{ read }` is just `read`). Classes default to the file-like ones
+  (`require`: `file`); a permission group only asks for what each class has.
 * Each check shows "✓ holds" or "✗ …" above its line. A failure is an
   error in the Problems panel; its related information points at the source
   statements that grant each violating rule (or the steps of a transition
@@ -335,7 +351,22 @@ Example findings on CLIP: `only sysadm_r may run sysadm_t` fails because
 `system_r` may run it too; `never staff_u may use sysadm_r` fails (staff_u
 has sysadm_r, linked to its `gen_user` line); `never syslogd_t may write syslogd_var_run_t`
 fails with the rules from `logging.te:444/447`; `never staff_t reaches
-sysadm_t` fails via `staff_t → newrole_t → sysadm_t`.
+sysadm_t` fails via `staff_t → newrole_t → sysadm_t`; `never shadow_t flows
+to staff_t` fails via `systemd_userdbd_t` (`auth_read_shadow` in
+`systemd.te`), and with `except systemd_userdbd_t` via `fapolicyd_t`.
+
+**Standalone modules.** A module on its own isn't a policy, so in a module
+directory the extension links it with this host's installed policy after
+each build: the installed kernel policy (`/etc/selinux/<type>/policy`,
+readable without root) is decompiled to CIL and compiled together with the
+module into a throwaway store with `semodule -p`. Checks in
+`selinux.checks` at the workspace folder then answer questions like "does
+my module let anything read `shadow_t`?" or "can my daemon's data reach
+`user_t`?" for the module as it is now; the Compiled Policy view shows the
+same linked policy (your module's types under its name, everything else
+under *(installed policy)*). Linking takes about 8 s on RHEL targeted and
+runs only when a checks file exists or the view is open. If the module is
+installed already, its installed rules stay in the result too.
 
 **Module Preview** (full trees)
 
@@ -383,7 +414,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
 | `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
 | `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); your tree is not modified |
-| `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root |
+| `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
 settings can carry commands. In VS Code's Restricted Mode, navigation and
@@ -430,6 +461,17 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   traced to source lines, re-checking on edit/save without a rebuild.
   On RHEL's installed policy, `only auditd_t may write auditd_log_t` fails
   with 111 domains (broad attribute rules in the targeted policy).
+  Information flow on CLIP: `never shadow_t flows to staff_t` fails in two
+  steps with both rules traced to source; excluding the first intermediate
+  domain finds the next path; `except`/`weight` completion. The flow search
+  over RHEL's installed policy takes ~4 s including indexing.
+* Standalone module checks on Rocky 9.8 (RHEL 9 targeted installed): a
+  module calling `auth_read_shadow` is linked with the installed policy
+  (~8 s), the violation and a `shadow_t → demo_t → demo_private_t` flow are
+  traced to the module's lines, installed types work in checks, the
+  Compiled Policy view shows the linked policy, and an edit plus build
+  relinks. A module that is already installed links too (its declarations
+  are taken from the installed copy).
 * Domain transitions: CLIP `init_t` reaches 144 domains (`syslogd_t`
   automatically via `syslogd_exec_t`; entered from `init_t` and
   `initrc_t`); RHEL's installed policy `init_t` 576, `sshd_t` 33 (incl.
@@ -524,7 +566,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Compiled Policy view**
 
-* Full trees only; a standalone module isn't linked into a kernel policy.
+* For a standalone module the view shows the module linked with the
+  installed policy (see Property checks); installed types have no source
+  to open.
 * Rules are shown as the compiled policy stores them: some attribute rules
   are expanded per type by the build, others stay written for the
   attribute (marked "via …"). Finding a rule's source statements takes a
@@ -551,8 +595,19 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   boolean setting); the related information names the boolean.
 * `reaches` follows domain transitions only (not, e.g., writing a file
   another domain executes) and up to eight steps.
-* Checks run on the full tree's last good build; standalone modules aren't
-  linked into a policy, so they can't be checked.
+* `flows to` uses setools' default permission map: an object's type stands
+  for every object with that label, and a domain counts as an object too
+  (writing to a process, pipe or socket labeled with it). It reports the
+  shortest path, not all paths; fix it or add trusted types to `except`
+  and the next one shows. Paths through the big unconfined domains are
+  common on targeted policies.
+* Checks run on the full tree's last good build, or for a standalone module
+  on the module linked with the installed policy. That link is an
+  approximation: attributes that the installed policy expanded into their
+  member types (it keeps only the larger ones) are declared afresh, so
+  rules the module adds for such an attribute reach only the module's own
+  types; a module that requires a type the host doesn't have can't be
+  linked (the message names the type).
 
 ## Development
 
@@ -568,6 +623,7 @@ npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Li
 npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
 npm run test:webview   # transition graph webview script against a fake DOM (any OS)
 npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
+npm run test:modchecks # property checks for a standalone module linked with the installed policy (Linux)
 npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix

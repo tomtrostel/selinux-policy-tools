@@ -5,12 +5,17 @@
  *   only   <names> may <perms> <targets>[:<classes>]   nobody else may (attributes expanded)
  *   never  <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
  *   never  <names> reaches <names>                     no domain-transition path, direct or indirect
+ *   never  <types> flows to <types> [except <types>] [weight N]
+ *                                                      no information flow (reads and writes, through any
+ *                                                      chain of domains and objects; 'except' types may
+ *                                                      pass it on; weight: weakest permission counted, 1-10)
  *   require <names> may <perms> <targets>[:<classes>]  must stay allowed
  *   only|never <roles> may run <types>                 role → domain authorization
  *   only|never <users> may use <roles>                 user → role authorization
  *
  * names: types or attributes, separated by spaces or commas.
- * perms: read | write | execute | any, a single permission, or { perm perm ... }.
+ * perms: read | write | execute | any (groups), a single permission, or
+ * { perm perm ... } (exactly these permissions; { read } is just read).
  * classes: a class or { class class ... }; default: the file-like classes
  * (require: file).
  */
@@ -21,7 +26,7 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'run', 'use', 'read', 'write', 'execute', 'any'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any'];
 
 /** Tokens with columns: words (incl. '*'), braces, ':' and ','. */
 function tokens(line) {
@@ -59,7 +64,7 @@ function parseChecks(text) {
     const kind = tok[i] && tok[i].v;
     if (!['only', 'never', 'require'].includes(kind)) { err(`Expected 'only', 'never' or 'require' at the start of a check`); return; }
     i++;
-    const sources = names(['may', 'reaches']);
+    const sources = names(['may', 'reaches', 'flows']);
     if (!sources.length) { err('Expected one or more types or attributes'); return; }
     const verb = tok[i] && tok[i].v;
     if (verb === 'reaches') {
@@ -70,7 +75,30 @@ function parseChecks(text) {
       checks.push({ id: checks.length, line: l, kind: 'reaches', sources, targets, text: raw.trim() });
       return;
     }
-    if (verb !== 'may') { err(`Expected 'may' (or 'reaches')`); return; }
+    if (verb === 'flows') {
+      if (kind !== 'never') { err(`'flows to' only works with 'never' (never X flows to Y)`); return; }
+      i++;
+      if (!tok[i] || tok[i].v !== 'to') { err(`Expected 'to' (never X flows to Y)`); return; }
+      i++;
+      const targets = names(['except', 'weight']);
+      if (!targets.length) { err('Expected the type(s) the data must not reach'); return; }
+      let except = [], weight = 10;
+      if (tok[i] && tok[i].v === 'except') {
+        i++;
+        except = names(['weight']);
+        if (!except.length) { err(`Expected the type(s) allowed to pass the data on after 'except'`); return; }
+      }
+      if (tok[i] && tok[i].v === 'weight') {
+        i++;
+        weight = tok[i] && /^([1-9]|10)$/.test(tok[i].v) ? Number(tok[i++].v) : NaN;
+        if (Number.isNaN(weight)) { err('Expected a weight from 1 (count every permission, even covert channels) to 10 (only reads and writes of data)'); return; }
+      }
+      if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+      if (sources.includes('*') || targets.includes('*')) { err(`'*' doesn't work with 'flows to'`, tok.find(t => t.v === '*')); return; }
+      checks.push({ id: checks.length, line: l, kind: 'flows', sources, targets, except, weight, text: raw.trim() });
+      return;
+    }
+    if (verb !== 'may') { err(`Expected 'may', 'reaches' or 'flows to'`); return; }
     i++;
     // Roles and users: `<roles> may run <types>`, `<users> may use <roles>`.
     if (tok[i] && (tok[i].v === 'run' || tok[i].v === 'use')) {
@@ -82,11 +110,13 @@ function parseChecks(text) {
       checks.push({ id: checks.length, line: l, kind: `${kind}-${what}`, sources, targets, text: raw.trim() });
       return;
     }
+    const braced = tok[i] && tok[i].v === '{';
     const p = set();
     if (!p || !p.length) { err('Expected permissions: read, write, execute, any, a permission, or { perm ... }'); return; }
     let perms;
-    if (p.length === 1 && p[0] === 'any') perms = '*';
-    else perms = [...new Set(p.flatMap(x => PERM_GROUPS[x] || [x]))];
+    if (p.length === 1 && p[0] === 'any' && !braced) perms = '*';
+    else if (braced) perms = [...new Set(p)]; // { read } is the permission, not the group
+    else perms = PERM_GROUPS[p[0]] || p;
     const targets = names([':']);
     if (!targets.length) { err('Expected the target type(s) or attribute(s)'); return; }
     let classes = kind === 'require' ? ['file'] : FILE_CLASSES;

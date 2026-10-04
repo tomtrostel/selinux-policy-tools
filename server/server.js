@@ -305,7 +305,8 @@ function runBuild(key, pkg = false, trigger = null) {
     // If rules have been browsed this session, re-index the new policy in the
     // background so the next expand doesn't wait for it (RHEL: ~5 s).
     if (res.tree && res.ok && res.policyBin && policyQuery.proc) policyQuery.request({ op: 'rules', bin: res.policyBin, name: '', dir: 'source', kinds: ['allow'] });
-    if (res.tree && res.ok) runChecks().catch(err => log(`checks failed: ${err.message}`));
+    if (!res.tree && res.ok) lastModule = key;
+    if (res.ok && (res.tree || (usingDevel && checksPath() && fs.existsSync(checksPath())))) runChecks().catch(err => log(`checks failed: ${err.message}`));
     connection.sendNotification('selinux/build', { state: 'done', ...summary });
     return summary;
   })();
@@ -1284,8 +1285,10 @@ connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
 const checksLib = require('./checks');
 let checksState = { path: null, parsed: null, results: null, note: null };
 
-const checksPath = () => (treeRoot ? path.join(treeRoot, settings.checks.file || 'selinux.checks') : null);
-const isChecksFile = (p) => !!treeRoot && p === checksPath();
+// In a tree: at its root. Standalone modules: at the workspace folder, checked against the installed policy.
+const checksRoot = () => treeRoot || (usingDevel ? roots[0] : null);
+const checksPath = () => (checksRoot() ? path.join(checksRoot(), settings.checks.file || 'selinux.checks') : null);
+const isChecksFile = (p) => !!checksRoot() && p === checksPath();
 
 async function runChecks() {
   const file = checksPath();
@@ -1299,18 +1302,21 @@ async function runChecks() {
   checksState = { path: file, parsed, results: null, note: null };
   const model = await getPolicyModel();
   if (model.unavailable) {
-    checksState.note = model.needsBuild ? 'not checked yet: build the policy' : model.unavailable;
+    checksState.note = model.needsBuild ? (usingDevel ? 'not checked yet: build the module' : 'not checked yet: build the policy') : model.unavailable;
   } else if (parsed.checks.length) {
-    const r = await policyQuery.request({ op: 'check', bin: model.bin, checks: parsed.checks.map(c => ({ id: c.id, kind: c.kind, sources: c.sources, targets: c.targets, classes: c.classes, perms: c.perms })) });
+    const r = await policyQuery.request({ op: 'check', bin: model.bin, checks: parsed.checks.map(c => ({ id: c.id, kind: c.kind, sources: c.sources, targets: c.targets, classes: c.classes, perms: c.perms, except: c.except, weight: c.weight })) });
     if (r.error) checksState.note = `checks failed: ${r.error}`;
     else {
       checksState.results = new Map(r.results.map(x => [x.id, x]));
-      // Trace the violating rules to source (a few per check).
-      const failing = r.results.filter(x => x.violations && x.violations.length);
+      // Trace the violating rules (a few per check) and each step of an information-flow path to source.
+      const failing = r.results.filter(x => (x.violations && x.violations.length) || x.flow);
       if (failing.length) {
         const side = await currentSide();
         if (side) {
-          for (const x of failing) for (const v of x.violations.slice(0, 8)) v.origins = explain.explainRule(v.rule, v.perms, side, 3).origins;
+          for (const x of failing) {
+            for (const v of (x.violations || []).slice(0, 8)) v.origins = explain.explainRule(v.rule, v.perms, side, 3).origins;
+            for (const st of x.flow || []) st.origins = explain.explainRule(st.rule, st.perms, side, 1).origins;
+          }
           explain.releaseTexts();
         }
       }
@@ -1353,6 +1359,11 @@ function checksDiagnostics() {
         if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${v.holder} ${users ? 'has roles' : 'may run'} ${v.items.join(', ')}` });
       }
     }
+    for (const st of x.flow || []) {
+      const o = st.origins && st.origins[0];
+      const loc = o ? { p: o.path, l: o.line, c: 0, len: 1 } : sourceLocation(st.to, ['type']);
+      if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${st.from} → ${st.to}: ${flowStep(st)}${o && o.via ? ` (via ${o.via})` : ''}` });
+    }
     for (const step of x.path || []) {
       const loc = sourceLocation(step.to, ['type']);
       if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${step.from} → ${step.to} via ${step.entrypoints.join(', ')}${step.auto ? ' (automatic)' : ''}${step.conditional.length ? ` [${step.conditional.join(', ')}]` : ''}` });
@@ -1361,6 +1372,12 @@ function checksDiagnostics() {
     out.push(d);
   }
   return out;
+}
+
+/** One information-flow step as the rule behind it: "staff_t reads (allow staff_t etc_t:file { read })". */
+function flowStep(st) {
+  const r = st.rule;
+  return `${st.dir === 'read' ? `${st.to} reads` : `${st.from} writes`} (allow ${r.s} ${r.t}:${r.c} { ${st.perms.join(' ')} }${r.cond ? ` [${r.cond}]` : ''})`;
 }
 
 function checkMessage(c, x) {
@@ -1373,6 +1390,7 @@ function checkMessage(c, x) {
     const verb = c.perms === '*' ? 'access' : c.permsLabel;
     return `${who} may ${verb} ${names(c.targets)}: ${x.count} rule${x.count > 1 ? 's' : ''}; the related information shows where they come from.`;
   }
+  if (c.kind === 'flows') return `Data in ${x.flow[0].from} can reach ${x.flow[x.flow.length - 1].to}: ${[x.flow[0].from, ...x.flow.map(st => st.to)].join(' → ')}. Fix the policy, or list domains trusted to pass it on after 'except'.`;
   if (c.kind === 'reaches') return `${x.path[0].from} can reach ${x.path[x.path.length - 1].to}: ${[x.path[0].from, ...x.path.map(s => s.to)].join(' → ')}`;
   if (c.kind === 'require') return `Not allowed: ${x.missing.slice(0, 4).map(m => `${m.source} ${m.target}:${m.class} { ${m.missing.join(' ')} }`).join('; ')}${x.count > 4 ? ` (+${x.count - 4} more)` : ''}`;
   if (x.rbac) {
@@ -1387,7 +1405,7 @@ function checkMessage(c, x) {
 connection.onRequest('selinux/checksFile', async () => {
   await indexing;
   const p = checksPath();
-  return p ? { path: p, exists: fs.existsSync(p), summary: checksSummary() } : { unavailable: 'Property checks need a full policy source tree.' };
+  return p ? { path: p, exists: fs.existsSync(p), summary: checksSummary() } : { unavailable: 'Property checks need a policy source tree or a standalone module directory.' };
 });
 
 /** For a role, what the last build says about it (domains, users), appended to its hover. */
@@ -1430,7 +1448,13 @@ function checksCompletion(lineText) {
   const words = lineText.trim().split(/\s+/);
   if (words.length <= 1) for (const k of ['only', 'never', 'require']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
   if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any', 'run', 'use']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : k === 'run' ? 'roles: may run <domains>' : k === 'use' ? 'users: may use <roles>' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
-  if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches)\b/.test(lineText)) for (const k of ['may', 'reaches']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches|flows)\b/.test(lineText)) for (const k of ['may', 'reaches', 'flows']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (/\bflows\s+[A-Za-z]*$/.test(lineText) && 'to'.startsWith(prefix)) items.push({ label: 'to', kind: CompletionItemKind.Keyword });
+  if (/\bflows\s+to\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText)) {
+    for (const k of ['except', 'weight']) {
+      if (k.startsWith(prefix) && !new RegExp(`\\b${k}\\b`).test(lineText.slice(0, -prefix.length || undefined))) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'except' ? 'types trusted to pass the data on' : 'weakest permission counted: 1 (all) to 10 (data reads/writes, default)' });
+    }
+  }
   if (prefix.length >= 2) {
     const m = policyModelCache.model;
     const types = m ? m.types.map(t => t.name) : [...idx.decls].filter(([, l]) => l.some(d => d.kind === 'type')).map(([n]) => n);
@@ -1451,6 +1475,7 @@ connection.onCodeLens(({ textDocument }) => {
     if (!x) title = s.note ? `… ${s.note}` : '…';
     else if (x.error) title = `⚠ ${x.error}`;
     else if (x.ok) title = '✓ holds';
+    else if (c.kind === 'flows') title = `✗ data flows in ${x.flow.length} step${x.flow.length > 1 ? 's' : ''}`;
     else if (c.kind === 'reaches') title = `✗ reachable in ${x.path.length} step${x.path.length > 1 ? 's' : ''}`;
     else if (c.kind === 'require') title = `✗ ${x.count} missing`;
     else if (x.rbac) title = `✗ ${x.count} ${c.kind.endsWith('-run') ? 'role' : 'user'}${x.count > 1 ? 's violate' : ' violates'} it`;
@@ -1520,16 +1545,24 @@ connection.onRequest('selinux/policyModel', async () => { await indexing; return
 
 /** The compiled policy of the last tree build with source locations, or { unavailable }. */
 async function getPolicyModel() {
-  if (usingDevel) return { unavailable: 'The compiled policy view needs a full policy source tree: standalone modules are not linked into a kernel policy.' };
-  if (!treeRoot) return { unavailable: 'Open a refpolicy source tree to see its compiled policy.' };
-  const res = lastBuild.get(treeRoot);
-  if (!res || !res.policyBin || !fs.existsSync(res.policyBin)) {
-    return { unavailable: res && !res.ok ? 'The last build failed; fix its errors and build again.' : 'Build the policy (SELinux: Build) to see what it contains.', needsBuild: true };
+  let bin, linked = null;
+  if (usingDevel) {
+    const l = await linkedPolicy();
+    if (l.unavailable) return l;
+    bin = l.policy;
+    linked = { module: l.module, kernelPolicy: l.kernelPolicy, installed: l.installed };
+  } else {
+    if (!treeRoot) return { unavailable: 'Open a refpolicy source tree to see its compiled policy.' };
+    const res = lastBuild.get(treeRoot);
+    if (!res || !res.policyBin || !fs.existsSync(res.policyBin)) {
+      return { unavailable: res && !res.ok ? 'The last build failed; fix its errors and build again.' : 'Build the policy (SELinux: Build) to see what it contains.', needsBuild: true };
+    }
+    bin = res.policyBin;
   }
-  const mtimeMs = fs.statSync(res.policyBin).mtimeMs;
-  if (policyModelCache.bin !== res.policyBin || policyModelCache.mtimeMs !== mtimeMs) {
+  const mtimeMs = fs.statSync(bin).mtimeMs;
+  if (policyModelCache.bin !== bin || policyModelCache.mtimeMs !== mtimeMs) {
     let model;
-    try { model = await exportPolicy(res.policyBin); } catch (e) { return { unavailable: `Could not read ${res.policyBin}: ${e.message}` }; }
+    try { model = await exportPolicy(bin); } catch (e) { return { unavailable: `Could not read ${bin}: ${e.message}` }; }
     const users = userLocations();
     for (const t of model.types) t.loc = sourceLocation(t.name, ['type']);
     for (const a of model.attributes) a.loc = sourceLocation(a.name, ['attribute']);
@@ -1537,18 +1570,56 @@ async function getPolicyModel() {
     for (const b of model.bools) b.loc = sourceLocation(b.name, ['bool']);
     for (const u of model.users) u.loc = users.get(u.name) || null;
     for (const c of model.classes) { const k = idx.classes.get(c.name); c.loc = k ? { p: k.path, l: k.l, c: k.c, len: c.name.length } : null; }
-    model.bin = res.policyBin;
+    model.bin = bin;
     model.builtAt = mtimeMs;
     model.tree = treeRoot;
-    const se = seusersMappings(treeRoot);
+    model.linked = linked;
+    const se = treeRoot ? seusersMappings(treeRoot) : { file: null, list: [] };
     model.seusersFile = se.file;
     for (const u of model.users) u.logins = se.list.filter(x => x.user === u.name);
     model.unmappedLogins = se.list.filter(x => !model.users.some(u => u.name === x.user));
     model.roleAllows = model.roleAllows || [];
     model.roleTransitions = model.roleTransitions || [];
-    Object.assign(policyModelCache, { bin: res.policyBin, mtimeMs, model });
+    Object.assign(policyModelCache, { bin, mtimeMs, model });
   }
   return policyModelCache.model;
+}
+
+/*
+ * Standalone modules: the last built module linked with this host's
+ * installed policy (build.linkWithInstalled), redone after each build of it.
+ */
+let lastModule = null;               // .te of the last successful module build
+let linkState = { key: null, promise: null };
+
+function linkedPolicy() {
+  const res = lastModule && lastBuild.get(lastModule);
+  if (!res || !res.ok) {
+    return Promise.resolve({ unavailable: res ? 'The last build failed; fix its errors and build again.' : 'Build the module (SELinux: Build): it is then linked with this host\'s installed policy to check it.', needsBuild: true });
+  }
+  if (process.platform === 'win32') return Promise.resolve({ unavailable: 'Linking with the installed policy needs a Linux host with SELinux (use Remote-SSH).' });
+  const key = res; // each build result is linked once
+  if (linkState.key !== key) {
+    linkState = { key, promise: (async () => {
+      connection.sendNotification('selinux/build', { state: 'linking', module: res.module });
+      const required = requiredAttributes();
+      const l = await build.linkWithInstalled(res, { isAttribute: (n) => required.has(n) });
+      log(`linked ${res.module} with ${l.kernelPolicy || 'the installed policy'}: ${l.ok ? 'ok' : 'failed'} (${l.ms} ms)${l.ok ? '' : `\n${l.log}`}`);
+      connection.sendNotification('selinux/build', { state: 'linked', module: res.module, ok: l.ok, ms: l.ms });
+      if (!l.ok) return { unavailable: `Linking ${res.module} with the installed policy failed: ${l.log.split('\n').slice(-3).join(' ')}` };
+      return { policy: l.policy, module: res.module, kernelPolicy: l.kernelPolicy, installed: l.installed };
+    })() };
+  }
+  return linkState.promise;
+}
+
+/** Names declared or required as attributes anywhere in the sources (the devel headers only require them). */
+function requiredAttributes() {
+  const out = new Set();
+  for (const [n, list] of idx.decls) if (list.some(d => d.kind === 'attribute')) out.add(n);
+  for (const list of idx.defs.values()) for (const d of list) for (const r of d.requires || []) if (r.kind === 'attribute') out.add(r.name);
+  for (const f of idx.files.values()) for (const r of (f.requires || [])) if (r.kind === 'attribute') out.add(r.name);
+  return out;
 }
 
 /* ---------------- rules of a type (Compiled Policy view) ---------------- */
@@ -1611,13 +1682,14 @@ connection.onRequest('selinux/domains', async () => {
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */
 let ruleIndex = { key: null, side: null };
 async function currentSide() {
-  const res = lastBuild.get(treeRoot);
+  const res = lastBuild.get(usingDevel ? lastModule : treeRoot);
   const model = await getPolicyModel();
   if (!res || model.unavailable) return null;
   const key = `${res.workDir}:${model.builtAt}`;
   if (ruleIndex.key !== key || !ruleIndex.side) {
     const attrs = Object.fromEntries(model.types.map(t => [t.name, t.attrs]));
-    ruleIndex = { key, side: { index: explain.byName(explain.indexBuild(build.treeOutputs(res), res.resolveFile)), attrs, gained: null, changedFiles: null } };
+    const outputs = res.tree ? build.treeOutputs(res) : [res.expandedPath];
+    ruleIndex = { key, side: { index: explain.byName(explain.indexBuild(outputs, res.resolveFile)), attrs, gained: null, changedFiles: null } };
   }
   clearTimeout(explainIdle);
   explainIdle = setTimeout(() => { explain.dropCache(); ruleIndex = { key: null, side: null }; }, 120000);

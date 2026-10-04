@@ -35,6 +35,7 @@ const TEXT = [
   'only syslogd_t may',                                       // 7: syntax error
   'only sysadm_r may run sysadm_t',                           // 8: roles
   'never staff_u may use sysadm_r',                           // 9: users: fails (staff_u has sysadm_r)
+  'never shadow_t flows to staff_t',                          // 10: information flow; if it fails, a path traced to source
   '',
 ].join('\n');
 const USERS = path.join(ws, 'policy/users');
@@ -100,13 +101,13 @@ const onLine = (l) => (diags[uri(CHECKS)] || []).filter(d => d.range.start.line 
   conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(CHECKS), languageId: 'selinux-checks', version: 1, text: TEXT } });
   await sleep(800);
   let lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
-  check(lenses.length === 8 &&lenses.every(l => /build the policy/.test(l.command.title)), `before a build: ${lenses.length} lenses say "${lenses[0] && lenses[0].command.title}"`);
+  check(lenses.length === 9 &&lenses.every(l => /build the policy/.test(l.command.title)), `before a build: ${lenses.length} lenses say "${lenses[0] && lenses[0].command.title}"`);
   check(onLine(7).length === 1 && /Expected permissions/.test(onLine(7)[0].message), 'syntax error reported on its line', onLine(7));
 
   const b = await conn.sendRequest('selinux/build', { uri: uri(ws) });
   check(b.ok && b.validated, `build (${(b.ms / 1000).toFixed(1)} s)`);
   const s = await waitSummary(x => x.failed !== undefined && !x.note);
-  check(s && s.total === 8, `checks evaluated after the build: ${JSON.stringify(s)}`);
+  check(s && s.total === 9, `checks evaluated after the build: ${JSON.stringify(s)}`);
   lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
   const lens = (l) => (lenses.find(x => x.range.start.line === l) || { command: { title: '' } }).command.title;
   check(lens(1) === '✓ holds' && lens(2) === '✓ holds', `holding checks: "${lens(1)}", "${lens(2)}"`);
@@ -131,6 +132,17 @@ const onLine = (l) => (diags[uri(CHECKS)] || []).filter(d => d.range.start.line 
   const hu = await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(USERS) }, position: { line: staffLine, character: ul[staffLine].indexOf('staff_u') + 2 } });
   check(hu && /\*\*Roles:\*\* `staff_r`, `sysadm_r`/.test(hu.contents.value) && /__default__/.test(hu.contents.value), `hover on staff_u: ${hu && hu.contents.value.replace(/\n+/g, ' ').slice(0, 160)}`);
 
+  // Information flow: a path of rules, each traced to the statement that grants it.
+  const d10 = onLine(10)[0];
+  const flowPath = (d) => (/: (shadow_t → .*)\. Fix/.exec(d ? d.message : '') || [])[1];
+  if (lens(10) === '✓ holds') check(!d10, 'flows: holds');
+  else {
+    const rel10 = (d10 && d10.relatedInformation) || [];
+    check(/^✗ data flows in \d+ steps?$/.test(lens(10)) && /staff_t$/.test(flowPath(d10) || '')
+      && rel10.length > 0 && rel10.every(r => /^\S+ → \S+: \S+ (reads|writes) \(allow /.test(r.message)) && rel10.some(r => /\.(te|if)$/.test(URI.parse(r.location.uri).fsPath)),
+      `flows: "${lens(10)}" — ${d10 && d10.message} | ${rel10.slice(0, 3).map(r => `${path.relative(ws, URI.parse(r.location.uri).fsPath)}:${r.location.range.start.line + 1} ${r.message}`).join(' | ')}`, d10);
+  }
+
   // Editing the checks file re-checks against the last build without rebuilding.
   const starts = buildStarts.length;
   summary = null;
@@ -142,13 +154,32 @@ const onLine = (l) => (diags[uri(CHECKS)] || []).filter(d => d.range.start.line 
   lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
   check(lens(3) === '✓ holds' && onLine(3).length === 0 && buildStarts.length === starts, `edit + save: line 4 now "${lens(3)}", no rebuild (${buildStarts.length - starts} builds)`);
 
+  // 'except': the domains on the reported path may pass the data on; the next path (if any) avoids them.
+  if (lens(10) !== '✓ holds') {
+    const mids = flowPath(d10).split(' → ').slice(1, -1);
+    const withExcept = edited.replace('never shadow_t flows to staff_t', `never shadow_t flows to staff_t except ${mids.join(' ')}`);
+    summary = null;
+    conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 3 }, contentChanges: [{ text: withExcept }] });
+    await waitSummary(x => x.failed !== undefined);
+    await sleep(300);
+    lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
+    const again = flowPath(onLine(10)[0]);
+    check(lens(10) === '✓ holds' ? !onLine(10).length : !!again && mids.every(m => !again.split(' → ').includes(m)), `except ${mids.join(' ')}: "${lens(10)}"${again ? ` — ${again}` : ''}`);
+    conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 4 }, contentChanges: [{ text: edited }] });
+    await sleep(300);
+  }
+
   // Completion in the checks file.
   const lastLine = edited.split('\n').length - 1; // the empty line at the end
   const comp = await conn.sendRequest('textDocument/completion', { textDocument: { uri: uri(CHECKS) }, position: { line: lastLine, character: 0 } });
-  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 3 }, contentChanges: [{ text: edited.replace(/\n$/, '\nnever sysl') }] });
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 5 }, contentChanges: [{ text: edited.replace(/\n$/, '\nnever sysl') }] });
   await sleep(200);
   const comp2 = await conn.sendRequest('textDocument/completion', { textDocument: { uri: uri(CHECKS) }, position: { line: lastLine, character: 10 } });
   check(comp.items.some(i => i.label === 'only') && comp2.items.some(i => i.label === 'syslogd_t'), 'completion: keywords and type names');
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 6 }, contentChanges: [{ text: edited.replace(/\n$/, '\nnever shadow_t flows to staff_t ') }] });
+  await sleep(200);
+  const comp3 = await conn.sendRequest('textDocument/completion', { textDocument: { uri: uri(CHECKS) }, position: { line: lastLine, character: 32 } });
+  check(comp3.items.some(i => i.label === 'except') && comp3.items.some(i => i.label === 'weight'), `completion after 'flows to': ${comp3.items.map(i => i.label).join(', ')}`);
 
   await conn.sendRequest('shutdown');
   const exited = new Promise(res => proc.on('exit', res));

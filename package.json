@@ -442,7 +442,7 @@
         "selinux.checks.file": {
           "type": "string",
           "default": "selinux.checks",
-          "markdownDescription": "Property checks file, relative to the policy tree root. Each line is an assertion about the compiled policy (`only X may write T`, `never X may read T`, `never X reaches Y`, `require X may append T:file`), checked after every build and whenever the file is saved. See the README."
+          "markdownDescription": "Property checks file, relative to the policy tree root (for a standalone module: the workspace folder; it is checked against the module linked with the installed policy). Each line is an assertion about the compiled policy (`only X may write T`, `never X may read T`, `never X reaches Y`, `never T flows to U`, `require X may append T:file`), checked after every build and whenever the file is saved. See the README."
         }
       }
     }
@@ -456,6 +456,7 @@
     "test:preview": "node test/preview-e2e.js",
     "test:webview": "node test/webview-transitions-test.js",
     "test:checks": "node test/checks-e2e.js",
+    "test:modchecks": "node test/module-checks-e2e.js",
     "test:scratch": "node test/scratch-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"

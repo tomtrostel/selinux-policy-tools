@@ -271,6 +271,120 @@ function installedPolicies() {
   return out.map(x => ({ ...x, active: x.name === active }));
 }
 
+/* ---------- standalone modules linked with the installed policy ---------- */
+
+/*
+ * A standalone module isn't linked into a policy, so there is nothing to run
+ * property checks against. The installed kernel policy is world-readable
+ * (the module store under /var/lib/selinux is not): decompile it to CIL
+ * (checkpolicy -b -C), convert the module to CIL (hll/pp) and compile both
+ * into a throwaway store with `semodule -p`, unprivileged. The result is
+ * "this host's policy plus the module as it is now".
+ *
+ * Kernel policies drop what only the module linker needs: the
+ * cil_gen_require attributes and small attributes expanded into their member
+ * types. A shim declares those so the module's requirements resolve (an
+ * expanded attribute loses its old members; rules written for it already
+ * name the types). If the module is installed already, the kernel policy has
+ * its old declarations: the module's own are dropped and its old rules stay.
+ */
+
+const execP = (cmd, args, opts = {}) => new Promise((resolve) => {
+  execFile(cmd, args, { maxBuffer: 64 << 20, timeout: 600000, ...opts }, (err, stdout, stderr) => resolve({ code: err ? (err.code || 1) : 0, out: `${stdout}${stderr}` }));
+});
+
+/** The active installed kernel policy: { name, path } of /etc/selinux/<SELINUXTYPE>/policy/policy.N, or null. */
+function installedKernelPolicy() {
+  const all = installedPolicies();
+  const p = all.find(x => x.active) || all[0];
+  return p ? { name: p.name, path: p.policy } : null;
+}
+
+const CIL_DECL_RE = /^\((type|typeattribute|typealias|role|roleattribute|boolean) ([^\s()]+)/gm;
+let installedBase = null; // { key, cil, names: Set }
+
+async function installedBaseCil(kernelPolicy) {
+  const st = fs.statSync(kernelPolicy);
+  const key = `${kernelPolicy}:${st.mtimeMs}`;
+  if (installedBase && installedBase.key === key && fs.existsSync(installedBase.cil)) return installedBase;
+  const dir = scratchDir('installed', kernelPolicy);
+  fs.mkdirSync(dir, { recursive: true });
+  const cil = path.join(dir, 'base.cil');
+  const r = await execP('checkpolicy', ['-b', '-C', '-M', kernelPolicy, '-o', cil]);
+  if (r.code !== 0) throw new Error(`checkpolicy could not decompile ${kernelPolicy}: ${r.out.trim().split('\n').pop()}`);
+  const names = new Set();
+  for (const m of fs.readFileSync(cil, 'utf8').matchAll(CIL_DECL_RE)) names.add(m[2]);
+  installedBase = { key, cil, names };
+  return installedBase;
+}
+
+/**
+ * Link a module build (tmp/<mod>.mod) with the installed policy.
+ * isAttribute(name) tells, from the sources, whether a required name is an
+ * attribute (may have been expanded away) or a type (must exist).
+ * Returns { ok, policy, kernelPolicy, installed, missing, log, ms }.
+ */
+async function linkWithInstalled(res, { isAttribute = () => false, kernelPolicy = null } = {}) {
+  const t0 = Date.now();
+  const done = (x) => ({ ms: Date.now() - t0, missing: [], installed: false, ...x });
+  const kp = kernelPolicy ? { path: kernelPolicy } : installedKernelPolicy();
+  if (!kp) return done({ ok: false, log: 'No installed policy found under /etc/selinux.' });
+  const work = path.join(res.workDir, 'linked');
+  fs.rmSync(work, { recursive: true, force: true });
+  fs.mkdirSync(work, { recursive: true });
+  const modFile = path.join(res.workDir, 'tmp', `${res.module}.mod`);
+  if (!fs.existsSync(modFile)) return done({ ok: false, log: `${modFile} is missing: build the module first.` });
+  let base;
+  try { base = await installedBaseCil(kp.path); } catch (e) { return done({ ok: false, log: e.message }); }
+  const pp = path.join(work, `${res.module}.pp`);
+  let r = await execP('semodule_package', ['-o', pp, '-m', modFile]);
+  if (r.code !== 0) return done({ ok: false, log: `semodule_package failed: ${r.out.trim()}` });
+  r = await execP('/usr/libexec/selinux/hll/pp', [pp, path.join(work, `${res.module}.cil`)]);
+  if (r.code !== 0) return done({ ok: false, log: `Converting the module to CIL failed (/usr/libexec/selinux/hll/pp): ${r.out.trim()}` });
+
+  // Drop declarations the installed policy already has (an installed copy of this module).
+  const modCilPath = path.join(work, `${res.module}.cil`);
+  const lines = fs.readFileSync(modCilPath, 'utf8').split('\n');
+  let installed = false;
+  const kept = lines.filter((l) => {
+    const m = /^\((type|typeattribute|typealias|role|roleattribute|boolean) ([^\s()]+)/.exec(l);
+    if (m && base.names.has(m[2])) { installed = true; return false; }
+    return true;
+  });
+  fs.writeFileSync(modCilPath, kept.join('\n'));
+  const own = new Set(kept.map(l => (/^\((?:type|typeattribute|typealias|role|roleattribute|boolean) ([^\s()]+)/.exec(l) || [])[1]).filter(Boolean));
+
+  // Requirements the kernel policy no longer has.
+  const shim = ['(typeattribute cil_gen_require)', '(roleattribute cil_gen_require)'];
+  const missing = [];
+  for (const l of kept) {
+    const m = /^\((type|role)attributeset cil_gen_require ([^\s()]+)\)/.exec(l);
+    if (!m || base.names.has(m[2]) || own.has(m[2])) continue;
+    if (m[1] === 'role' || isAttribute(m[2])) shim.push(`(${m[1]}attribute ${m[2]})`);
+    else missing.push(m[2]);
+  }
+  if (missing.length) {
+    return done({ ok: false, missing, installed, log: `The installed policy has no ${missing.length > 1 ? 'types' : 'type'} ${missing.join(', ')}, which the module requires (is the module that declares ${missing.length > 1 ? 'them' : 'it'} installed?).` });
+  }
+  const shimName = `${res.module}_shim_`;
+  fs.writeFileSync(path.join(work, `${shimName}.cil`), [...new Set(shim)].join('\n') + '\n');
+
+  const root = path.join(work, 'root');
+  fs.mkdirSync(path.join(root, 'var', 'lib', 'selinux'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'etc', 'selinux'), { recursive: true });
+  try { fs.copyFileSync('/etc/selinux/semanage.conf', path.join(root, 'etc', 'selinux', 'semanage.conf')); } catch { /* defaults */ }
+  // The base goes in from the cache (semodule copies it into the store).
+  r = await execP('semodule', ['-p', root, '-X', '100', '-s', 'linked', '-i', base.cil, '-i', `${shimName}.cil`, '-i', `${res.module}.cil`], { cwd: work });
+  if (r.code === 'ENOENT') return done({ ok: false, installed, log: 'semodule not found: install policycoreutils.' });
+  const log = r.out.split('\n').filter(l => l && !/Could not set ownership/.test(l)).join('\n');
+  const polDir = path.join(root, 'etc', 'selinux', 'linked', 'policy');
+  let policy = null;
+  try { const f = fs.readdirSync(polDir).filter(n => /^policy\.\d+$/.test(n)).sort().pop(); if (f) policy = path.join(polDir, f); } catch { /* failed */ }
+  // The store's copies are no longer needed; the policy file is.
+  try { fs.rmSync(path.join(root, 'var'), { recursive: true, force: true }); } catch { /* best effort */ }
+  return done({ ok: r.code === 0 && !!policy, policy, kernelPolicy: kp.path, installed, log });
+}
+
 /** The m4 output files of a tree build (for explaining its rules). */
 function treeOutputs(res) {
   const tmp = path.join(res.workDir, 'tmp');
@@ -598,4 +712,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

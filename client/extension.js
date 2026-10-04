@@ -12,18 +12,23 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 #   only    <names> may <perms> <targets>[:<classes>]   nobody else may
 #   never   <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
 #   never   <names> reaches <names>                     no domain-transition path, direct or indirect
+#   never   <types> flows to <types> [except <types>]   no information flow through any chain of
+#                                                       domains and files (except: trusted to pass it on;
+#                                                       add 'weight 1' to count covert channels too)
 #   require <names> may <perms> <targets>[:<classes>]   must stay allowed
 #   only|never <roles> may run <types>                  which roles may run a domain
 #   only|never <users> may use <roles>                  which SELinux users may have a role
 #
 # names: types or attributes (attributes stand for all their member types).
-# perms: read | write | execute | any, a permission, or { perm perm ... }.
+# perms: read | write | execute | any (groups), a permission, or { perm perm ... }
+# (exactly those: { read } is only read, while read also means open and map).
 # classes default to the file-like ones (require: file).
 #
 # Examples (edit to match your policy):
 # only auditd_t may write auditd_log_t
 # never user_t, staff_t may write shadow_t
 # never user_t reaches sysadm_t
+# never shadow_t flows to user_t except passwd_t chkpwd_t
 # require syslogd_t may { append create } var_log_t:file
 # only sysadm_r may run sysadm_t
 # never user_u may use sysadm_r
@@ -136,13 +141,19 @@ function activate(context) {
       if (p.state === 'validating') { buildStatus(`$(sync~spin) ${p.module} compiled (${p.ms} ms); validating link…`, 60000); return; }
       if (p.state === 'baseline') { buildStatus(`$(sync~spin) Building HEAD (${p.short}) of ${p.module} for comparison…`, 120000); return; }
       if (p.state === 'cil') { buildStatus(`$(sync~spin) Building ${p.module} with semodule (CIL)…`, 180000); return; }
+      if (p.state === 'linking') { buildStatus(`$(sync~spin) Linking ${p.module} with the installed policy…`, 120000); return; }
+      if (p.state === 'linked') {
+        buildStatus(p.ok ? `$(check) ${p.module} linked with the installed policy (${(p.ms / 1000).toFixed(1)} s)` : `$(error) ${p.module}: linking with the installed policy failed (see the SELinux output)`, 8000);
+        compiled.refresh();
+        return;
+      }
       const what = p.tree ? `${count(p.packages, 'package')}${p.validated ? ', link validated' : ''}` : '';
       buildOutput.appendLine(`=== ${p.module}: ${p.ok ? 'built' : 'FAILED'} in ${p.ms} ms (${count(p.errors, 'error')}, ${count(p.warnings, 'warning')})${what ? '; ' + what : ''} ===`);
       if (p.tree) buildOutput.appendLine(`Output: ${p.outputDir}${p.policyBin ? `  (kernel policy: ${p.policyBin})` : ''}`);
       buildOutput.appendLine(p.log.trimEnd());
       buildStatus(p.ok ? `$(check) ${p.module} built (${p.ms} ms${what ? ', ' + what : ''})` : `$(error) ${p.module}: build failed, see Problems`, 8000);
       expanded.refresh();
-      if (p.tree) compiled.refresh();
+      compiled.refresh(); // a module build is linked with the installed policy when the view (or a check) needs it
       if (p.tree && p.ok) changes.afterBuild();
     });
   });
@@ -542,7 +553,8 @@ class CompiledPolicyView {
     const add = (map, k, v) => { if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
     for (const x of m.transitions) { add(m.transOut, x.source, x); add(m.transIn, x.result, x); }
     m.byModule = new Map();
-    const modOf = (e, kind) => { const mod = (e.loc && e.loc.m) || '(no source found)'; if (!m.byModule.has(mod)) m.byModule.set(mod, { types: [], attributes: [], bools: [], roles: [] }); m.byModule.get(mod)[kind].push(e); };
+    const noSource = m.linked ? '(installed policy)' : '(no source found)';
+    const modOf = (e, kind) => { const mod = (e.loc && e.loc.m) || noSource; if (!m.byModule.has(mod)) m.byModule.set(mod, { types: [], attributes: [], bools: [], roles: [] }); m.byModule.get(mod)[kind].push(e); };
     for (const t of m.types) modOf(t, 'types');
     for (const a of m.attributes) modOf(a, 'attributes');
     for (const b of m.bools) modOf(b, 'bools');
@@ -600,9 +612,9 @@ class CompiledPolicyView {
     const domains = m.types.filter(t => t.attrs.includes('domain'));
     const byName = (a, b) => a.name.localeCompare(b.name);
     const sorted = (l) => [...l].sort(byName);
-    const header = this.node(null, 'hdr', `policy.${m.version}${m.mls ? ' · MLS/MCS' : ''} · unknown=${m.handleUnknown}`, {
+    const header = this.node(null, 'hdr', m.linked ? `${m.linked.module} + installed policy.${m.version}` : `policy.${m.version}${m.mls ? ' · MLS/MCS' : ''} · unknown=${m.handleUnknown}`, {
       icon: 'shield', desc: new Date(m.builtAt).toLocaleTimeString(),
-      tooltip: `${m.bin}\n${Object.entries(m.counts).map(([k, v]) => `${k}: ${v}`).join('\n')}`,
+      tooltip: `${m.linked ? `The module as built, linked with ${m.linked.kernelPolicy}${m.linked.installed ? ` (which already has a copy of ${m.linked.module}: its installed rules are included too)` : ''}\n` : ''}${m.bin}\n${Object.entries(m.counts).map(([k, v]) => `${k}: ${v}`).join('\n')}`,
     });
     return [
       header,
