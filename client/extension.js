@@ -60,7 +60,30 @@ function activate(context) {
   const compiledView = vscode.window.createTreeView('selinuxCompiledPolicy', { treeDataProvider: compiled, showCollapseAll: true });
   context.subscriptions.push(compiledView);
 
+  // Dim ifdef/ifndef branches the build flags turn off, like inactive #ifdef code.
+  const inactiveDeco = vscode.window.createTextEditorDecorationType({ opacity: '0.45' });
+  context.subscriptions.push(inactiveDeco);
+  const dim = async (ed) => {
+    if (!ed || !/^selinux/.test(ed.document.languageId) || ed.document.uri.scheme !== 'file' || !client.isRunning()) return;
+    const ranges = await client.sendRequest('selinux/inactiveRanges', { uri: ed.document.uri.toString() });
+    ed.setDecorations(inactiveDeco, ranges.map(r => ({
+      range: new vscode.Range(r.range.start.line, r.range.start.character, r.range.end.line, r.range.end.character),
+      hoverMessage: r.reason,
+    })));
+  };
+  const dimAll = () => vscode.window.visibleTextEditors.forEach(ed => dim(ed).catch(() => {}));
+  let dimTimer = null;
+  context.subscriptions.push(
+    vscode.window.onDidChangeVisibleTextEditors(dimAll),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      if (!/^selinux/.test(e.document.languageId)) return;
+      clearTimeout(dimTimer);
+      dimTimer = setTimeout(dimAll, 500);
+    }),
+  );
+
   client.start().then(() => {
+    client.onNotification('selinux/inactiveChanged', dimAll);
     client.onNotification('selinux/indexing', (p) => {
       if (p.state === 'start') status.text = '$(sync~spin) SELinux: indexing…';
       else {
@@ -69,6 +92,7 @@ function activate(context) {
         status.tooltip = `${count(s.files, 'file')}, ${count(s.types, 'type')}, ${count(s.classes, 'class')}. Indexed in ${s.ms} ms. Click for details.`;
         explorer.refresh();
         compiled.refresh();
+        dimAll();
       }
     });
     client.onNotification('selinux/build', (p) => {

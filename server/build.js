@@ -103,6 +103,36 @@ async function buildModule(tePath, readText, { develMakefile, pkg = false, timeo
   };
 }
 
+/* ---------- m4 build flags (for deciding ifdef/ifndef branches) ---------- */
+
+/**
+ * The -D flags the build passes to m4, asked from the Makefile itself
+ * (`make --eval` prints the expanded M4PARAM; no recipe runs).
+ * Returns { defined: Set, universe: Set, patterns: [RegExp], flags: string }:
+ * `universe` are the symbols the Makefile can pass at all (so their absence
+ * means "not defined"); flags it only passes for some steps (Rules.* add
+ * self_contained_policy, users_extra) are left out, so they stay undecided.
+ */
+function m4Defines({ cwd, makefile, makeArgs = [], timeoutMs = 20000 }) {
+  return new Promise((resolve) => {
+    const args = ['-s', '--no-print-directory', ...(makefile ? ['-f', makefile] : []), ...makeArgs,
+      '--eval', 'selinux-print-m4param: ; @echo $(M4PARAM)', 'selinux-print-m4param'];
+    execFile('make', args, { cwd, timeout: timeoutMs }, (err, stdout) => {
+      if (err) { resolve(null); return; }
+      const flags = stdout.trim().split('\n').pop();
+      const defined = new Set([...flags.matchAll(/-D\s*(\w+)/g)].map(m => m[1]));
+      const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
+      const mk = makefile ? read(makefile) + read(path.join(path.dirname(makefile), 'include', 'Makefile')) : read(path.join(cwd, 'Makefile'));
+      const stepOnly = new Set([...(read(path.join(cwd, 'Rules.modular')) + read(path.join(cwd, 'Rules.monolithic'))).matchAll(/-D\s*(\w+)/g)].map(m => m[1]));
+      const universe = new Set([...mk.matchAll(/-D\s*(\w+)/g)].map(m => m[1]).filter(s => !stepOnly.has(s)));
+      for (const s of defined) if (!stepOnly.has(s)) universe.add(s);
+      // `-D distro_$(DISTRO)`: any distro_* symbol is a build flag.
+      const patterns = /-D\s*distro_\$\(DISTRO\)/.test(mk) ? [/^distro_\w+$/] : [];
+      resolve({ defined, universe, patterns, flags });
+    });
+  });
+}
+
 /* ---------- full source trees (refpolicy Makefile) ---------- */
 
 /** The refpolicy tree root for an indexed support file path, or null. */
@@ -397,4 +427,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, m4Defines, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

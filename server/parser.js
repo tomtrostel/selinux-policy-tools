@@ -21,6 +21,8 @@ const AV_RULES = new Set(['allow', 'dontaudit', 'auditallow', 'neverallow',
 // Policy-language keywords that may be written directly before '(' without being m4 calls.
 const PAREN_KEYWORDS = new Set(['if', 'constrain', 'mlsconstrain', 'validatetrans', 'mlsvalidatetrans', 'not', 'and', 'or']);
 const DECL_KEYWORDS = new Set(['type', 'attribute', 'attribute_role', 'typealias', 'role', 'bool']);
+// m4 conditionals whose branches are recorded (ifelse compares strings and is left alone).
+const CONDITIONALS = new Set(['ifdef', 'ifndef']);
 // Arguments of these are human-readable messages, not code: `foo() is deprecated'.
 const MESSAGE_MACROS = new Set(['refpolicywarn', 'refpolicyerr']);
 
@@ -142,6 +144,7 @@ function parsePolicy(text) {
     avRules: [],
     refs: new Map(), // name -> [[line, col], ...]
     problems: [],
+    branches: [],    // ifdef/ifndef branches: { sym, want, s:{l,c}, e:{l,c} }
   };
 
   const stack = [];
@@ -263,7 +266,7 @@ function parsePolicy(text) {
         let f;
         while ((f = stack.pop()) && f.k === 'brace') { /* tolerate unbalanced braces */ }
         if (!f) { out.problems.push({ l: tk.l, c: tk.c, msg: "Unmatched ')'" }); break; }
-        if (f.k === 'call') { f.args[f.args.length - 1].e = tk.s; finishCall(f, tk); resetStmt(); }
+        if (f.k === 'call') { f.args[f.args.length - 1].e = tk.s; closeBranch(f, tk); finishCall(f, tk); resetStmt(); }
         break;
       }
       case ',': {
@@ -273,6 +276,7 @@ function parsePolicy(text) {
           top.args.push({ s: tk.e });
           top.argIdx++;
           if (top.argIdx === 1 && DEF_MACROS.has(top.name)) startDef(top);
+          if (CONDITIONALS.has(top.name)) { closeBranch(top, tk); if (top.argIdx <= 2) top.br = { idx: top.argIdx, s: { l: tk.l, c: tk.c + 1 } }; }
           resetStmt();
         } else if (decl && (decl.stage === 'post' || decl.stage === 'alias')) {
           decl.stage = 'attrs';
@@ -312,6 +316,22 @@ function parsePolicy(text) {
   return out;
 
   /* -- helpers that close over parser state -- */
+
+  /**
+   * End the open branch of an ifdef/ifndef frame at `tk` (a ',' or ')').
+   * Records { sym, want, s, e }: the text between s and e is used by m4 only
+   * when `sym` being defined equals `want`.
+   */
+  function closeBranch(frame, tk) {
+    if (!frame.br || !CONDITIONALS.has(frame.name)) return;
+    const a0 = frame.args[0];
+    const sym = cleanArg(text.slice(a0.s, a0.e === undefined ? a0.s : a0.e));
+    if (/^\w+$/.test(sym)) {
+      const want = frame.name === 'ifdef' ? frame.br.idx === 1 : frame.br.idx === 2;
+      out.branches.push({ sym, want, s: frame.br.s, e: { l: tk.l, c: tk.c } });
+    }
+    frame.br = null;
+  }
 
   function startDef(frame) {
     const nameTok = frame.firstIdent;
@@ -377,6 +397,8 @@ function parsePolicy(text) {
 
 function parseFc(text) {
   const out = { kind: 'fc', entries: [], refs: new Map(), calls: [], decls: [], defs: [], avRules: [], requires: [], problems: [] };
+  // .fc files are m4 too (ifdef(`distro_debian', ...)); reuse the policy parser for their branches.
+  out.branches = parsePolicy(text).branches;
   const lines = text.split('\n');
   const ctxRe = /gen_context\(\s*([A-Za-z0-9_$]+):([A-Za-z0-9_$]+):([A-Za-z0-9_$]+)/g;
   lines.forEach((line, l) => {

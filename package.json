@@ -326,6 +326,11 @@
             ]
           },
           "markdownDescription": "Files to put into the scratch copy of a full tree before building, as `\"tree/relative/path\": \"source\"` or `[\"source1\", \"source2\"]` (concatenated). Your tree is not modified. Used for config a policy RPM copies in at build time, e.g. RHEL's `policy/modules.conf`, `policy/booleans.conf` and `policy/users`. `~/…` is your home directory; relative sources are under the tree root. *SELinux: Configure Build from Spec File…* fills this in."
+        },
+        "selinux.ifdef.evaluate": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Decide `ifdef`/`ifndef` blocks on m4 build flags (`enable_mcs`, `enable_mls`, `distro_redhat`, …) the way the configured build would, asking the Makefile for its flags (Linux, trusted workspaces). Inactive branches are dimmed, ignored by diagnostics, and their definitions leave the index. Other conditions (e.g. `ifdef` on an interface name) are never decided."
         }
       }
     }

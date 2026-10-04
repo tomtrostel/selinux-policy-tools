@@ -27,6 +27,15 @@ function diagnose(idx, f, settings = {}) {
       if (idx.isMacro(c.name)) continue;
       // ifdef(`foo_iface', `foo_iface(...)'): m4 only expands it when defined.
       if (c.ifdefGuards && c.ifdefGuards.includes(c.name)) continue;
+      // Code the build flags turn off is never compiled.
+      if (!idx.isActive(f, c.l, c.c)) continue;
+      const off = idx.inactiveDefs && idx.inactiveDefs.get(c.name);
+      if (off) {
+        const b = off[0].inactive;
+        out.push({ l: c.l, c: c.c, len: c.len, severity: INFO, code: 'inactive-macro',
+          msg: `'${c.name}' is only defined when ${b.sym} is ${b.want ? '' : 'not '}defined, which this build configuration ${b.want ? "doesn't do" : 'does'}.` });
+        continue;
+      }
       if (c.inOptional) {
         out.push({ l: c.l, c: c.c, len: c.len, severity: INFO, code: 'unknown-macro-optional',
           msg: `'${c.name}' is not defined in the indexed sources. It is inside optional_policy, so the build skips it if the providing module is absent.` });
@@ -38,7 +47,10 @@ function diagnose(idx, f, settings = {}) {
   }
 
   if (settings.classPerms !== false && idx.classes.size > 0) {
-    for (const r of f.avRules || []) checkAvRule(idx, r, out);
+    for (const r of f.avRules || []) {
+      const at = r.classes[0] || { l: r.l, c: 0 };
+      if (idx.isActive(f, at.l, at.c)) checkAvRule(idx, r, out);
+    }
   }
 
   if (settings.genRequire !== false && f.path && f.path.endsWith('.if')) {
@@ -70,7 +82,7 @@ function checkAvRule(idx, r, out) {
 }
 
 function checkGenRequire(idx, f, d, out) {
-  if (!d.bodyEnd) return;
+  if (!d.bodyEnd || d.inactive) return;
   const required = new Set(d.requires.map(r => r.name));
   const startL = d.l, endL = d.bodyEnd.l;
   const inBody = (l, c) => (l > startL || (l === startL && c > d.c)) && (l < endL || (l === endL && c < d.bodyEnd.c));
@@ -79,7 +91,7 @@ function checkGenRequire(idx, f, d, out) {
     if (required.has(name) || name.includes('$') || name === 'self' || name === d.name) continue;
     if (!idx.isTypeLike(name)) continue;
     if (idx.isMacro(name) || idx.classes.has(name)) continue;
-    const hit = positions.find(([l, c]) => inBody(l, c) && !inRequireBlock(l, c));
+    const hit = positions.find(([l, c]) => inBody(l, c) && !inRequireBlock(l, c) && idx.isActive(f, l, c));
     if (!hit) continue;
     const kind = (idx.decls.get(name) || []).some(x => x.kind === 'type') ? 'type' : 'attribute';
     out.push({ l: hit[0], c: hit[1], len: name.length, severity: WARNING, code: 'missing-require',

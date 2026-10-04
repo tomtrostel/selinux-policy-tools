@@ -23,6 +23,7 @@ let settings = {
   useDevelHeaders: 'auto',
   develHeadersPath: '/usr/share/selinux/devel/include',
   diagnostics: { unknownMacros: true, classPerms: true, genRequire: true },
+  ifdef: { evaluate: true },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
     tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} } },
   // Set by the client from vscode.workspace.isTrusted. Building runs the tree's
@@ -74,6 +75,7 @@ connection.onDidChangeConfiguration((change) => {
 
 function mergeSettings(s) {
   settings = { ...settings, ...s, diagnostics: { ...settings.diagnostics, ...(s.diagnostics || {}) },
+    ifdef: { ...settings.ifdef, ...(s.ifdef || {}) },
     build: { ...settings.build, ...(s.build || {}), tree: { ...settings.build.tree, ...((s.build && s.build.tree) || {}) } } };
   toolchain = null;
 }
@@ -103,9 +105,41 @@ function reindex() {
       connection.sendNotification('selinux/indexing', { state: 'done', stats });
       publishAll();
       resolve();
+      updateM4Defines().catch(e => log(`m4 flags: ${e.message}`));
     });
   }));
   return indexing;
+}
+
+/* ---------------- ifdef/ifndef on build flags ---------------- */
+
+let m4Key = null;
+
+/**
+ * Ask the build's Makefile which -D flags it passes to m4 and let the index
+ * decide ifdef/ifndef branches on them. Needs make (Linux) and a trusted
+ * workspace, since parsing a Makefile can run $(shell ...).
+ */
+async function updateM4Defines() {
+  let job = null;
+  if (settings.ifdef.evaluate !== false && settings.trusted !== false && process.platform !== 'win32') {
+    if (treeRoot) job = { cwd: treeRoot, makeArgs: settings.build.tree.makeArgs || [] };
+    else if (usingDevel && roots[0] && fs.existsSync(settings.build.develMakefile || '')) job = { cwd: roots[0], makefile: settings.build.develMakefile };
+  }
+  const key = JSON.stringify(job);
+  if (key === m4Key) return;
+  m4Key = key;
+  const m4 = job ? await build.m4Defines(job) : null;
+  if (key !== m4Key) return; // superseded while make ran
+  idx.setM4Defines(m4);
+  idx.rebuild();
+  if (m4) {
+    let off = 0;
+    for (const f of idx.files.values()) off += idx.inactiveBranches(f).length;
+    log(`m4 build flags: ${m4.flags} (${off} ifdef/ifndef branches inactive)`);
+  }
+  publishAll();
+  connection.sendNotification('selinux/inactiveChanged', { flags: m4 ? m4.flags : null });
 }
 
 /* ---------------- document sync ---------------- */
@@ -479,6 +513,18 @@ connection.onHover(({ textDocument, position }) => {
       '```selinux\nclass ' + name + (cls.inherits ? ` inherits ${cls.inherits}` : '') + '\n```\n\n' +
       (perms.length ? `**Permissions (${perms.length}):** ${perms.join(' ')}` : '*No permissions defined*') } };
   }
+  if (idx.decides(name)) {
+    const on = idx.m4.defined.has(name);
+    return { range: r, contents: { kind: MarkupKind.Markdown, value:
+      `\`${name}\` is an m4 build flag: **${on ? 'defined' : 'not defined'}** in this build configuration.\n\n` +
+      `Flags from the Makefile: \`${idx.m4.flags}\`` } };
+  }
+  const inactive = idx.inactiveDefs && idx.inactiveDefs.get(name);
+  if (inactive) {
+    const b = inactive[0].inactive;
+    return { range: r, contents: { kind: MarkupKind.Markdown, value:
+      defMarkdown(inactive[0], inactive.length) + `\n\n*Not part of this build configuration: defined only when \`${b.sym}\` is ${b.want ? '' : 'not '}defined.*` } };
+  }
   return null;
 });
 
@@ -791,7 +837,18 @@ connection.onRequest('selinux/expandedPolicy', async ({ uri }) => {
 connection.onRequest('selinux/expansion', async ({ uri, line }) => expansionAt(toPath(uri), line));
 
 // Workspace trust can be granted while the server runs.
-connection.onNotification('selinux/setTrusted', ({ trusted }) => { settings.trusted = !!trusted; });
+connection.onNotification('selinux/setTrusted', ({ trusted }) => {
+  settings.trusted = !!trusted;
+  updateM4Defines().catch(e => log(`m4 flags: ${e.message}`));
+});
+
+// ifdef/ifndef branches the build flags turn off, for dimming in the editor.
+connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
+  await indexing;
+  const f = idx.files.get(toPath(uri));
+  return idx.inactiveBranches(f).map(b => ({ range: { start: { line: b.s.l, character: b.s.c }, end: { line: b.e.l, character: b.e.c } },
+    reason: `Not compiled in this build configuration: needs ${b.sym} ${b.want ? 'defined' : 'not defined'}.` }));
+});
 
 // Build settings derived from a Fedora/RHEL selinux-policy.spec, one entry per policy variant.
 connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {

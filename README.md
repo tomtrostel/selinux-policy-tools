@@ -76,6 +76,15 @@ Open one of these as the workspace folder:
   then only the permissions valid for the chosen class(es).
 * Signature help while typing interface arguments.
 * Syntax highlighting for policy and file-context files.
+* **Build-flag `ifdef`s follow your build configuration.** `ifdef`/`ifndef`
+  blocks on m4 build flags (`distro_redhat`, `enable_mcs`, `enable_mls`,
+  `enable_ubac`, `init_systemd`, …) are decided the way the configured build
+  would decide them; the flags are asked from the Makefile with your build
+  settings. Inactive branches are dimmed in the editor (hover shows why),
+  get no diagnostics, and their declarations, definitions and file contexts
+  leave the index, so e.g. go-to-definition skips a `type` that only exists
+  on Debian. Hovering a flag shows whether it is defined. Needs `make`
+  (Linux) and a trusted workspace; other conditions are never decided.
 * Diagnostics as you type, with quick fixes where possible:
   * unknown interface/macro calls (suggests the closest names);
   * unknown object classes and invalid permissions for a class;
@@ -153,6 +162,7 @@ what the sources declare.
 | `selinux.useDevelHeaders` | `auto` | `auto` / `always` / `never` index the devel headers |
 | `selinux.develHeadersPath` | `/usr/share/selinux/devel/include` | Devel header location |
 | `selinux.diagnostics.unknownMacros` / `.classPerms` / `.genRequire` | `true` | Toggle individual checks |
+| `selinux.ifdef.evaluate` | `true` | Decide `ifdef`/`ifndef` on m4 build flags from the Makefile (dim inactive branches, leave them out of the index) |
 | `selinux.build.enabled` | `true` | Build with the real toolchain |
 | `selinux.build.onSave` | `true` | Build when a policy file is saved |
 | `selinux.build.develMakefile` | `/usr/share/selinux/devel/Makefile` | Makefile for standalone modules |
@@ -210,7 +220,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Structural parsing, not m4 emulation. Names produced by deep m4 tricks
   (string building with `patsubst`, `changequote`) won't resolve. Template
   expansion follows nested templates up to five levels.
-* `ifdef`/`ifelse` branches are all indexed as if active.
+* Only `ifdef`/`ifndef` on m4 build flags are decided, and only where
+  `make` can be asked (Linux, trusted workspace). `ifelse`, `ifdef` on
+  other names (e.g. interface names), and everything on Windows/macOS
+  without Remote-SSH are indexed as if all branches were active.
+  `self_contained_policy` and `users_extra`, which the Makefile passes
+  only for some build steps, are never decided.
 * `.te` files are not checked for missing `require` blocks, only `.if`
   interfaces.
 

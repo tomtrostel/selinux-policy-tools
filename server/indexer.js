@@ -50,6 +50,41 @@ class PolicyIndex {
     this.files = new Map(); // fsPath -> parse result (+ path, kind)
     this.log = log || (() => {});
     this.built = false;
+    this.m4 = null;         // build flags: { defined: Set, universe: Set } or null (all branches active)
+  }
+
+  /* ----- ifdef/ifndef on build flags ----- */
+
+  /**
+   * Set the m4 build flags of the current build configuration. Only symbols in
+   * `universe` (the -D flags the Makefile can pass) are decided; anything else,
+   * or a flag that is also define()d in the sources, keeps both branches active.
+   */
+  setM4Defines(m4) { this.m4 = m4 && m4.universe && m4.universe.size ? { patterns: [], ...m4 } : null; }
+
+  /** Is `sym` decided by the build flags? */
+  decides(sym) {
+    if (!this.m4) return false;
+    if (!this.m4.universe.has(sym) && !this.m4.patterns.some(re => re.test(sym))) return false;
+    return !(this.defs && (this.defs.get(sym) || []).some(d => !d.generated));
+  }
+
+  /** The first inactive ifdef/ifndef branch of file `f` that contains (l, c), or null. */
+  inactiveBranchAt(f, l, c) {
+    if (!this.m4 || !f || !f.branches || !f.branches.length) return null;
+    for (const b of f.branches) {
+      const inside = (l > b.s.l || (l === b.s.l && c >= b.s.c)) && (l < b.e.l || (l === b.e.l && c < b.e.c));
+      if (inside && this.decides(b.sym) && this.m4.defined.has(b.sym) !== b.want) return b;
+    }
+    return null;
+  }
+
+  isActive(f, l, c) { return !this.inactiveBranchAt(f, l, c); }
+
+  /** Inactive branches of a file (for dimming in the editor). */
+  inactiveBranches(f) {
+    if (!this.m4 || !f || !f.branches) return [];
+    return f.branches.filter(b => this.decides(b.sym) && this.m4.defined.has(b.sym) !== b.want);
   }
 
   /* ----- loading ----- */
@@ -113,10 +148,31 @@ class PolicyIndex {
         }
         continue;
       }
-      if (f.kind === 'fc') for (const e of f.entries) push(fcByType, e.type, { ...e, path: f.path });
       for (const d of f.defs) { d.path = f.path; push(defs, d.name, d); }
-      for (const d of f.decls) { d.path = f.path; push(decls, d.name, d); }
     }
+    // Definitions in branches the build flags turn off don't exist in this
+    // configuration. Decided in a second pass, so a flag that is itself
+    // define()d somewhere stays undecided (decides() looks at this.defs).
+    this.defs = defs;
+    const inactiveDefs = new Map();
+    for (const f of this.files.values()) {
+      if (f.kind === 'flask') continue;
+      if (f.kind === 'fc') for (const e of f.entries) if (this.isActive(f, e.l, e.c)) push(fcByType, e.type, { ...e, path: f.path });
+      for (const d of f.defs) {
+        const b = this.inactiveBranchAt(f, d.l, d.c);
+        d.inactive = b || undefined;
+        if (!b) continue;
+        const list = defs.get(d.name);
+        list.splice(list.indexOf(d), 1);
+        if (!list.length) defs.delete(d.name);
+        push(inactiveDefs, d.name, d);
+      }
+      for (const d of f.decls) {
+        d.path = f.path;
+        if (this.isActive(f, d.l, d.c)) push(decls, d.name, d);
+      }
+    }
+    this.inactiveDefs = inactiveDefs;
     // The devel headers ship no flask files, but support/all_perms.spt
     // (generated from them at build time) lists every class with all its perms.
     if (!classes.size) {
@@ -214,7 +270,7 @@ class PolicyIndex {
     for (const f of this.files.values()) {
       if (!f.calls) continue;
       for (const c of f.calls) {
-        if (!generative.has(c.name)) continue;
+        if (!generative.has(c.name) || !this.isActive(f, c.l, c.c)) continue;
         if (c.inDef && c.args.some(a => a.includes('$'))) continue;
         expand(c.name, c.args, { path: f.path, l: c.l, c: c.c, len: c.len, name: c.name }, 0);
       }

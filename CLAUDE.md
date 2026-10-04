@@ -86,6 +86,19 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
   cached by policy.bin mtime. The client tree is lazy and path-keyed;
   relationships (attributes, members, roles, domain transitions in/out) are
   derived client-side. Standalone-module mode has no linked policy.
+- **ifdef/ifndef on build flags only.** The parser records every
+  ifdef/ifndef branch as a range + condition (`f.branches`, also for .fc).
+  The server asks the Makefile for the real flags (`make --eval` printing
+  `$(M4PARAM)` with the build makeArgs; ~0.1 s; trusted + Linux only) and
+  the "universe" of decidable flags is the Makefile's `-D` symbols (plus
+  any `distro_*` when it passes `distro_$(DISTRO)`), minus flags Rules.*
+  pass only for some steps, minus anything define()d in the sources.
+  Everything else stays all-active (quiet when unsure). Inactive branches:
+  dimmed (`selinux/inactiveRanges`), skipped by diagnostics, their defs
+  move to `idx.inactiveDefs` (calls to them get INFO `inactive-macro`),
+  their decls / fc entries / generative calls leave the index. RHEL
+  targeted: 202 of 461 branches inactive; CLIP: 181 of 365; survey results
+  unchanged on both. Survey: `diag-survey.js <policy> --make "<args>"`.
 - VS Code extension + LSP rather than a standalone GUI; graphical views go in
   webview panels later.
 
@@ -190,7 +203,8 @@ Package: `npx @vscode/vsce package`.
 - Compiled Policy view shows structure only; allow/dontaudit rules with
   their source lines, and sediff against a commit, are the next steps.
 - `.te` files aren't checked for missing `require` blocks.
-- `ifdef`/`ifelse` branches are all indexed as active.
+- `ifelse` and ifdef on non-build-flag names are indexed as all-active;
+  without make (Windows local) nothing is decided.
 - Windows paths: indexed paths come from `URI.fsPath` (lowercase drive
   letter); keep all path keys going through `toPath()` for consistency.
 

@@ -35,6 +35,8 @@ conn.onNotification('textDocument/publishDiagnostics', p => { diags[p.uri] = p.d
 conn.onNotification('selinux/indexing', p => { if (p.state === 'done') { stats = p.stats; doneIndex(); } });
 conn.onNotification('selinux/build', p => { if (p.state === 'done') waiters.splice(0).forEach(w => w(p)); });
 conn.onNotification('window/logMessage', () => {});
+let lastFlags = null;
+conn.onNotification('selinux/inactiveChanged', p => { lastFlags = p.flags; });
 conn.listen();
 const uri = (f) => URI.file(f).toString();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -61,6 +63,10 @@ const configure = async (tree) => {
   check(stats.buildMode === 'tree', `RHEL tree detected (${stats.modules} modules)`, stats);
   let r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
   check(r.unavailable && /Restricted Mode/.test(r.unavailable), 'untrusted workspace: builds refused', r);
+  // Untrusted: the Makefile isn't asked for m4 flags, so no ifdef branch is decided.
+  const PYZOR = path.join(ws, 'policy/modules/contrib/pyzor.te');
+  let ranges = await conn.sendRequest('selinux/inactiveRanges', { uri: uri(PYZOR) });
+  check(ranges.length === 0, 'untrusted: ifdef branches not decided (nothing dimmed)', ranges.length);
   conn.sendNotification('selinux/setTrusted', { trusted: true });
 
   // Settings from the spec.
@@ -75,8 +81,34 @@ const configure = async (tree) => {
   r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
   check(!r.ok && /no-such-users-file not found/.test(r.log + JSON.stringify(diags[uri(LOGGING)] || [])), 'missing selinux.build.tree.files source is reported', { r: { ...r, log: undefined }, d: diags[uri(LOGGING)] });
 
-  // Full build with the spec's settings.
+  // Full build with the spec's settings (trusted now, so the m4 flags are asked from make).
   await configure({ makeArgs: cfg.makeArgs, files: cfg.files });
+  for (let i = 0; i < 40 && !lastFlags; i++) await sleep(250);
+  const flags = lastFlags;
+  check(flags && /-D distro_redhat/.test(flags) && /-D enable_mcs/.test(flags), `m4 flags from the Makefile: ${flags}`);
+
+  // ifdef(`distro_redhat', `typealias spamc_t alias pyzor_t ...', `type pyzor_t; ...') in pyzor.te
+  const pz = fs.readFileSync(PYZOR, 'utf8').split('\n');
+  const aliasLine = pz.findIndex(l => /typealias spamc_t alias pyzor_t/.test(l)), typeLine = pz.findIndex(l => /^\s*type pyzor_t;/.test(l));
+  ranges = await conn.sendRequest('selinux/inactiveRanges', { uri: uri(PYZOR) });
+  const dims = (l) => ranges.some(r => r.range.start.line <= l && l <= r.range.end.line);
+  check(dims(typeLine) && !dims(aliasLine) && ranges.every(r => /distro_redhat/.test(r.reason) || /needs \w+/.test(r.reason)),
+    `pyzor.te: the !distro_redhat branch (line ${typeLine + 1}) is dimmed, the RHEL one (line ${aliasLine + 1}) is not`, ranges.map(r => [r.range.start.line + 1, r.range.end.line + 1, r.reason]));
+  conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(PYZOR), languageId: 'selinux', version: 1, text: pz.join('\n') } });
+  await sleep(300);
+  const defs = await conn.sendRequest('textDocument/definition', { textDocument: { uri: uri(PYZOR) }, position: { line: aliasLine, character: pz[aliasLine].indexOf('pyzor_t') + 1 } });
+  // (spamassassin.te also aliases pyzor_t; the point is that the dead `type pyzor_t;` is gone)
+  check(defs.some(d => d.uri === uri(PYZOR) && d.range.start.line === aliasLine) && !defs.some(d => d.uri === uri(PYZOR) && d.range.start.line === typeLine),
+    `definition of pyzor_t skips the inactive declaration (${defs.map(d => `${path.basename(URI.parse(d.uri).fsPath)}:${d.range.start.line + 1}`).join(', ')})`);
+  const hv = async (line, word) => (await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(PYZOR) }, position: { line, character: pz[line].indexOf(word) + 1 } })).contents.value;
+  const redhatLine = pz.findIndex(l => l.includes('distro_redhat'));
+  check(/build flag: \*\*defined\*\*/.test(await hv(redhatLine, 'distro_redhat')), 'hover on distro_redhat: defined in this build');
+  const debFile = [...cp.execFileSync('grep', ['-rl', 'ifdef(`distro_debian', path.join(ws, 'policy/modules')]).toString().split('\n')].find(Boolean);
+  const deb = fs.readFileSync(debFile, 'utf8').split('\n'), debLine = deb.findIndex(l => l.includes('distro_debian'));
+  conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(debFile), languageId: 'selinux', version: 1, text: deb.join('\n') } });
+  await sleep(300);
+  const hd = await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(debFile) }, position: { line: debLine, character: deb[debLine].indexOf('distro_debian') + 1 } });
+  check(hd && /build flag: \*\*not defined\*\*/.test(hd.contents.value), `hover on distro_debian (${path.basename(debFile)}): not defined`, hd && hd.contents.value);
   r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
   check(r.ok && r.validated, `full ${variant} build + validate (${(r.ms / 1000).toFixed(1)} s, ${r.packages} packages)`, { ...r, log: r.log && r.log.slice(-1500) });
   const work = r.outputDir;
