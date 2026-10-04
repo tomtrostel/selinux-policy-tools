@@ -81,6 +81,24 @@ class PolicyIndex {
 
   isActive(f, l, c) { return !this.inactiveBranchAt(f, l, c); }
 
+  /** Is (l, c) inside an ifdef/ifndef branch the build flags don't decide? */
+  undecidedAt(f, l, c) {
+    for (const b of (f && f.branches) || []) {
+      const inside = (l > b.s.l || (l === b.s.l && c >= b.s.c)) && (l < b.e.l || (l === b.e.l && c < b.e.c));
+      if (inside && !this.decides(b.sym)) return true;
+    }
+    return false;
+  }
+
+  /** Role names declared anywhere in the sources (any branch, generated ones included), plus object_r. */
+  knownRoles() {
+    if (this._roles) return this._roles;
+    const roles = new Set(['object_r']);
+    for (const [n, list] of this.decls || []) if (list.some(d => d.kind === 'role')) roles.add(n);
+    for (const f of this.files.values()) for (const d of f.decls || []) if (d.kind === 'role') roles.add(d.name);
+    return (this._roles = roles);
+  }
+
   /** Inactive branches of a file (for dimming in the editor). */
   inactiveBranches(f) {
     if (!this.m4 || !f || !f.branches) return [];
@@ -201,6 +219,7 @@ class PolicyIndex {
 
     this.defs = defs;
     this.decls = decls;
+    this._roles = null;
     this.classes = classes;
     this.commons = commons;
     this.fcByType = fcByType;

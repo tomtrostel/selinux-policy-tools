@@ -350,6 +350,11 @@
           "default": true,
           "description": "In .if files, warn when a type or attribute is used in an interface but missing from its gen_require block."
         },
+        "selinux.diagnostics.users": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check gen_user() lines: roles that are not declared anywhere, MLS/MCS levels and categories outside what the build defines, a range whose high level is below its low level, and users defined twice."
+        },
         "selinux.build.enabled": {
           "type": "boolean",
           "default": true,

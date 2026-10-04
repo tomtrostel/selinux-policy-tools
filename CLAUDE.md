@@ -8,8 +8,9 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
 tag on commit 3605cef). Steps 1 and 2 are done; step 3 in progress (3.1
-module preview, 3.2 transition graph, 3.3 property checks done after the
-release, not yet in a release; next is 3.4 users/roles/MLS editing).
+module preview, 3.2 transition graph, 3.3 property checks, 3.4 users/roles
+done after the release, not yet in a release). Step 3 is complete; next:
+release 0.3.0 after the user has tried 3.1–3.4, then items under 4/5.
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -63,7 +64,20 @@ release, not yet in a release; next is 3.4 users/roles/MLS editing).
       (explainRule origins / path steps), code lenses ✓/✗, notification
       `selinux/checks` → status bar item. Not yet done: info-flow checks,
       checks in standalone-module mode.
-   4. **Users / roles / MLS editing** (next) with validation.
+   4. **Users / roles / MLS** (done): parser keeps `argTokens` for
+      gen_user calls (TOKENIZED_CALLS); diagnostics.js `checkUsers`: roles
+      not declared anywhere (`idx.knownRoles()`, any branch + generated),
+      MLS/MCS tokens checked against the m4 flags (MCS: s0 only;
+      mcs_num_cats / mls_num_sens / mls_num_cats), high < low, unknown
+      tokens unless a defined macro, duplicate users only when no undecided
+      ifdef surrounds them (`idx.undecidedAt`). Survey clean on all trees
+      and MCS/MLS. Model: roleAllows / roleTransitions (setools
+      RBACRuleQuery), users' logins from config/appconfig-<TYPE>/seusers.
+      View: roles → Types / May switch to / Role transitions / Users;
+      users → Roles / Linux logins. Hover on users/roles, completion in
+      gen_user. Checks: `only|never <roles> may run <types>`,
+      `only|never <users> may use <roles>` (policy_query check_rbac).
+      Editing preview = save + build + Changes since HEAD (no separate UI).
 4. **Extensions of what's built** (smaller, any time):
    - Compare with other refs (branch/tag/commit) or a saved build
      (outputDir), not only HEAD.
@@ -235,7 +249,8 @@ is only visible to collaborators; making it public is the user's call.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
-- `test/checks-e2e.js` (`npm run test:checks`): property checks on a CLIP
+- `test/checks-e2e.js` (`npm run test:checks`): gen_user validation (unsaved
+  bad users lines), then property checks incl. roles/users on a CLIP
   copy (holding/failing/unknown/syntax, alias, tracing, edit+save without
   rebuild, completion).
 - `test/webview-transitions-test.js` (`npm run test:webview`, any OS):

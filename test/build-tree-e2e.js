@@ -190,8 +190,19 @@ const hover = async (f, text, needle) => {
     const entered = sys && await child(sys, 'Entered from');
     const from = entered ? await view.getChildren(entered) : [];
     check(from.length && from.every(n => /^via \w+$/.test(n.item.description)), `"Entered from" lists source domains with entrypoints (${from.slice(0, 3).map(n => `${n.item.label} ${n.item.description}`).join('; ')})`);
-    const sysU = await child(await child(roots.find(r => r.item.label === 'Users'), 'system_u'), 'system_r');
-    check(sysU && /types/.test(sysU.item.description), 'Users › system_u › system_r (role with its types)', sysU && sysU.item);
+    const sysU = await child(await child(await child(roots.find(r => r.item.label === 'Users'), 'system_u'), 'Roles'), 'system_r');
+    check(sysU && /types/.test(sysU.item.description), 'Users › system_u › Roles › system_r (role with its types)', sysU && sysU.item);
+    // Users, roles and logins (seusers).
+    const staffU = await child(roots.find(r => r.item.label === 'Users'), 'staff_u');
+    const logins = staffU && await child(staffU, 'Linux logins (seusers)');
+    const loginKids = logins ? (await view.getChildren(logins)).map(k => k.item.label) : [];
+    check(loginKids.some(l => /^__default__/.test(l)) && /seusers$/.test(m.seusersFile || ''), `Users › staff_u › Linux logins: ${loginKids.join(', ')}`);
+    const sysadmR = await child(roots.find(r => r.item.label === 'Roles'), 'sysadm_r');
+    const sysadmKids = sysadmR ? (await view.getChildren(sysadmR)).map(k => k.item.label) : [];
+    const sysadmUsers = sysadmR && await child(sysadmR, 'Users');
+    const roleUsers = sysadmUsers ? (await view.getChildren(sysadmUsers)).map(k => k.item.label) : [];
+    check(sysadmKids.includes('Types') && roleUsers.includes('staff_u') && Array.isArray(m.roleAllows) && Array.isArray(m.roleTransitions),
+      `Roles › sysadm_r: ${sysadmKids.join(', ')}; users ${roleUsers.join(', ')}; ${m.roleAllows.length} role allows, ${m.roleTransitions.length} role transitions in the policy`);
     const canon = view.canonical('type', 'syslogd_t');
     check(canon && canon.parent && canon.parent.key === 'types' && canon.item.id === '/types/t:syslogd_t', 'canonical node for reveal: Types › syslogd_t', canon && canon.item.id);
 

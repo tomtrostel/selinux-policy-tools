@@ -56,7 +56,73 @@ function diagnose(idx, f, settings = {}) {
   if (settings.genRequire !== false && f.path && f.path.endsWith('.if')) {
     for (const d of f.defs || []) checkGenRequire(idx, f, d, out);
   }
+  if (settings.users !== false && haveSupport) checkUsers(idx, f, out);
   return out;
+}
+
+/**
+ * gen_user(name, prefix, roles, default_level, range[, categories]):
+ * roles must be declared somewhere; MLS/MCS levels must fit the build's
+ * sensitivities and categories (only when the build flags are known);
+ * a user defined twice in the same configuration. Quiet when unsure:
+ * tokens in undecided ifdef branches and macros (mls_systemhigh, ...) are
+ * not judged.
+ */
+function checkUsers(idx, f, out) {
+  const calls = (f.calls || []).filter(c => c.name === 'gen_user' && c.argTokens && idx.isActive(f, c.l, c.c));
+  if (!calls.length) return;
+  const roles = idx.knownRoles();
+  const flags = idx.m4 ? idx.m4.flags : '';
+  const num = (n) => { const m = new RegExp(`-D\\s*${n}=(\\d+)`).exec(flags); return m ? +m[1] : null; };
+  const mls = idx.m4 && idx.m4.defined.has('enable_mls'), mcs = idx.m4 && idx.m4.defined.has('enable_mcs');
+  const maxSens = mls ? num('mls_num_sens') : mcs ? 1 : null;
+  const maxCats = mls ? num('mls_num_cats') : mcs ? num('mcs_num_cats') : null;
+  const kind = mls ? 'MLS' : 'MCS';
+  const seen = new Map();
+  for (const c of calls) {
+    const [nameT = [], , rolesT = [], ...mlsArgs] = c.argTokens;
+    // Roles (skipping a nested ifdef's name and condition, and inactive branches).
+    for (let k = 0; k < rolesT.length; k++) {
+      const t = rolesT[k];
+      if (t.v === 'ifdef' || t.v === 'ifndef') { k++; continue; }
+      if (t.v.includes('$') || !idx.isActive(f, t.l, t.c) || roles.has(t.v)) continue;
+      out.push({ l: t.l, c: t.c, len: t.v.length, severity: WARNING, code: 'unknown-role',
+        msg: `Role '${t.v}' is not declared anywhere in the indexed sources (role ${t.v}; or a template that generates it).` });
+    }
+    // MLS / MCS levels, ranges and categories.
+    if (maxSens != null && maxCats != null) {
+      mlsArgs.forEach((arg, ai) => {
+        const sens = [];
+        for (const t of arg || []) {
+          if (t.v.includes('$') || !idx.isActive(f, t.l, t.c) || idx.undecidedAt(f, t.l, t.c)) continue;
+          let m;
+          if ((m = /^s(\d+)$/.exec(t.v))) {
+            sens.push({ n: +m[1], t });
+            if (+m[1] >= maxSens) out.push({ l: t.l, c: t.c, len: t.v.length, severity: ERROR, code: 'mls-range',
+              msg: maxSens === 1 ? `${t.v} doesn't exist: this ${kind} policy has only s0.` : `${t.v} is out of range: this ${kind} policy has s0 to s${maxSens - 1} (mls_num_sens=${maxSens}).` });
+          } else if ((m = /^c(\d+)$/.exec(t.v))) {
+            if (+m[1] >= maxCats) out.push({ l: t.l, c: t.c, len: t.v.length, severity: ERROR, code: 'mls-range',
+              msg: `${t.v} is out of range: this ${kind} policy has c0 to c${maxCats - 1}.` });
+          } else if (!idx.defs.has(t.v)) {
+            out.push({ l: t.l, c: t.c, len: t.v.length, severity: WARNING, code: 'mls-token',
+              msg: `'${t.v}' is not a sensitivity (sN), a category (cN) or a defined MLS macro.` });
+          }
+        }
+        if (ai === 1 && sens.length >= 2 && sens[0].n > sens[1].n) {
+          out.push({ l: sens[1].t.l, c: sens[1].t.c, len: sens[1].t.v.length, severity: ERROR, code: 'mls-range',
+            msg: `The range's high level (s${sens[1].n}) is below its low level (s${sens[0].n}).` });
+        }
+      });
+    }
+    // The same user twice in one configuration (only when both are certain).
+    const name = nameT[0];
+    if (name && !name.v.includes('$') && !idx.undecidedAt(f, c.l, c.c)) {
+      const prev = seen.get(name.v);
+      if (prev) out.push({ l: name.l, c: name.c, len: name.v.length, severity: WARNING, code: 'duplicate-user',
+        msg: `User '${name.v}' is already defined on line ${prev.l + 1}; checkpolicy will reject the duplicate.` });
+      else seen.set(name.v, name);
+    }
+  }
 }
 
 function checkAvRule(idx, r, out) {

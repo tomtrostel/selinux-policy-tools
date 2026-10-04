@@ -29,6 +29,8 @@ class Index:
                 self.members.setdefault(a, []).append(t)
         self.domains = {t for t, attrs in self.attrs.items() if "domain" in attrs}
         self.aliases = {str(a): str(t) for t in p.types() for a in t.aliases()}
+        self.role_types = {str(r): {str(t) for t in r.types()} for r in p.roles()}
+        self.user_roles = {str(u): {str(r) for r in u.roles} for u in p.users()}
         self.classperms = {}
         for c in p.classes():
             perms = {str(x) for x in c.perms}
@@ -205,9 +207,36 @@ class Index:
                 break
         return None
 
+    def check_rbac(self, kind, sources, targets):
+        """only|never <roles> may run <types> / only|never <users> may use <roles>."""
+        mode, what = kind.split("-")
+        if what == "run":
+            holders, known = self.role_types, set(self.role_types)
+            want = self.names(targets)          # types (attributes expanded)
+        else:
+            holders, known = self.user_roles, set(self.user_roles)
+            want = set(targets)
+            bad = [t for t in want if t not in self.role_types]
+            if bad:
+                raise KeyError(bad[0])
+        unknown = [s for s in sources if s not in known]
+        if unknown:
+            raise KeyError(unknown[0])
+        who = set(sources)
+        violations = []
+        for holder, items in sorted(holders.items()):
+            hit = sorted(items & want)
+            if not hit:
+                continue
+            if (mode == "only" and holder not in who) or (mode == "never" and holder in who):
+                violations.append({"holder": holder, "items": hit})
+        return {"ok": not violations, "rbac": violations[:200], "count": len(violations)}
+
     def check(self, c):
         try:
             kind = c["kind"]
+            if kind.endswith("-run") or kind.endswith("-use"):
+                return self.check_rbac(kind, c["sources"], c["targets"])
             if kind == "reaches":
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
                 p = self.transition_path(srcs, tgts)

@@ -38,6 +38,12 @@ def main(path):
         except setools.exception.NoCommon:
             common, inherited = None, []
         classes.append({"name": str(c), "perms": names(c.perms), "common": common, "inherited": inherited})
+    # Roles: which roles may switch to which (role allow), and role transitions
+    # (role_transition R exec_type:process R2) taken when executing a type.
+    role_allows = [{"source": str(r.source), "target": str(r.target)}
+                   for r in setools.RBACRuleQuery(p, ruletype=["allow"]).results()]
+    role_transitions = [{"source": str(r.source), "target": str(r.target), "class": str(r.tclass), "result": str(r.default)}
+                        for r in setools.RBACRuleQuery(p, ruletype=["role_transition"]).results()]
     # Domain transitions: type_transition <domain> <entrypoint>:process <new domain>
     transitions = [{"source": str(r.source), "entry": str(r.target), "result": str(r.default)}
                    for r in setools.TERuleQuery(p, ruletype=["type_transition"], tclass=["process"]).results()]
@@ -48,6 +54,7 @@ def main(path):
                    "allow": p.allow_count, "dontaudit": p.dontaudit_count, "type_transition": p.type_transition_count},
         "types": types, "attributes": attributes, "roles": roles, "users": users,
         "bools": bools, "classes": classes, "transitions": transitions,
+        "roleAllows": role_allows, "roleTransitions": role_transitions,
     }, sys.stdout)
 
 

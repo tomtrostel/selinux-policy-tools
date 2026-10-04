@@ -13,6 +13,8 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 #   never   <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
 #   never   <names> reaches <names>                     no domain-transition path, direct or indirect
 #   require <names> may <perms> <targets>[:<classes>]   must stay allowed
+#   only|never <roles> may run <types>                  which roles may run a domain
+#   only|never <users> may use <roles>                  which SELinux users may have a role
 #
 # names: types or attributes (attributes stand for all their member types).
 # perms: read | write | execute | any, a permission, or { perm perm ... }.
@@ -23,6 +25,8 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 # never user_t, staff_t may write shadow_t
 # never user_t reaches sysadm_t
 # require syslogd_t may { append create } var_log_t:file
+# only sysadm_r may run sysadm_t
+# never user_u may use sysadm_r
 `;
 
 /** Run `sudo semodule -i <pkg>` in a terminal on the policy host, so the user sees it and types the password. */
@@ -657,15 +661,30 @@ class CompiledPolicyView {
   }
 
   roleNode(parent, r) {
-    return this.node(parent, `r:${r.name}`, r.name, { icon: 'organization', loc: r.loc, desc: `${r.types.length} types`,
+    const m = this.model;
+    const switchTo = (m.roleAllows || []).filter(a => a.source === r.name).map(a => a.target);
+    const trans = (m.roleTransitions || []).filter(x => x.source === r.name);
+    const users = m.users.filter(u => u.roles.includes(r.name));
+    return this.node(parent, `r:${r.name}`, r.name, { icon: 'organization', loc: r.loc, desc: `${r.types.length} types · ${users.length} user${users.length === 1 ? '' : 's'}`,
       tooltip: `role ${r.name}\n${this.where(r.loc)}`,
-      kids: r.types.length ? (n) => r.types.map(t => this.typeRef(n, t)) : undefined });
+      kids: (n) => [
+        ...(r.types.length ? [this.group(n, 'types', 'Types', r.types, (k, t) => this.typeRef(k, t), 'symbol-class')] : []),
+        ...(switchTo.length ? [this.group(n, 'allow', 'May switch to', switchTo, (k, x) => this.roleNode(k, m.roleByName.get(x) || { name: x, types: [] }), 'arrow-swap')] : []),
+        ...(trans.length ? [this.group(n, 'rtrans', 'Role transitions', trans, (k, x) => this.node(k, `rt:${x.target}:${x.result}`, `${x.target} → ${x.result}`,
+          { icon: 'arrow-right', desc: `on executing (${x.class})`, tooltip: `role_transition ${x.source} ${x.target}:${x.class} ${x.result};\nRunning ${x.target} from role ${x.source} switches to role ${x.result}.` }), 'arrow-right')] : []),
+        ...(users.length ? [this.group(n, 'users', 'Users', users.map(u => u), (k, u) => this.userNode(k, u), 'person')] : []),
+      ] });
   }
 
   userNode(parent, u) {
-    return this.node(parent, `u:${u.name}`, u.name, { icon: 'person', loc: u.loc, desc: u.range || '',
-      tooltip: `user ${u.name}${u.range ? `\nrange ${u.range}, default level ${u.level}` : ''}\n${this.where(u.loc)}`,
-      kids: (n) => u.roles.map(r => this.roleNode(n, this.model.roleByName.get(r) || { name: r, types: [] })) });
+    const logins = u.logins || [];
+    return this.node(parent, `u:${u.name}`, u.name, { icon: 'person', loc: u.loc, desc: [u.range, logins.length ? `${logins.length} login mapping${logins.length > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · '),
+      tooltip: `user ${u.name}${u.range ? `\nrange ${u.range}, default level ${u.level}` : ''}${logins.length ? `\nLinux logins: ${logins.map(x => x.login).join(', ')}` : ''}\n${this.where(u.loc)}`,
+      kids: (n) => [
+        this.group(n, 'roles', 'Roles', u.roles, (k, r) => this.roleNode(k, this.model.roleByName.get(r) || { name: r, types: [] }), 'organization'),
+        ...(logins.length ? [this.group(n, 'logins', 'Linux logins (seusers)', logins, (k, x) => this.node(k, `login:${x.login}`, x.login === '__default__' ? '__default__ (every other login)' : x.login,
+          { icon: 'account', desc: x.range || '', loc: x.loc, tooltip: `${x.login}:${x.user}${x.range ? ':' + x.range : ''}\n${vscode.workspace.asRelativePath(x.loc.p)}:${x.loc.l + 1}` }), 'account')] : []),
+      ] });
   }
 
   boolNode(parent, b) {

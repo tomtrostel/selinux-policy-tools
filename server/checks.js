@@ -6,6 +6,8 @@
  *   never  <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
  *   never  <names> reaches <names>                     no domain-transition path, direct or indirect
  *   require <names> may <perms> <targets>[:<classes>]  must stay allowed
+ *   only|never <roles> may run <types>                 role → domain authorization
+ *   only|never <users> may use <roles>                 user → role authorization
  *
  * names: types or attributes, separated by spaces or commas.
  * perms: read | write | execute | any, a single permission, or { perm perm ... }.
@@ -19,7 +21,7 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'read', 'write', 'execute', 'any'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'run', 'use', 'read', 'write', 'execute', 'any'];
 
 /** Tokens with columns: words (incl. '*'), braces, ':' and ','. */
 function tokens(line) {
@@ -70,6 +72,16 @@ function parseChecks(text) {
     }
     if (verb !== 'may') { err(`Expected 'may' (or 'reaches')`); return; }
     i++;
+    // Roles and users: `<roles> may run <types>`, `<users> may use <roles>`.
+    if (tok[i] && (tok[i].v === 'run' || tok[i].v === 'use')) {
+      const what = tok[i].v;
+      if (kind === 'require') { err(`'${what}' works with 'only' and 'never'`); return; }
+      i++;
+      const targets = names([]);
+      if (!targets.length) { err(what === 'run' ? 'Expected the domain(s) the role(s) may run' : 'Expected the role(s)'); return; }
+      checks.push({ id: checks.length, line: l, kind: `${kind}-${what}`, sources, targets, text: raw.trim() });
+      return;
+    }
     const p = set();
     if (!p || !p.length) { err('Expected permissions: read, write, execute, any, a permission, or { perm ... }'); return; }
     let perms;

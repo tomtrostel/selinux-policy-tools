@@ -21,6 +21,8 @@ const AV_RULES = new Set(['allow', 'dontaudit', 'auditallow', 'neverallow',
 // Policy-language keywords that may be written directly before '(' without being m4 calls.
 const PAREN_KEYWORDS = new Set(['if', 'constrain', 'mlsconstrain', 'validatetrans', 'mlsvalidatetrans', 'not', 'and', 'or']);
 const DECL_KEYWORDS = new Set(['type', 'attribute', 'attribute_role', 'typealias', 'role', 'bool']);
+// Calls whose argument tokens are kept with positions (validated in diagnostics.js).
+const TOKENIZED_CALLS = new Set(['gen_user']);
 // m4 conditionals whose branches are recorded (ifelse compares strings and is left alone).
 const CONDITIONALS = new Set(['ifdef', 'ifndef']);
 // Arguments of these are human-readable messages, not code: `foo() is deprecated'.
@@ -373,6 +375,11 @@ function parsePolicy(text) {
       ifdefGuards: stack.filter(f => f.k === 'call' && f.name === 'ifdef' && f.argIdx === 1 && f.firstIdent)
         .map(f => f.firstIdent.v),
     };
+    // gen_user(): keep each argument's identifier tokens with positions, for
+    // role/MLS validation (role lists can contain nested ifdefs).
+    if (TOKENIZED_CALLS.has(frame.name)) {
+      call.argTokens = frame.args.map(a => toks.filter(t => t.t === 'id' && t.s >= a.s && (a.e === undefined || t.s < a.e)).map(t => ({ v: t.v, l: t.l, c: t.c })));
+    }
     if (enclosing) {
       call.inDef = enclosing.name;
       enclosing.bodyCalls.push({ name: frame.name, args });

@@ -534,7 +534,15 @@ connection.onHover(({ textDocument, position }) => {
     return { range: r, contents: { kind: MarkupKind.Markdown, value } };
   }
   const decls = idx.decls.get(name);
-  if (decls && decls.length) return { range: r, contents: { kind: MarkupKind.Markdown, value: declMarkdown(name, decls) } };
+  if (decls && decls.length) return { range: r, contents: { kind: MarkupKind.Markdown, value: declMarkdown(name, decls) + compiledRoleNote(name) } };
+  const u = policyModelCache.model && policyModelCache.model.users.find(x => x.name === name);
+  if (u) {
+    const logins = (u.logins || []).map(x => `\`${x.login}\`${x.range ? ` (${x.range})` : ''}`).join(', ');
+    return { range: r, contents: { kind: MarkupKind.Markdown, value:
+      '```selinux\nuser ' + name + '\n```\n\n' + `**Roles:** ${u.roles.map(x => '`' + x + '`').join(', ')}` +
+      (u.range ? `\n\n**Range:** \`${u.range}\`, default level \`${u.level}\`` : '') +
+      (logins ? `\n\n**Linux logins** (seusers): ${logins}` : '') + '\n\n*From the last build.*' } };
+  }
   const cls = idx.classes.get(name);
   if (cls) {
     const perms = [...cls.allPerms].sort();
@@ -636,6 +644,8 @@ connection.onCompletion(({ textDocument, position }) => {
   if (!doc) return null;
   const lineText = doc.getText({ start: { line: position.line, character: 0 }, end: position });
   if (isChecksFile(toPath(textDocument.uri))) return checksCompletion(lineText);
+  const gu = genUserArg(doc, position);
+  if (gu !== null) return genUserCompletion(gu, /[A-Za-z0-9_]*$/.exec(lineText)[0]);
   const pm = /[A-Za-z0-9_$]*$/.exec(lineText);
   const prefix = pm[0];
   const before = lineText.slice(0, lineText.length - prefix.length);
@@ -1212,6 +1222,13 @@ function checksDiagnostics() {
       const o = v.origins && v.origins[0];
       if (o) rel.push({ location: { uri: toUri(o.path), range: range(o.line, 0, 1) }, message: `allow ${v.rule.s} ${v.rule.t}:${v.rule.c} { ${v.perms.join(' ')} }${v.rule.cond ? ` [${v.rule.cond}]` : ''} → ${v.sources.length} domain${v.sources.length > 1 ? 's' : ''}${o.via ? ` (via ${o.via})` : ''}` });
     }
+    if (x.rbac) {
+      const users = c.kind.endsWith('-use') ? userLocations() : null;
+      for (const v of x.rbac) {
+        const loc = users ? users.get(v.holder) : sourceLocation(v.holder, ['role']);
+        if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${v.holder} ${users ? 'has roles' : 'may run'} ${v.items.join(', ')}` });
+      }
+    }
     for (const step of x.path || []) {
       const loc = sourceLocation(step.to, ['type']);
       if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${step.from} → ${step.to} via ${step.entrypoints.join(', ')}${step.auto ? ' (automatic)' : ''}${step.conditional.length ? ` [${step.conditional.join(', ')}]` : ''}` });
@@ -1234,6 +1251,12 @@ function checkMessage(c, x) {
   }
   if (c.kind === 'reaches') return `${x.path[0].from} can reach ${x.path[x.path.length - 1].to}: ${[x.path[0].from, ...x.path.map(s => s.to)].join(' → ')}`;
   if (c.kind === 'require') return `Not allowed: ${x.missing.slice(0, 4).map(m => `${m.source} ${m.target}:${m.class} { ${m.missing.join(' ')} }`).join('; ')}${x.count > 4 ? ` (+${x.count - 4} more)` : ''}`;
+  if (x.rbac) {
+    const run = c.kind.endsWith('-run');
+    const list = x.rbac.slice(0, 6).map(v => `${v.holder} (${v.items.slice(0, 3).join(', ')}${v.items.length > 3 ? ', …' : ''})`).join('; ');
+    return run ? `${c.kind.startsWith('only') ? 'Other roles' : 'These roles'} may run ${names(c.targets)}: ${list}${x.count > 6 ? ` (+${x.count - 6} more)` : ''}`
+      : `${c.kind.startsWith('only') ? 'Other users' : 'These users'} may use ${names(c.targets)}: ${list}${x.count > 6 ? ` (+${x.count - 6} more)` : ''}`;
+  }
   return 'violated';
 }
 
@@ -1243,13 +1266,46 @@ connection.onRequest('selinux/checksFile', async () => {
   return p ? { path: p, exists: fs.existsSync(p), summary: checksSummary() } : { unavailable: 'Property checks need a full policy source tree.' };
 });
 
+/** For a role, what the last build says about it (domains, users), appended to its hover. */
+function compiledRoleNote(name) {
+  const m = policyModelCache.model;
+  const r = m && m.roles.find(x => x.name === name);
+  if (!r) return '';
+  const users = m.users.filter(u => u.roles.includes(name)).map(u => '`' + u.name + '`');
+  return `\n\n**In the last build:** ${r.types.length} domain${r.types.length === 1 ? '' : 's'}; users ${users.join(', ') || 'none'}`;
+}
+
+/** If the cursor is inside gen_user(...), the 0-based argument index; else null. */
+function genUserArg(doc, pos) {
+  const text = doc.getText({ start: { line: Math.max(0, pos.line - 3), character: 0 }, end: pos });
+  const at = text.lastIndexOf('gen_user(');
+  if (at < 0) return null;
+  let depth = 0, arg = 0;
+  for (const ch of text.slice(at + 9)) {
+    if (ch === '(') depth++;
+    else if (ch === ')') { if (depth === 0) return null; depth--; }
+    else if (ch === ',' && depth === 0) arg++;
+  }
+  return arg;
+}
+
+function genUserCompletion(arg, prefix) {
+  const items = [];
+  if (arg === 2) for (const r of [...idx.knownRoles()].sort()) if (r.startsWith(prefix) && r !== 'object_r') items.push({ label: r, kind: CompletionItemKind.EnumMember, detail: 'role' });
+  if (arg >= 3) {
+    for (const [n, list] of idx.defs) if (/^(mls|mcs)_/.test(n) && n.startsWith(prefix) && list.some(d => d.kind === 'define')) items.push({ label: n, kind: CompletionItemKind.Constant, detail: (list[0].doc && list[0].doc.summary) || 'MLS/MCS macro' });
+    if ('s0'.startsWith(prefix)) items.push({ label: 's0', kind: CompletionItemKind.Value, detail: 'lowest sensitivity' });
+  }
+  return { isIncomplete: false, items };
+}
+
 /** Completion in the checks file: keywords, permission groups, and types/attributes (compiled policy if built). */
 function checksCompletion(lineText) {
   const prefix = /[A-Za-z0-9_]*$/.exec(lineText)[0];
   const items = [];
   const words = lineText.trim().split(/\s+/);
   if (words.length <= 1) for (const k of ['only', 'never', 'require']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
-  if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
+  if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any', 'run', 'use']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : k === 'run' ? 'roles: may run <domains>' : k === 'use' ? 'users: may use <roles>' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
   if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches)\b/.test(lineText)) for (const k of ['may', 'reaches']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
   if (prefix.length >= 2) {
     const m = policyModelCache.model;
@@ -1273,6 +1329,7 @@ connection.onCodeLens(({ textDocument }) => {
     else if (x.ok) title = '✓ holds';
     else if (c.kind === 'reaches') title = `✗ reachable in ${x.path.length} step${x.path.length > 1 ? 's' : ''}`;
     else if (c.kind === 'require') title = `✗ ${x.count} missing`;
+    else if (x.rbac) title = `✗ ${x.count} ${c.kind.endsWith('-run') ? 'role' : 'user'}${x.count > 1 ? 's violate' : ' violates'} it`;
     else title = `✗ violated by ${x.domains} domain${x.domains > 1 ? 's' : ''} (${x.count} rule${x.count > 1 ? 's' : ''})`;
     return { range: lineRange(c.line, ''), command: { title, command: '' } };
   });
@@ -1301,6 +1358,27 @@ function sourceLocation(name, kinds) {
   if (!d) return null;
   const f = idx.files.get(d.path);
   return { p: d.path, l: d.l, c: d.c, len: d.len, m: f ? f.module : null, via: d.generated ? d.via : undefined };
+}
+
+/**
+ * Linux login → SELinux user mappings the build installs: the tree's
+ * config/appconfig-<TYPE>/seusers (TYPE from the build arguments or
+ * build.conf). Lines: login:seuser[:range]; '#' comments.
+ */
+function seusersMappings(root) {
+  let type = null;
+  for (const a of settings.build.tree.makeArgs || []) { const m = /^TYPE=(\S+)/.exec(a); if (m) type = m[1]; }
+  if (!type) { try { const m = /^\s*TYPE\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) type = m[1]; } catch { /* none */ } }
+  const file = path.join(root, 'config', `appconfig-${type || 'mcs'}`, 'seusers');
+  const text = readSource(file);
+  if (text == null) return { file: null, list: [] };
+  const list = [];
+  text.split('\n').forEach((line, l) => {
+    const t = line.replace(/#.*$/, '').trim();
+    const m = /^([^:\s]+):([^:\s]+)(?::(.+))?$/.exec(t);
+    if (m) list.push({ login: m[1], user: m[2], range: m[3] || null, loc: { p: file, l, c: 0 } });
+  });
+  return { file, list };
 }
 
 /** Users come from gen_user(name, ...) calls (refpolicy's policy/users file). */
@@ -1338,6 +1416,12 @@ async function getPolicyModel() {
     model.bin = res.policyBin;
     model.builtAt = mtimeMs;
     model.tree = treeRoot;
+    const se = seusersMappings(treeRoot);
+    model.seusersFile = se.file;
+    for (const u of model.users) u.logins = se.list.filter(x => x.user === u.name);
+    model.unmappedLogins = se.list.filter(x => !model.users.some(u => u.name === x.user));
+    model.roleAllows = model.roleAllows || [];
+    model.roleTransitions = model.roleTransitions || [];
     Object.assign(policyModelCache, { bin: res.policyBin, mtimeMs, model });
   }
   return policyModelCache.model;

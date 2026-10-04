@@ -131,7 +131,14 @@ Open one of these as the workspace folder:
   * unknown object classes and invalid permissions for a class;
   * in `.if` files, types/attributes used in an interface but missing from
     its `gen_require` block (quick fix inserts the line);
-  * unbalanced parentheses / m4 quotes.
+  * unbalanced parentheses / m4 quotes;
+  * in `gen_user(...)` lines (`policy/users`): roles that aren't declared
+    anywhere, MLS/MCS sensitivities and categories outside what the build
+    defines (an MCS build has only `s0`), a range whose high level is below
+    its low level, unknown MLS tokens, and a user defined twice in the same
+    configuration. Role names and MLS macros complete inside `gen_user`, and
+    hovering a user shows its roles, range and Linux logins from the last
+    build.
 
   Calls inside `optional_policy`, or guarded by ``ifdef(`name')``, to
   interfaces that aren't in the tree are information only or ignored, since
@@ -184,6 +191,11 @@ A second sidebar view shows the linked kernel policy from the last build:
 what the policy actually contains after modules are enabled or disabled, not
 what the sources declare.
 
+* Users → their roles, MLS range and default level, and the Linux logins
+  mapped to them in the tree's `seusers` file (for the build's policy type);
+  Roles → their domains, the roles they may switch to (`allow R1 R2`), role
+  transitions (running a type switches the role) and the users that have
+  them.
 * Modules → types / attributes / booleans / roles; Users → roles → types;
   Roles; Domains; Types; Attributes → member types; Booleans (with default);
   Classes → permissions.
@@ -268,6 +280,8 @@ never user_t reaches sysadm_t
 require syslogd_t may { append create } var_log_t:file
 ```
 
+* `only|never <roles> may run <types>`: which roles may run a domain;
+  `only|never <users> may use <roles>`: which SELinux users may have a role.
 * `only <names> may <perms> <targets>[:<classes>]`: nobody else may;
   `never <names> may …`: none of these may (`*` = every domain);
   `never <names> reaches <names>`: no transition path;
@@ -285,7 +299,9 @@ require syslogd_t may { append create } var_log_t:file
   path). The status bar shows how many checks fail. Completion offers
   keywords and type names.
 
-Example findings on CLIP: `never syslogd_t may write syslogd_var_run_t`
+Example findings on CLIP: `only sysadm_r may run sysadm_t` fails because
+`system_r` may run it too; `never staff_u may use sysadm_r` fails (staff_u
+has sysadm_r, linked to its `gen_user` line); `never syslogd_t may write syslogd_var_run_t`
 fails with the rules from `logging.te:444/447`; `never staff_t reaches
 sysadm_t` fails via `staff_t → newrole_t → sysadm_t`.
 
@@ -325,7 +341,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.extraIncludePaths` | `[]` | More directories to index, e.g. the full policy tree while editing local modules elsewhere |
 | `selinux.useDevelHeaders` | `auto` | `auto` / `always` / `never` index the devel headers |
 | `selinux.develHeadersPath` | `/usr/share/selinux/devel/include` | Devel header location |
-| `selinux.diagnostics.unknownMacros` / `.classPerms` / `.genRequire` | `true` | Toggle individual checks |
+| `selinux.diagnostics.unknownMacros` / `.classPerms` / `.genRequire` / `.users` | `true` | Toggle individual checks |
 | `selinux.ifdef.evaluate` | `true` | Decide `ifdef`/`ifndef` on m4 build flags from the Makefile (dim inactive branches, leave them out of the index) |
 | `selinux.build.enabled` | `true` | Build with the real toolchain |
 | `selinux.build.onSave` | `true` | Build when a policy file is saved |
@@ -372,6 +388,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* Users and roles: the `gen_user` checks report nothing on the Fedora,
+  RHEL 9 and CLIP users files (with and without build flags, CLIP in MCS
+  and MLS mode); a test file with an unknown role, `s3` and `c2000` in an
+  MCS build, a bogus MLS token and a duplicate user gets exactly those
+  five findings. CLIP's view shows `__default__ → staff_u` from `seusers`.
 * Property checks on CLIP: holding and failing `never`/`require`/`reaches`
   checks, alias resolution, unknown names and syntax errors, violations
   traced to source lines, re-checking on edit/save without a rebuild.
