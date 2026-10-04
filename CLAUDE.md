@@ -133,7 +133,7 @@ copy of `policy/` plus the seeded module under `policy/modules/local/`
 missing gen_require entry). Recreate it if missing; the expected diagnostics
 are listed in the script output.
 
-Package: `npx @vscode/vsce package --allow-missing-repository`.
+Package: `npx @vscode/vsce package`.
 
 ## Known limitations / open items
 

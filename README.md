@@ -93,7 +93,7 @@ Plain JavaScript, no build step.
 npm install
 npm test            # drives the language server over LSP against a policy tree
 npm run survey      # runs every diagnostic over a tree and summarizes, to catch false positives
-npx @vscode/vsce package --allow-missing-repository
+npx @vscode/vsce package
 ```
 
 The test scripts expect a checkout at `/tmp/ws/policy` and
