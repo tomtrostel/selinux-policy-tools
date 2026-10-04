@@ -28,7 +28,9 @@
     "workspaceContains:**/*.te",
     "workspaceContains:**/*.if",
     "onLanguage:selinux",
-    "onLanguage:selinux-fc"
+    "onLanguage:selinux-fc",
+    "onLanguage:selinux-checks",
+    "workspaceContains:**/selinux.checks"
   ],
   "contributes": {
     "languages": [
@@ -70,6 +72,19 @@
           ".fc"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "selinux-checks",
+        "aliases": [
+          "SELinux Property Checks"
+        ],
+        "filenames": [
+          "selinux.checks"
+        ],
+        "extensions": [
+          ".checks"
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -82,6 +97,11 @@
         "language": "selinux-fc",
         "scopeName": "source.selinux-fc",
         "path": "./syntaxes/selinux-fc.tmLanguage.json"
+      },
+      {
+        "language": "selinux-checks",
+        "scopeName": "source.selinux-checks",
+        "path": "./syntaxes/selinux-checks.tmLanguage.json"
       }
     ],
     "viewsContainers": {
@@ -184,6 +204,10 @@
         "command": "selinux.transitionGraph",
         "title": "SELinux: Show Domain Transition Graph",
         "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "selinux.openChecks",
+        "title": "SELinux: Open Property Checks"
       }
     ],
     "menus": {
@@ -389,6 +413,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Decide `ifdef`/`ifndef` blocks on m4 build flags (`enable_mcs`, `enable_mls`, `distro_redhat`, …) the way the configured build would, asking the Makefile for its flags (Linux, trusted workspaces). Inactive branches are dimmed, ignored by diagnostics, and their definitions leave the index. Other conditions (e.g. `ifdef` on an interface name) are never decided."
+        },
+        "selinux.checks.file": {
+          "type": "string",
+          "default": "selinux.checks",
+          "markdownDescription": "Property checks file, relative to the policy tree root. Each line is an assertion about the compiled policy (`only X may write T`, `never X may read T`, `never X reaches Y`, `require X may append T:file`), checked after every build and whenever the file is saved. See the README."
         }
       }
     }
@@ -401,6 +430,7 @@
     "test:diff": "node test/diff-e2e.js",
     "test:preview": "node test/preview-e2e.js",
     "test:webview": "node test/webview-transitions-test.js",
+    "test:checks": "node test/checks-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },

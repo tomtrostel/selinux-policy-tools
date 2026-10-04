@@ -24,6 +24,7 @@ let settings = {
   develHeadersPath: '/usr/share/selinux/devel/include',
   diagnostics: { unknownMacros: true, classPerms: true, genRequire: true },
   ifdef: { evaluate: true },
+  checks: { file: 'selinux.checks' },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
     tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} } },
   // Set by the client from vscode.workspace.isTrusted. Building runs the tree's
@@ -62,6 +63,7 @@ connection.onInitialize((params) => {
       completionProvider: { triggerCharacters: ['(', ':', '{', ' ', ','] },
       signatureHelpProvider: { triggerCharacters: ['(', ','], retriggerCharacters: [','] },
       codeActionProvider: { codeActionKinds: [CodeActionKind.QuickFix] },
+      codeLensProvider: { resolveProvider: false },
     },
   };
 });
@@ -76,6 +78,7 @@ connection.onDidChangeConfiguration((change) => {
 function mergeSettings(s) {
   settings = { ...settings, ...s, diagnostics: { ...settings.diagnostics, ...(s.diagnostics || {}) },
     ifdef: { ...settings.ifdef, ...(s.ifdef || {}) },
+    checks: { ...settings.checks, ...(s.checks || {}) },
     build: { ...settings.build, ...(s.build || {}), tree: { ...settings.build.tree, ...((s.build && s.build.tree) || {}) } } };
   toolchain = null;
 }
@@ -151,9 +154,12 @@ function scheduleRebuild() {
 }
 
 documents.onDidChangeContent((e) => {
-  idx.setFile(toPath(e.document.uri), e.document.getText(), true);
+  const p = toPath(e.document.uri);
+  if (isChecksFile(p)) { clearTimeout(checksTimer); checksTimer = setTimeout(() => runChecks().catch(err => log(`checks failed: ${err.message}`)), 500); return; }
+  idx.setFile(p, e.document.getText(), true);
   scheduleRebuild();
 });
+let checksTimer = null;
 
 documents.onDidClose((e) => {
   const p = toPath(e.document.uri);
@@ -166,6 +172,7 @@ connection.onDidChangeWatchedFiles((ev) => {
   for (const ch of ev.changes) {
     if (documents.get(ch.uri)) continue; // open editors are authoritative
     const p = toPath(ch.uri);
+    if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
     if (ch.type === FileChangeType.Deleted) idx.files.delete(p);
     else { try { idx.setFile(p, fs.readFileSync(p, 'utf8'), true); } catch { /* ignore */ } }
   }
@@ -178,6 +185,7 @@ function publishAll() {
 
 function publish(doc) {
   const p = toPath(doc.uri);
+  if (isChecksFile(p)) { connection.sendDiagnostics({ uri: doc.uri, diagnostics: checksDiagnostics() }); return; }
   const f = idx.files.get(p);
   const diags = diagnose(idx, f, settings.diagnostics).map(d => ({
     range: range(d.l, d.c, d.len),
@@ -289,6 +297,7 @@ function runBuild(key, pkg = false, trigger = null) {
     // If rules have been browsed this session, re-index the new policy in the
     // background so the next expand doesn't wait for it (RHEL: ~5 s).
     if (res.tree && res.ok && res.policyBin && policyQuery.proc) policyQuery.request({ op: 'rules', bin: res.policyBin, name: '', dir: 'source', kinds: ['allow'] });
+    if (res.tree && res.ok) runChecks().catch(err => log(`checks failed: ${err.message}`));
     connection.sendNotification('selinux/build', { state: 'done', ...summary });
     return summary;
   })();
@@ -420,8 +429,10 @@ function buildDiagnosticsFor(p, text, staticDiags) {
 }
 
 documents.onDidSave((e) => {
-  if (!settings.build.onSave) return;
   const p = toPath(e.document.uri);
+  // Saving the checks file re-checks the last build; it doesn't rebuild.
+  if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); return; }
+  if (!settings.build.onSave) return;
   const key = buildTarget(p);
   if (key && !buildUnavailable()) runBuild(key, false, p).catch(err => log(`build failed: ${err.message}`));
 });
@@ -624,6 +635,7 @@ connection.onCompletion(({ textDocument, position }) => {
   const doc = documents.get(textDocument.uri);
   if (!doc) return null;
   const lineText = doc.getText({ start: { line: position.line, character: 0 }, end: position });
+  if (isChecksFile(toPath(textDocument.uri))) return checksCompletion(lineText);
   const pm = /[A-Za-z0-9_$]*$/.exec(lineText);
   const prefix = pm[0];
   const before = lineText.slice(0, lineText.length - prefix.length);
@@ -1124,6 +1136,146 @@ connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
   try { diff = await runPython('policy_diff.py', [cur.policyBin, res.policyBin]); } catch (e) { return { ...result, unavailable: `Comparing the policies failed: ${e.message}` }; }
   explainDiff(diff, { res: cur }, { res });
   return { ...result, diff, ms: { total: Date.now() - t0 } };
+});
+
+/* ---------------- property checks (selinux.checks) ---------------- */
+
+/*
+ * Assertions about the compiled policy, kept in a file in the tree and
+ * evaluated by policy_query.py after every successful build and whenever the
+ * file is saved or edited. Failures become diagnostics on the checks file,
+ * with related information pointing at the source statements that grant the
+ * violating rules; code lenses show ✓/✗ per check.
+ */
+const checksLib = require('./checks');
+let checksState = { path: null, parsed: null, results: null, note: null };
+
+const checksPath = () => (treeRoot ? path.join(treeRoot, settings.checks.file || 'selinux.checks') : null);
+const isChecksFile = (p) => !!treeRoot && p === checksPath();
+
+async function runChecks() {
+  const file = checksPath();
+  if (!file) return;
+  const text = readSource(file);
+  if (text == null) {
+    if (checksState.path) { connection.sendDiagnostics({ uri: toUri(checksState.path), diagnostics: [] }); checksState = { path: null, parsed: null, results: null, note: null }; }
+    return;
+  }
+  const parsed = checksLib.parseChecks(text);
+  checksState = { path: file, parsed, results: null, note: null };
+  const model = await getPolicyModel();
+  if (model.unavailable) {
+    checksState.note = model.needsBuild ? 'not checked yet: build the policy' : model.unavailable;
+  } else if (parsed.checks.length) {
+    const r = await policyQuery.request({ op: 'check', bin: model.bin, checks: parsed.checks.map(c => ({ id: c.id, kind: c.kind, sources: c.sources, targets: c.targets, classes: c.classes, perms: c.perms })) });
+    if (r.error) checksState.note = `checks failed: ${r.error}`;
+    else {
+      checksState.results = new Map(r.results.map(x => [x.id, x]));
+      // Trace the violating rules to source (a few per check).
+      const failing = r.results.filter(x => x.violations && x.violations.length);
+      if (failing.length) {
+        const side = await currentSide();
+        if (side) {
+          for (const x of failing) for (const v of x.violations.slice(0, 8)) v.origins = explain.explainRule(v.rule, v.perms, side, 3).origins;
+          explain.releaseTexts();
+        }
+      }
+      checksState.builtAt = model.builtAt;
+    }
+  }
+  if (readSource(file) !== text) return; // edited meanwhile; a newer run follows
+  connection.sendDiagnostics({ uri: toUri(file), diagnostics: checksDiagnostics() });
+  connection.sendNotification('selinux/checks', checksSummary());
+}
+
+function checksSummary() {
+  const s = checksState;
+  if (!s.parsed) return { total: 0 };
+  const res = s.results ? [...s.results.values()] : [];
+  return { total: s.parsed.checks.length, failed: res.filter(x => !x.ok).length, errors: s.parsed.errors.length, note: s.note };
+}
+
+const lineRange = (l, text) => ({ start: { line: l, character: 0 }, end: { line: l, character: (text || '').length } });
+
+function checksDiagnostics() {
+  const s = checksState;
+  if (!s.parsed) return [];
+  const lines = (readSource(s.path) || '').split('\n');
+  const out = s.parsed.errors.map(e => ({ range: range(e.l, e.c, e.len), severity: DiagnosticSeverity.Error, source: 'selinux-checks', message: e.msg }));
+  if (!s.results) return out;
+  for (const c of s.parsed.checks) {
+    const x = s.results.get(c.id);
+    if (!x || x.ok) continue;
+    const d = { range: lineRange(c.line, lines[c.line].replace(/\s*#.*$/, '')), severity: DiagnosticSeverity.Error, source: 'selinux-checks', message: checkMessage(c, x) };
+    const rel = [];
+    for (const v of x.violations || []) {
+      const o = v.origins && v.origins[0];
+      if (o) rel.push({ location: { uri: toUri(o.path), range: range(o.line, 0, 1) }, message: `allow ${v.rule.s} ${v.rule.t}:${v.rule.c} { ${v.perms.join(' ')} }${v.rule.cond ? ` [${v.rule.cond}]` : ''} → ${v.sources.length} domain${v.sources.length > 1 ? 's' : ''}${o.via ? ` (via ${o.via})` : ''}` });
+    }
+    for (const step of x.path || []) {
+      const loc = sourceLocation(step.to, ['type']);
+      if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${step.from} → ${step.to} via ${step.entrypoints.join(', ')}${step.auto ? ' (automatic)' : ''}${step.conditional.length ? ` [${step.conditional.join(', ')}]` : ''}` });
+    }
+    if (rel.length) d.relatedInformation = rel.slice(0, 12);
+    out.push(d);
+  }
+  return out;
+}
+
+function checkMessage(c, x) {
+  if (x.error) return x.error;
+  const names = (a) => a.join(', ');
+  const domains = (v) => [...new Set(v.flatMap(y => y.sources))];
+  if (c.kind === 'only' || c.kind === 'never') {
+    const ds = domains(x.violations || []);
+    const who = c.kind === 'only' ? `${ds.length} other domain${ds.length > 1 ? 's' : ''} (${ds.slice(0, 6).join(', ')}${ds.length > 6 ? ', …' : ''})` : names(ds);
+    const verb = c.perms === '*' ? 'access' : c.permsLabel;
+    return `${who} may ${verb} ${names(c.targets)}: ${x.count} rule${x.count > 1 ? 's' : ''}; the related information shows where they come from.`;
+  }
+  if (c.kind === 'reaches') return `${x.path[0].from} can reach ${x.path[x.path.length - 1].to}: ${[x.path[0].from, ...x.path.map(s => s.to)].join(' → ')}`;
+  if (c.kind === 'require') return `Not allowed: ${x.missing.slice(0, 4).map(m => `${m.source} ${m.target}:${m.class} { ${m.missing.join(' ')} }`).join('; ')}${x.count > 4 ? ` (+${x.count - 4} more)` : ''}`;
+  return 'violated';
+}
+
+connection.onRequest('selinux/checksFile', async () => {
+  await indexing;
+  const p = checksPath();
+  return p ? { path: p, exists: fs.existsSync(p), summary: checksSummary() } : { unavailable: 'Property checks need a full policy source tree.' };
+});
+
+/** Completion in the checks file: keywords, permission groups, and types/attributes (compiled policy if built). */
+function checksCompletion(lineText) {
+  const prefix = /[A-Za-z0-9_]*$/.exec(lineText)[0];
+  const items = [];
+  const words = lineText.trim().split(/\s+/);
+  if (words.length <= 1) for (const k of ['only', 'never', 'require']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
+  if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches)\b/.test(lineText)) for (const k of ['may', 'reaches']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (prefix.length >= 2) {
+    const m = policyModelCache.model;
+    const types = m ? m.types.map(t => t.name) : [...idx.decls].filter(([, l]) => l.some(d => d.kind === 'type')).map(([n]) => n);
+    const attrs = m ? m.attributes.map(a => a.name) : [...idx.decls].filter(([, l]) => l.some(d => d.kind === 'attribute')).map(([n]) => n);
+    for (const n of types) if (n.startsWith(prefix) && items.length < 300) items.push({ label: n, kind: CompletionItemKind.Class });
+    for (const n of attrs) if (n.startsWith(prefix) && items.length < 300) items.push({ label: n, kind: CompletionItemKind.Interface, detail: 'attribute' });
+  }
+  return { isIncomplete: true, items };
+}
+
+connection.onCodeLens(({ textDocument }) => {
+  const p = toPath(textDocument.uri);
+  const s = checksState;
+  if (!isChecksFile(p) || !s.parsed || s.path !== p) return [];
+  return s.parsed.checks.map((c) => {
+    const x = s.results && s.results.get(c.id);
+    let title;
+    if (!x) title = s.note ? `… ${s.note}` : '…';
+    else if (x.error) title = `⚠ ${x.error}`;
+    else if (x.ok) title = '✓ holds';
+    else if (c.kind === 'reaches') title = `✗ reachable in ${x.path.length} step${x.path.length > 1 ? 's' : ''}`;
+    else if (c.kind === 'require') title = `✗ ${x.count} missing`;
+    else title = `✗ violated by ${x.domains} domain${x.domains > 1 ? 's' : ''} (${x.count} rule${x.count > 1 ? 's' : ''})`;
+    return { range: lineRange(c.line, ''), command: { title, command: '' } };
+  });
 });
 
 /* ---------------- compiled policy model (setools export of the last build) ---------------- */

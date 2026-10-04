@@ -8,8 +8,8 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 Status as of 2026-10-04: **v0.2.0 released** (GitHub release `v0.2.0`,
 tag on commit 3605cef). Steps 1 and 2 are done; step 3 in progress (3.1
-module preview and 3.2 transition graph done after the release, not yet in
-a release; next is 3.3 property checks).
+module preview, 3.2 transition graph, 3.3 property checks done after the
+release, not yet in a release; next is 3.4 users/roles/MLS editing).
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -49,12 +49,21 @@ a release; next is 3.3 property checks).
       expand, double-click opens source, alt-click re-roots, filter);
       panel code `showTransitionGraph` in client/extension.js; tested with
       a fake DOM (test/webview-transitions-test.js).
-   3. **Property checks** (next): saved assertions over the compiled policy (e.g.
-      "only auditd_t may write auditd_log_t", "no transition path
-      user_t → sysadm_t"), re-checked after each build, failures as
-      diagnostics/notifications. Start with setools (TERuleQuery,
-      DomainTransitionAnalysis, InfoFlowAnalysis); Soufflé/Z3 only if needed.
-   4. **Users / roles / MLS editing** with validation.
+   3. **Property checks** (done): `selinux.checks` at the tree root
+      (`selinux.checks.file`), language `selinux-checks` (grammar +
+      completion). `server/checks.js` parses `only|never|require <names>
+      may <perms> <targets>[:<classes>]` and `never <names> reaches
+      <names>`; perm groups read/write/execute/any. policy_query.py op
+      `check` evaluates on the compiled policy (names() expands
+      attributes, resolves aliases, '*' = domains; `granting()` finds allow
+      rules incl. via attributes and self; require narrows groups to the
+      class's perms; reaches = BFS over `transitions()`, 8 steps). Server
+      `runChecks()` after each good tree build and on edit/save/disk change
+      of the checks file (no rebuild): diagnostics with relatedInformation
+      (explainRule origins / path steps), code lenses ✓/✗, notification
+      `selinux/checks` → status bar item. Not yet done: info-flow checks,
+      checks in standalone-module mode.
+   4. **Users / roles / MLS editing** (next) with validation.
 4. **Extensions of what's built** (smaller, any time):
    - Compare with other refs (branch/tag/commit) or a saved build
      (outputDir), not only HEAD.
@@ -226,6 +235,9 @@ is only visible to collaborators; making it public is the user's call.
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
+- `test/checks-e2e.js` (`npm run test:checks`): property checks on a CLIP
+  copy (holding/failing/unknown/syntax, alias, tracing, edit+save without
+  rebuild, completion).
 - `test/webview-transitions-test.js` (`npm run test:webview`, any OS):
   runs media/transitions.js against a fake DOM through a whole session.
 - `test/preview-e2e.js` (`npm run test:preview`): module preview on a CLIP

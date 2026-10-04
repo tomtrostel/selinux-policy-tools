@@ -6,6 +6,25 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 let client;
 let status;
 
+const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compiled policy, checked
+# after every build and whenever this file is saved. One per line:
+#
+#   only    <names> may <perms> <targets>[:<classes>]   nobody else may
+#   never   <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
+#   never   <names> reaches <names>                     no domain-transition path, direct or indirect
+#   require <names> may <perms> <targets>[:<classes>]   must stay allowed
+#
+# names: types or attributes (attributes stand for all their member types).
+# perms: read | write | execute | any, a permission, or { perm perm ... }.
+# classes default to the file-like ones (require: file).
+#
+# Examples (edit to match your policy):
+# only auditd_t may write auditd_log_t
+# never user_t, staff_t may write shadow_t
+# never user_t reaches sysadm_t
+# require syslogd_t may { append create } var_log_t:file
+`;
+
 /** Run `sudo semodule -i <pkg>` in a terminal on the policy host, so the user sees it and types the password. */
 function installPackage(pkg) {
   let term = vscode.window.terminals.find(t => t.name === 'SELinux Install');
@@ -25,10 +44,10 @@ function activate(context) {
     run: { module: serverModule, transport: TransportKind.ipc },
     debug: { module: serverModule, transport: TransportKind.ipc, options: { execArgv: ['--nolazy', '--inspect=6019'] } },
   }, {
-    documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }],
+    documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }, { scheme: 'file', language: 'selinux-checks' }],
     synchronize: {
       configurationSection: 'selinux',
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes}'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks}'),
     },
     initializationOptions: {
       extraIncludePaths: cfg().get('extraIncludePaths'),
@@ -53,6 +72,9 @@ function activate(context) {
   status.command = 'selinux.showStats';
   status.show();
   context.subscriptions.push(status);
+  const checksStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9);
+  checksStatus.command = 'selinux.openChecks';
+  context.subscriptions.push(checksStatus);
 
   const explorer = new PolicyExplorer();
   context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxPolicyExplorer', explorer));
@@ -88,6 +110,12 @@ function activate(context) {
 
   client.start().then(() => {
     client.onNotification('selinux/inactiveChanged', dimAll);
+    client.onNotification('selinux/checks', (s) => {
+      if (!s.total) return;
+      checksStatus.text = s.failed ? `$(error) ${s.failed}/${s.total} checks fail` : s.note ? `$(circle-outline) checks: ${s.note}` : `$(pass) ${s.total} checks hold`;
+      checksStatus.tooltip = 'SELinux property checks (selinux.checks) against the last build. Click to open.';
+      checksStatus.show();
+    });
     client.onNotification('selinux/indexing', (p) => {
       if (p.state === 'start') status.text = '$(sync~spin) SELinux: indexing…';
       else {
@@ -199,6 +227,16 @@ function activate(context) {
       if (go) vscode.commands.executeCommand('selinux.buildModule');
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
+    vscode.commands.registerCommand('selinux.openChecks', async () => {
+      const r = await client.sendRequest('selinux/checksFile');
+      if (r.unavailable) { vscode.window.showWarningMessage(r.unavailable); return; }
+      if (!r.exists) {
+        const go = await vscode.window.showInformationMessage(`No ${path.basename(r.path)} yet. Create one with examples at the tree root?`, 'Create');
+        if (!go) return;
+        require('fs').writeFileSync(r.path, CHECKS_TEMPLATE);
+      }
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(r.path));
+    }),
     vscode.commands.registerCommand('selinux.transitionGraph', async (arg) => {
       // From a Compiled Policy domain node, a name, the word under the cursor, or a pick.
       let name = arg && arg.key ? arg.key.replace(/^t:/, '') : typeof arg === 'string' ? arg : null;

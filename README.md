@@ -250,6 +250,45 @@ The first comparison builds `HEAD` too (CLIP: ~20 s for both builds; RHEL
 targeted about a minute); after that a comparison takes 1–2 s plus your
 build, and the view refreshes after each build.
 
+**Property checks** (full trees)
+
+Write down security properties once, in a `selinux.checks` file at the tree
+root (versioned with the policy); they are checked against the compiled
+policy after every build and whenever you save the file. *SELinux: Open
+Property Checks* creates the file with examples.
+
+```
+# nobody but auditd_t may write the audit log
+only auditd_t may write auditd_log_t
+# users must not touch the shadow file
+never user_t, staff_t may write shadow_t
+# no domain-transition path from user_t to sysadm_t, direct or indirect
+never user_t reaches sysadm_t
+# a lockdown must not break logging
+require syslogd_t may { append create } var_log_t:file
+```
+
+* `only <names> may <perms> <targets>[:<classes>]`: nobody else may;
+  `never <names> may …`: none of these may (`*` = every domain);
+  `never <names> reaches <names>`: no transition path;
+  `require <names> may …`: must stay allowed.
+* Names are types, aliases or attributes (an attribute stands for all its
+  member types). Permissions are `read` (read open map), `write` (write
+  append create unlink link rename setattr add_name remove_name rmdir
+  reparent relabelfrom relabelto), `execute` (execute execute_no_trans
+  entrypoint), `any`, a single permission, or `{ perm perm … }`. Classes
+  default to the file-like ones (`require`: `file`); a permission group
+  only asks for what each class has.
+* Each check shows "✓ holds" or "✗ …" above its line. A failure is an
+  error in the Problems panel; its related information points at the source
+  statements that grant each violating rule (or the steps of a transition
+  path). The status bar shows how many checks fail. Completion offers
+  keywords and type names.
+
+Example findings on CLIP: `never syslogd_t may write syslogd_var_run_t`
+fails with the rules from `logging.te:444/447`; `never staff_t reaches
+sysadm_t` fails via `staff_t → newrole_t → sysadm_t`.
+
 **Module Preview** (full trees)
 
 *SELinux: Preview Turning a Module Off/On…* (also on a module's right-click
@@ -296,6 +335,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
 | `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
 | `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); your tree is not modified |
+| `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
 settings can carry commands. In VS Code's Restricted Mode, navigation and
@@ -332,6 +372,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* Property checks on CLIP: holding and failing `never`/`require`/`reaches`
+  checks, alias resolution, unknown names and syntax errors, violations
+  traced to source lines, re-checking on edit/save without a rebuild.
+  On RHEL's installed policy, `only auditd_t may write auditd_log_t` fails
+  with 111 domains (broad attribute rules in the targeted policy).
 * Domain transitions: CLIP `init_t` reaches 144 domains (`syslogd_t`
   automatically via `syslogd_exec_t`; entered from `init_t` and
   `initrc_t`); RHEL's installed policy `init_t` 576, `sshd_t` 33 (incl.
@@ -427,6 +472,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Two VS Code windows on the same tree share one scratch build directory;
   building in both at once can interfere.
 
+**Property checks**
+
+* Checks look at allow rules as compiled; conditional rules count whatever
+  their boolean's current default (the related information names the
+  boolean).
+* `reaches` follows domain transitions only (not, e.g., writing a file
+  another domain executes) and up to eight steps.
+* Checks run on the full tree's last good build; standalone modules aren't
+  linked into a policy, so they can't be checked.
+
 ## Development
 
 Plain JavaScript, no build step.
@@ -440,6 +495,7 @@ npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (L
 npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Linux; defaults to CLIP RHEL 9)
 npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
 npm run test:webview   # transition graph webview script against a fake DOM (any OS)
+npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```

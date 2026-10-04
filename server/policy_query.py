@@ -28,6 +28,15 @@ class Index:
             for a in attrs:
                 self.members.setdefault(a, []).append(t)
         self.domains = {t for t, attrs in self.attrs.items() if "domain" in attrs}
+        self.aliases = {str(a): str(t) for t in p.types() for a in t.aliases()}
+        self.classperms = {}
+        for c in p.classes():
+            perms = {str(x) for x in c.perms}
+            try:
+                perms |= {str(x) for x in c.common.perms}
+            except setools.exception.NoCommon:
+                pass
+            self.classperms[str(c)] = perms
         self.rules = []
         self.by_src, self.by_tgt = {}, {}
         for r in p.terules():
@@ -131,6 +140,115 @@ class Index:
                     out.append(tr)
         return out
 
+    # ----- property checks -----
+
+    def names(self, items):
+        """Types for a list of type/attribute names ('*' = every domain); unknown names raise."""
+        out = set()
+        for n in items:
+            n = self.aliases.get(n, n)
+            if n == "*":
+                out |= self.domains
+            elif n in self.members:
+                out.update(self.members[n])
+            elif n in self.attrs:
+                out.add(n)
+            else:
+                raise KeyError(n)
+        return out
+
+    def granting(self, t, classes, perms):
+        """allow rules that grant any of `perms` ('*' = any) on type t in `classes`: (rule, sources, perms)."""
+        tn = [t] + self.attrs.get(t, [])
+        seen = set()
+        for n in tn + ["self"]:
+            for i in self.by_tgt.get(n, ()):
+                if i in seen:
+                    continue
+                seen.add(i)
+                r = self.rules[i]
+                if r["rt"] != "allow" or (classes and r["c"] not in classes):
+                    continue
+                hit = r["perms"] if perms == "*" else [p for p in r["perms"] if p in perms]
+                if not hit:
+                    continue
+                if r["t"] == "self":
+                    srcs = {t} if t in self.expand(r["s"]) else set()
+                else:
+                    srcs = set(self.expand(r["s"]))
+                if srcs:
+                    yield r, srcs, hit
+
+    def transition_path(self, sources, targets, limit=8):
+        """Shortest domain-transition path from any source to any target (BFS), or None."""
+        prev = {s: None for s in sources}
+        frontier = list(sources)
+        for _ in range(limit):
+            nxt = []
+            for s in frontier:
+                for tr in self.transitions(s, "out"):
+                    t = tr["target"]
+                    if t in prev:
+                        continue
+                    prev[t] = (s, tr)
+                    if t in targets:
+                        steps = []
+                        while prev[t] is not None:
+                            s0, tr0 = prev[t]
+                            steps.append({"from": s0, "to": t, "entrypoints": tr0["entrypoints"][:3], "auto": bool(tr0["auto"]),
+                                          "conditional": tr0["conditional"]})
+                            t = s0
+                        return list(reversed(steps))
+                    nxt.append(t)
+            frontier = nxt
+            if not frontier:
+                break
+        return None
+
+    def check(self, c):
+        try:
+            kind = c["kind"]
+            if kind == "reaches":
+                srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
+                p = self.transition_path(srcs, tgts)
+                return {"ok": p is None, "path": p}
+            tgts = self.names(c["targets"])
+            perms = c["perms"]
+            classes = set(c.get("classes") or [])
+            if kind in ("only", "never"):
+                who = self.names(c["sources"])
+                bad = {}
+                for t in sorted(tgts):
+                    for r, srcs, hit in self.granting(t, classes, perms):
+                        violators = (srcs - who) if kind == "only" else (srcs & who)
+                        if violators:
+                            k = id(r)
+                            v = bad.setdefault(k, {"rule": r, "target": t, "perms": hit, "sources": set()})
+                            v["sources"] |= violators
+                out = [{"rule": v["rule"], "target": v["target"], "perms": v["perms"], "sources": sorted(v["sources"])} for v in bad.values()]
+                out.sort(key=lambda v: (-len(v["sources"]), v["rule"]["s"], v["target"]))
+                return {"ok": not out, "violations": out[:200], "count": len(out),
+                        "domains": len(set().union(*[set(v["sources"]) for v in out])) if out else 0}
+            if kind == "require":
+                srcs = self.names(c["sources"])
+                missing = []
+                for s in sorted(srcs):
+                    for t in sorted(tgts):
+                        for cl in sorted(classes or {"file"}):
+                            have = set()
+                            for r, rs, hit in self.granting(t, {cl}, perms):
+                                if s in rs:
+                                    have.update(hit)
+                            # A permission group only asks for what the class has (no add_name on files).
+                            wanted = set(perms) & self.classperms.get(cl, set(perms)) if perms != "*" else None
+                            lack = sorted(wanted - have) if wanted is not None else ([] if have else ["*"])
+                            if lack:
+                                missing.append({"source": s, "target": t, "class": cl, "missing": lack})
+                return {"ok": not missing, "missing": missing[:200], "count": len(missing)}
+            return {"ok": False, "error": "unknown check kind %s" % kind}
+        except KeyError as e:
+            return {"ok": False, "error": "unknown type or attribute %s in the compiled policy" % e.args[0]}
+
     def query(self, name, direction, kinds):
         # A type matches rules written for it or for any attribute it has.
         names = [name] + self.attrs.get(name, [])
@@ -163,6 +281,8 @@ def main():
                 resp.update(rules=rules, via=via, count=len(rules))
             elif req.get("op") == "transitions":
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
+            elif req.get("op") == "check":
+                resp.update(results=[dict(id=c.get("id"), **idx.check(c)) for c in req.get("checks", [])])
             else:
                 resp["error"] = "unknown op"
         except Exception as e:  # report and keep serving

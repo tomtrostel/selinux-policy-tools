@@ -1,0 +1,13 @@
+{
+  "name": "SELinux property checks",
+  "scopeName": "source.selinux-checks",
+  "patterns": [
+    { "name": "comment.line.number-sign.selinux-checks", "match": "#.*$" },
+    { "name": "keyword.control.selinux-checks", "match": "^\\s*(only|never|require)\\b" },
+    { "name": "keyword.operator.selinux-checks", "match": "\\b(may|reaches)\\b" },
+    { "name": "support.constant.selinux-checks", "match": "\\b(read|write|execute|any)\\b" },
+    { "name": "constant.language.selinux-checks", "match": "\\*" },
+    { "name": "entity.name.type.selinux-checks", "match": "\\b[A-Za-z0-9_]+_t\\b" },
+    { "name": "punctuation.separator.selinux-checks", "match": "[{}:,]" }
+  ]
+}
