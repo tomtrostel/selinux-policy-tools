@@ -2,7 +2,7 @@
   "name": "selinux-policy-tools",
   "displayName": "SELinux Policy Tools",
   "description": "Navigation and authoring help for refpolicy-style SELinux policy source (RHEL/Fedora selinux-policy, CLIP-style locked-down policies).",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {

@@ -6,8 +6,10 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.3.0 released** (GitHub release `v0.3.0`;
-v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0.
+Status as of 2026-10-04: **v0.4.0 released** (GitHub release `v0.4.0`;
+v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
+0.4.0 adds the step-4 items below plus info-flow and standalone-module
+checks.
 The 3.x features (module preview, transition graph, property checks,
 users/roles) have automated tests but little interactive use yet; fix
 what the user finds there first, then items under 4/5.
@@ -63,7 +65,7 @@ what the user finds there first, then items under 4/5.
       of the checks file (no rebuild): diagnostics with relatedInformation
       (explainRule origins / path steps), code lenses ✓/✗, notification
       `selinux/checks` → status bar item.
-      - Info-flow checks (after 0.3.0): `never <types> flows to <types>
+      - Info-flow checks (0.4.0): `never <types> flows to <types>
         [except <types>] [weight N]` (kind `flows`). policy_query.py
         `flow_path()`: BFS over types; rule read-weight (from setools
         PermissionMap, `rule_flow()` cached per rule) moves target → source,
@@ -73,7 +75,7 @@ what the user finds there first, then items under 4/5.
         RHEL). Default weight 10. Steps carry the rule + contributing perms;
         server traces each step with explainRule (relatedInformation
         "A → B: B reads (allow …) (via …)").
-      - Standalone modules (after 0.3.0): `build.linkWithInstalled(res,
+      - Standalone modules (0.4.0): `build.linkWithInstalled(res,
         {isAttribute})`: `checkpolicy -b -C` decompiles the installed
         kernel policy (world-readable; cached per mtime), `semodule_package`
         + `/usr/libexec/selinux/hll/pp` turn tmp/<mod>.mod into CIL, a shim
@@ -103,7 +105,7 @@ what the user finds there first, then items under 4/5.
       `only|never <users> may use <roles>` (policy_query check_rbac).
       Editing preview = save + build + Changes since HEAD (no separate UI).
 4. **Extensions of what's built** (smaller, any time):
-   - Compare with other refs (done, after 0.3.0): `selinux/policyDiff`
+   - Compare with other refs (done, 0.4.0): `selinux/policyDiff`
      {base: ref | saved: dir, target: ref | null=working tree};
      `ensureRefBuild()` (git archive into `head-<hash(root@sha)>` + build,
      LRU of 3, replaces the single HEAD baseline); `fromRef(label,
@@ -112,13 +114,13 @@ what the user finds there first, then items under 4/5.
      the *Compare with…* picker (HEAD, tags, branches, commits, typed ref,
      two refs, saved build dir). ChangesView `compareWith(params)`,
      refreshes after builds only when the working tree is a side.
-   - Per-window scratch dirs (done, after 0.3.0): `scratchDir()` lives in
+   - Per-window scratch dirs (done, 0.4.0): `scratchDir()` lives in
      `<tmp>/selinux-policy-tools-<uid>/<server pid>/` (base mode 0700); the
      server removes its whole area on exit (`cleanupScratch`) and sweeps
      areas of dead pids at startup (`sweepStaleScratch`; also rmdir's the
      old shared `<tmp>/selinux-policy-tools` once empty). Build summaries
      carry `workDir`; tests use it instead of computing paths.
-   - Build through semodule/CIL (done, after 0.3.0): `build.cilBuild()`
+   - Build through semodule/CIL (done, 0.4.0): `build.cilBuild()`
      runs `semodule -p <work>/cil-root -X 100 -s <NAME> -i base.pp -i
      <every .pp>` (not `make load`, which only loads modules.conf modules,
      so CLIP's APPS_MODS packages would be missing); needs

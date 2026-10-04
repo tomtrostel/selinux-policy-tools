@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.0 (2026-10-04)
+
+Deeper property checks, checks for standalone modules, and comparing the
+compiled policy with any version or with the installed policy.
+
+**New**
+
 * **Information-flow checks**: `never shadow_t flows to user_t [except
   passwd_t …] [weight N]` in `selinux.checks` fails if data can move from
   one type to another through any chain of domains and objects (reads and
@@ -13,21 +20,24 @@
   (decompiled kernel policy + module, compiled with `semodule -p`, no root
   needed), and `selinux.checks` at the workspace folder is checked against
   it. The Compiled Policy view shows that linked policy too.
-* **Fix:** in checks, `{ read }` now means only the `read` permission;
-  previously braces still expanded the `read` group (read, open, map).
 * **Compare Compiled Policy with…**: compare the working tree's build with
   any tag, branch, commit or typed ref, compare two refs with each other
   (e.g. two release tags), or compare with a saved build directory;
   changes are traced into the matching version's sources.
-* **Fix: two VS Code windows on the same tree** no longer share scratch
-  build directories: each language server builds in its own area
-  (`/tmp/selinux-policy-tools-<uid>/<pid>/`), so builds can't interfere and
-  closing one window no longer deletes the other's builds. Areas left by
-  crashed servers are cleaned up at the next start.
 * **Compare Build with Installed Policy**: rebuilds the tree with
   `semodule` (CIL) into a scratch store, the way an installed system is
   built, and shows in the Changes view what installing it would add (traced
   to source) or remove compared with `/etc/selinux/<name>/policy`.
+
+**Fixes**
+
+* Two VS Code windows on the same tree no longer share scratch build
+  directories: each language server builds in its own area
+  (`/tmp/selinux-policy-tools-<uid>/<pid>/`), so builds can't interfere and
+  closing one window no longer deletes the other's builds. Areas left by
+  crashed servers are cleaned up at the next start.
+* In checks, `{ read }` now means only the `read` permission; previously
+  braces still expanded the `read` group (read, open, map).
 
 ## 0.3.0 (2026-10-04)
 

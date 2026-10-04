@@ -503,8 +503,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   on the RHEL 9 tree, configuring from the spec, the targeted build and its
   Compiled Policy view, and dimming of inactive build-flag `ifdef` branches.
   Module Preview, the domain transition graph, property checks and the
-  users/roles features (new in 0.3.0) are covered by the automated tests
-  above but haven't had interactive use yet.
+  users/roles features (new in 0.3.0), and the comparisons, information-flow
+  checks and standalone-module checks (new in 0.4.0) are covered by the
+  automated tests above but haven't had interactive use yet.
 
 ## Limitations
 
