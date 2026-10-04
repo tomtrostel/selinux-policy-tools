@@ -15,6 +15,11 @@ It works at two levels:
   (m4, `checkmodule`, the policy's own Makefile), reports compiler and link
   errors on the source lines that caused them, shows what each line compiles
   to, and presents the linked kernel policy as a navigable tree.
+* **Lockdown workflows.** On top of the compiled policy: what an edit
+  changed compared with `HEAD`, what turning a module off or on would do,
+  a domain transition graph, security property checks re-run after every
+  build, and validation of users, roles and MLS levels, all traced back to
+  the source lines responsible.
 
 ## Requirements
 
@@ -418,6 +423,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   the expanded view and Changes since HEAD;
   on the RHEL 9 tree, configuring from the spec, the targeted build and its
   Compiled Policy view, and dimming of inactive build-flag `ifdef` branches.
+  Module Preview, the domain transition graph, property checks and the
+  users/roles features (new in 0.3.0) are covered by the automated tests
+  above but haven't had interactive use yet.
 
 ## Limitations
 
