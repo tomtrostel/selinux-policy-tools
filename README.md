@@ -165,10 +165,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Full-tree builds, the Compiled Policy view and the hover/expanded views on
   CLIP for RHEL 9 (90 module packages, linked and validated).
 * Interactive use through VS Code Remote-SSH from Windows to Rocky 9:
-  indexing, the status bar and standalone-module builds. The full-tree build
-  UI and the Compiled Policy view have so far been exercised only by the
-  automated tests (which drive the language server and the view's tree
-  logic directly), not clicked through in VS Code.
+  indexing, standalone-module builds, and on CLIP the full-tree build
+  (compile and link errors), the Compiled Policy view (browsing, navigation,
+  find), the "Compiles to" hover and the expanded view.
 
 ## Limitations
 

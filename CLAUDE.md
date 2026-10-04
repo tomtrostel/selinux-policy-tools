@@ -152,10 +152,10 @@ Package: `npx @vscode/vsce package`.
   with CLIP's makeArgs in `.vscode/settings.json` (gitignored).
 - Tree builds of the RHEL selinux-policy tree are untested (it ships no
   modules.conf; the spec copies modules-targeted-*.conf in).
-- VS Code UI: used interactively over Remote-SSH (Windows → melody) for
-  indexing, status bar and standalone-module builds. The full-tree build UI
-  and the Compiled Policy view are covered only by build-tree-e2e (server +
-  view tree logic with a stub vscode), not clicked through yet.
+- VS Code UI: clicked through over Remote-SSH (Windows → melody) on
+  2026-10-03: standalone builds, and on CLIP the tree build (compile + link
+  errors), Compiled Policy view (browse, navigate, find, refresh), hover and
+  expanded view. All worked as designed; no UX issues reported.
 - Compiled Policy view shows structure only; allow/dontaudit rules with
   their source lines, and sediff against a commit, are the next steps.
 - `.te` files aren't checked for missing `require` blocks.
