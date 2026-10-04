@@ -40,8 +40,38 @@ function detectToolchain(develMakefile) {
   return { ok: true, develMakefile };
 }
 
-const scratchDir = (kind, key) => path.join(os.tmpdir(), 'selinux-policy-tools',
+/*
+ * Scratch area: <tmp>/selinux-policy-tools-<uid>/<server pid>/. Per user
+ * (tmp is shared; the directory is private), per language server so two
+ * VS Code windows on the same tree never share build directories, and
+ * removed as a whole when the server exits (see cleanupScratch). Areas left
+ * by servers that died without cleaning up are swept at startup.
+ */
+const SCRATCH_BASE = path.join(os.tmpdir(), `selinux-policy-tools-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`);
+const SCRATCH = path.join(SCRATCH_BASE, String(process.pid));
+
+const scratchDir = (kind, key) => path.join(SCRATCH,
   (kind ? kind + '-' : '') + crypto.createHash('sha1').update(key).digest('hex').slice(0, 12));
+
+/** Remove scratch areas of servers that are no longer running. */
+function sweepStaleScratch() {
+  let names = [];
+  try { fs.mkdirSync(SCRATCH_BASE, { recursive: true, mode: 0o700 }); names = fs.readdirSync(SCRATCH_BASE); } catch { return 0; }
+  let removed = 0;
+  for (const n of names) {
+    if (!/^\d+$/.test(n) || +n === process.pid) continue;
+    let alive = true;
+    try { process.kill(+n, 0); } catch (e) { alive = e.code === 'EPERM'; }
+    if (!alive) { fs.rmSync(path.join(SCRATCH_BASE, n), { recursive: true, force: true }); removed++; }
+  }
+  // The shared directory of versions before per-server areas: remove it once
+  // it's empty (rmdir refuses otherwise, so an older running server is safe).
+  try { fs.rmdirSync(path.join(os.tmpdir(), 'selinux-policy-tools')); } catch { /* in use, absent, or not ours */ }
+  return removed;
+}
+
+/** Remove this server's whole scratch area (on exit). */
+function cleanupScratch() { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ } }
 
 const run = (args, cwd, timeoutMs) => new Promise((resolve) => {
   execFile('make', args, { cwd, timeout: timeoutMs, maxBuffer: 64 << 20 },
@@ -547,4 +577,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, scratchDir, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

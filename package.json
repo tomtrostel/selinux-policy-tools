@@ -446,6 +446,7 @@
     "test:preview": "node test/preview-e2e.js",
     "test:webview": "node test/webview-transitions-test.js",
     "test:checks": "node test/checks-e2e.js",
+    "test:scratch": "node test/scratch-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"
   },

@@ -79,6 +79,7 @@ const hover = async (f, text, needle) => {
 
   // 1. Full build: compile, then link validation.
   let r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
+  const treeWork = r.workDir;
   check(r.ok && r.validated && r.packages > 1 && r.policyBin && fs.existsSync(r.policyBin),
     `full build + validate (${(r.ms / 1000).toFixed(1)} s, ${r.packages} packages)`, { ...r, log: r.log && r.log.slice(-1500) });
 
@@ -242,8 +243,8 @@ const hover = async (f, text, needle) => {
   }
 
   // 9. Clean shutdown removes the scratch tree.
-  const scratch = path.join(os.tmpdir(), 'selinux-policy-tools', 'tree-' + crypto.createHash('sha1').update(ws).digest('hex').slice(0, 12));
-  check(fs.existsSync(scratch), 'scratch tree exists while the server runs');
+  const scratch = treeWork;
+  check(fs.existsSync(scratch) && path.basename(path.dirname(scratch)) === String(proc.pid), 'scratch tree exists while the server runs, in its own area');
   await conn.sendRequest('shutdown');
   const exited = new Promise(res => proc.on('exit', res));
   conn.sendNotification('exit');

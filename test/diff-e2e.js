@@ -129,12 +129,14 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
   const top3 = await view.getChildren();
   check(top3.some(n => /^No effective policy change/.test(n.item.label)), 'view says "No effective policy change"', top3.map(n => n.item.label));
 
+  const area = path.dirname((await conn.sendRequest('selinux/build', { uri: uri(LOGGING) })).workDir);
+  const inArea = fs.readdirSync(area);
+  check(inArea.some(n => /^head-/.test(n)) && inArea.some(n => /^tree-/.test(n)), `HEAD export and both trees live in this server's scratch area (${inArea.join(', ')})`);
   await conn.sendRequest('shutdown');
   const exited = new Promise(res => proc.on('exit', res));
   conn.sendNotification('exit');
   await Promise.race([exited, sleep(5000)]);
-  const left = fs.readdirSync(path.join(os.tmpdir(), 'selinux-policy-tools')).filter(n => /^(head|tree)-/.test(n));
-  check(true, `scratch dirs left: ${left.length} (others' sessions may own some)`);
+  check(!fs.existsSync(area), 'the whole scratch area is removed on server exit');
   console.log(failures ? `\n${failures} check(s) failed` : '\nall diff checks passed');
   proc.kill();
   fs.rmSync(repo, { recursive: true, force: true });

@@ -147,14 +147,15 @@ const hover = async (needle) => {
     'expanded policy shows files_tmp_filetrans and its type_transition', ex.text && ex.text.slice(-800));
   check(ex.text && /category declarations omitted/.test(ex.text) && ex.text.split('\n').length < 800, `expanded policy collapses boilerplate (${ex.text ? ex.text.split('\n').length : 0} lines)`);
 
-  // 11. A clean LSP shutdown removes the scratch build directory.
-  const scratch = path.join(os.tmpdir(), 'selinux-policy-tools', require('crypto').createHash('sha1').update(dir).digest('hex').slice(0, 12));
-  check(fs.existsSync(scratch), 'scratch build dir exists while the server runs');
+  // 11. A clean LSP shutdown removes the scratch build directory (and the server's whole scratch area).
+  const scratch = (await conn.sendRequest('selinux/build', { uri })).workDir;
+  const area = path.dirname(scratch);
+  check(fs.existsSync(scratch) && path.basename(area) === String(proc.pid), `scratch build dir exists while the server runs, in its own area (${path.basename(area)})`);
   await conn.sendRequest('shutdown');
   const exited = new Promise(res => proc.on('exit', res));
   conn.sendNotification('exit');
   await Promise.race([exited, sleep(5000)]);
-  check(!fs.existsSync(scratch), 'scratch build dir removed on server exit');
+  check(!fs.existsSync(scratch) && !fs.existsSync(area), 'scratch build dir and area removed on server exit');
 
   console.log(failures ? `\n${failures} check(s) failed` : '\nall build checks passed');
   proc.kill();

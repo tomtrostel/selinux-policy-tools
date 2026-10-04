@@ -216,7 +216,15 @@ const buildState = new Map();     // build key -> { running, again, pkg }
 const buildDiagUris = new Set();  // closed files we published build diagnostics for
 const workDirs = new Set();       // scratch build dirs, removed when the server exits
 
-process.on('exit', () => { for (const d of workDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
+process.on('exit', () => {
+  for (const d of workDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+  build.cleanupScratch(); // this server's whole scratch area
+});
+// Scratch areas are per server; sweep those of servers that died without cleaning up.
+if (process.platform !== 'win32') {
+  const swept = build.sweepStaleScratch();
+  if (swept) setImmediate(() => log(`removed ${swept} stale scratch area${swept > 1 ? 's' : ''}`));
+}
 process.on('SIGTERM', () => process.exit(0));
 
 function findTreeRoot() {
@@ -377,7 +385,7 @@ function interfaceRequires(name, token, depth, seen = new Set()) {
 
 function buildSummary(res) {
   const errors = res.diagnostics.filter(d => d.severity === 'error').length;
-  return { ok: res.ok, module: res.module, ms: res.ms, errors, warnings: res.diagnostics.length - errors,
+  return { ok: res.ok, module: res.module, ms: res.ms, errors, warnings: res.diagnostics.length - errors, workDir: res.workDir,
     timedOut: res.timedOut, log: res.log, package: res.pkgPath || null,
     tree: !!res.tree, outputDir: res.tree ? res.workDir : null, policyBin: res.policyBin || null,
     exportDir: res.exported ? res.exported.dir : null, exportedFiles: res.exported ? res.exported.files.length : 0, exportError: res.exportError || null,

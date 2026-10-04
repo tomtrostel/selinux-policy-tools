@@ -481,11 +481,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   spurious rule differences on RHEL). *Compare Build with Installed Policy*
   therefore rebuilds with `semodule` first; the regular build, Changes
   since HEAD and the Compiled Policy view use the Makefile's build.
+* Each language server (VS Code window) builds in its own scratch area, so
+  two windows on the same tree build independently (each keeps its own
+  copy: twice the disk space and build time). Areas left by crashed servers
+  are removed when the next server starts.
 * One source tree per workspace: if the workspace contains several, the
   first one found is built.
 * Without `selinux.build.tree.outputDir`, full-tree outputs stay in the
-  scratch directory under `/tmp/selinux-policy-tools/`, which is removed
-  when the language server exits.
+  language server's scratch area (`/tmp/selinux-policy-tools-<uid>/<pid>/`),
+  which is removed when the server exits.
 * There is no command to install a full policy; copy the exported outputs
   to a test system and install them there. *Install Module* covers
   standalone modules only.
@@ -523,8 +527,6 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   loosely.
 * The statement index takes about 100 MB per side on a RHEL tree while
   comparisons are active; it is dropped after two idle minutes.
-* Two VS Code windows on the same tree share one scratch build directory;
-  building in both at once can interfere.
 
 **Property checks**
 
@@ -550,6 +552,7 @@ npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Li
 npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
 npm run test:webview   # transition graph webview script against a fake DOM (any OS)
 npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
+npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```

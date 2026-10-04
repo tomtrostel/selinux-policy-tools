@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* **Fix: two VS Code windows on the same tree** no longer share scratch
+  build directories: each language server builds in its own area
+  (`/tmp/selinux-policy-tools-<uid>/<pid>/`), so builds can't interfere and
+  closing one window no longer deletes the other's builds. Areas left by
+  crashed servers are cleaned up at the next start.
 * **Compare Build with Installed Policy**: rebuilds the tree with
   `semodule` (CIL) into a scratch store, the way an installed system is
   built, and shows in the Changes view what installing it would add (traced

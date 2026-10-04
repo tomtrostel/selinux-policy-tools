@@ -81,8 +81,12 @@ what the user finds there first, then items under 4/5.
 4. **Extensions of what's built** (smaller, any time):
    - Compare with other refs (branch/tag/commit) or a saved build
      (outputDir), not only HEAD.
-   - Per-window scratch dirs (scratch is keyed by tree path, so two
-     windows on one tree share and can race on one).
+   - Per-window scratch dirs (done, after 0.3.0): `scratchDir()` lives in
+     `<tmp>/selinux-policy-tools-<uid>/<server pid>/` (base mode 0700); the
+     server removes its whole area on exit (`cleanupScratch`) and sweeps
+     areas of dead pids at startup (`sweepStaleScratch`; also rmdir's the
+     old shared `<tmp>/selinux-policy-tools` once empty). Build summaries
+     carry `workDir`; tests use it instead of computing paths.
    - Build through semodule/CIL (done, after 0.3.0): `build.cilBuild()`
      runs `semodule -p <work>/cil-root -X 100 -s <NAME> -i base.pp -i
      <every .pp>` (not `make load`, which only loads modules.conf modules,
@@ -152,7 +156,7 @@ is only visible to collaborators; making it public is the user's call.
   for `.spt`/`.m4` (they use changequote tricks).
 - **Builds use the real Makefile in a scratch dir** (`server/build.js`):
   module dir contents (editor buffers, so unsaved edits compile) are copied
-  to `<tmpdir>/selinux-policy-tools/<hash>/` and `make -f <devel Makefile>
+  to `<scratch area>/<hash>/` and `make -f <devel Makefile>
   tmp/<mod>.mod` runs there (~0.3 s, no caching needed). checkmodule honours
   m4's `#line` markers, so its errors arrive in source coordinates. The
   expansion map parses `tmp/<mod>.tmp`: `#line N "file"` (file only on
@@ -167,7 +171,7 @@ is only visible to collaborators; making it public is the user's call.
   category boilerplate collapsed). Scratch dirs are removed on server exit.
 - **Full-tree builds** (workspace contains a refpolicy root: `Makefile`,
   `Rules.modular`, `build.conf`, `policy/support/obj_perm_sets.spt`) keep a
-  persistent scratch copy `<tmpdir>/selinux-policy-tools/tree-<hash>/`,
+  persistent scratch copy `<scratch area>/tree-<hash>/`,
   synced before each build by rewriting only files whose content differs
   (so make's incremental rebuild works; outputs listed in refpolicy's
   .gitignore and generated corenetwork.te/.if are not copied). The tree's
@@ -263,6 +267,8 @@ is only visible to collaborators; making it public is the user's call.
   bad users lines), then property checks incl. roles/users on a CLIP
   copy (holding/failing/unknown/syntax, alias, tracing, edit+save without
   rebuild, completion).
+- `test/scratch-e2e.js` (`npm run test:scratch`): two servers on one
+  workspace build in separate areas; exit/kill/sweep behaviour.
 - `test/webview-transitions-test.js` (`npm run test:webview`, any OS):
   runs media/transitions.js against a fake DOM through a whole session.
 - `test/preview-e2e.js` (`npm run test:preview`): module preview on a CLIP
@@ -341,8 +347,7 @@ Package: `npx @vscode/vsce package`.
   since HEAD confirmed in VS Code on the CLIP clone.
 - Compiled Policy view: rules per type/attribute (Can access / Accessed by
   / Other rules) with on-demand source tracing; confirmed in VS Code.
-  Changes view compares with HEAD only. Scratch dirs are keyed
-  by tree path, so two windows on one tree share (and can race on) one.
+  Changes view compares with HEAD (or the installed policy) only.
 - `.te` files aren't checked for missing `require` blocks.
 - `ifelse` and ifdef on non-build-flag names are indexed as all-active;
   without make (Windows local) nothing is decided.
