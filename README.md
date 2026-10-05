@@ -138,8 +138,10 @@ Open one of these as the workspace folder:
   * unknown object classes and invalid permissions for a class;
   * in `.if` files, types/attributes used in an interface but missing from
     its `gen_require` block (quick fix inserts the line);
-  * in `.te` files of loadable modules, types/attributes from other modules
-    used without a require in that scope: the module's top level, or the
+  * in `.te` files of loadable modules, types, attributes and booleans from
+    other modules (booleans: in `if (...)` statements; `tunable_policy`
+    requires its condition's booleans itself, also when an interface passes
+    one in) used without a require in that scope: the module's top level, or the
     `optional_policy` block the use is in. A require counts for its whole
     scope and the blocks nested in it, whether it is written in a
     `require { }` / `gen_require` block or comes from an interface called in
@@ -477,6 +479,13 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   mismatched line on all three trees); a duplicate port is flagged while
   typing and its build error lands on the `.te.in` line instead of on
   `ubac.te`; a port of 99999999 is flagged.
+* Booleans in the `.te` require check: no findings on the four trees; a raw
+  `if (allow_raw_memory_access)` in CLIP's loadable `cron.te` is flagged
+  (checkmodule: "unknown boolean … in conditional expression"), the same
+  boolean in `tunable_policy` isn't, and the quick fix's
+  `bool allow_raw_memory_access;` makes it build. Template-generated
+  booleans (`<user>_exec_content`, 9–10 per tree) now resolve to the
+  template call that declares them.
 * The `.te` require check: no findings on the loadable modules of all three
   trees (Fedora with `dist/targeted/modules.conf`: 425; RHEL 9 targeted
   from the spec's module lists: 434; CLIP: 79 incl. `APPS_MODS`), which
@@ -589,9 +598,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   (string building with `patsubst`, `changequote`) won't resolve. Template
   expansion follows nested templates up to five levels.
 * Only `ifdef`/`ifndef` on m4 build flags are decided, and only where
-  `make` can be asked (Linux, trusted workspace). `ifelse`, `ifdef` on
-  other names (e.g. interface names), and everything on Windows/macOS
-  without Remote-SSH are indexed as if all branches were active.
+  `make` can be asked (Linux, trusted workspace). `ifdef` on other names
+  (e.g. interface names), and everything on Windows/macOS without
+  Remote-SSH, are indexed as if all branches were active.
+* `ifelse` appears only inside definitions in the policy trees (comparing
+  their arguments). When a call is expanded, a 4-argument `ifelse` whose
+  two sides become plain text is decided (e.g. `ifelse(\`$1',\`unconfined',
+  …)` in the user templates: `staff_exec_content` exists, no
+  `unconfined_exec_content`); comparisons involving `eval(...)` or other
+  macros, longer `ifelse` chains, and m4's own machinery in the support
+  and corenetwork macros are left active.
   `self_contained_policy` and `users_extra`, which the Makefile passes
   only for some build steps, are never decided.
 * The `.te` require check needs to know a module is loadable: without a
@@ -715,7 +731,7 @@ Plain JavaScript, no build step.
 
 ```
 npm install
-npm test               # LSP features against a policy tree with a seeded test module
+npm test               # LSP features against a policy tree with a seeded test module, plus the ifelse unit test
 npm run test:build     # standalone-module builds (Linux; skips elsewhere)
 npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; defaults to a CLIP RHEL 9 checkout)
 npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
@@ -725,6 +741,7 @@ npm run test:webview   # transition graph webview script against a fake DOM (any
 npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
 npm run test:modchecks # property checks for a standalone module linked with the installed policy (Linux)
 npm run test:mono      # monolithic build of upstream refpolicy (Linux; ~/sepol-test/refpolicy)
+npm run test:ifelse    # ifelse decisions in template expansion (any OS; also part of npm test)
 npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix

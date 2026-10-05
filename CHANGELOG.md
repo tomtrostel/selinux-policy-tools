@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+* **Booleans in the `.te` require check**: a boolean from another module
+  (or the global tunables) tested in an `if (...)` statement without
+  `require { bool …; }` is flagged, with a quick fix. Booleans in
+  `tunable_policy` need none (the macro requires them).
+* **`ifelse` in definitions** is decided per call when it compares plain
+  values (e.g. the user templates' `ifelse(\`$1',\`unconfined', …)`), so
+  template expansion no longer generates names from branches that don't
+  apply, and the require analysis follows the right branch.
+* Template-generated booleans (`gen_tunable(\`$1_exec_content', …)`, e.g.
+  `staff_exec_content`) are now indexed: definition, hover, completion.
+
 * **All build variants verified**: RHEL 9 and RHEL 10 targeted, minimum,
   mls and automotive, and monolithic builds (upstream refpolicy).
 * **Fix: trees without `policy/modules.conf`** (upstream refpolicy) failed

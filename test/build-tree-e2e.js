@@ -328,6 +328,36 @@ const hover = async (f, text, needle) => {
       check(none.length === 0, 'the unmodified cron.te has no missing-require warnings', none);
       await edit(CRON, cronText);
       await edit(KERNEL, kernelText);
+
+      // Booleans too: a raw `if (b)` needs `require { bool b; }`
+      // (tunable_policy requires its condition's booleans itself).
+      const bt = cronText + '\nif (allow_raw_memory_access) {\n\tallow crond_t self:capability sys_rawio;\n}\n';
+      await edit(CRON, bt);
+      await sleep(800);
+      let bd = (diags[uri(CRON)] || []).find(x => x.code === 'missing-te-require' && /allow_raw_memory_access/.test(x.message));
+      check(bd && bd.range.start.line === lineOf(bt, 'if (allow_raw_memory_access)') && /add 'bool allow_raw_memory_access;'/.test(bd.message),
+        `boolean used in if() without a require: ${bd && bd.message.slice(0, 100)}`, fmt(CRON));
+      const tt = cronText + "\ntunable_policy(`allow_raw_memory_access',`\n\tallow crond_t self:capability sys_rawio;\n')\n";
+      await edit(CRON, tt);
+      await sleep(800);
+      check(!(diags[uri(CRON)] || []).some(x => x.code === 'missing-te-require'), 'the same boolean in tunable_policy needs no require (the macro requires it)', fmt(CRON));
+      await edit(CRON, bt);
+      await sleep(800);
+      bd = (diags[uri(CRON)] || []).find(x => x.code === 'missing-te-require' && /allow_raw_memory_access/.test(x.message));
+      const acts = bd ? await conn.sendRequest('textDocument/codeAction', { textDocument: { uri: uri(CRON) }, range: bd.range, context: { diagnostics: [bd] } }) : [];
+      const fix = acts.find(x => /bool allow_raw_memory_access;/.test(x.title));
+      if (fix) {
+        const ed = fix.edit.changes[uri(CRON)][0];
+        const ls = bt.split('\n');
+        ls.splice(ed.range.start.line, 0, ...ed.newText.replace(/\n$/, '').split('\n'));
+        await edit(CRON, ls.join('\n'));
+        await sleep(800);
+        r = await save(CRON);
+      }
+      check(fix && !(diags[uri(CRON)] || []).some(x => x.code === 'missing-te-require') && r.ok,
+        `quick fix "${fix && fix.title}" adds the require; the tree builds (${r && r.ok})`, fmt(CRON));
+      await edit(CRON, cronText);
+      r = await save(CRON);
     }
   }
 

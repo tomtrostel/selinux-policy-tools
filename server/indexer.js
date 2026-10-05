@@ -66,6 +66,24 @@ class PolicyIndex {
     return !!(this.moduleKinds && module && this.moduleKinds.get(module) === 'module');
   }
 
+  /**
+   * Whether a definition's ifelse branches (parser `when`: [{ a, b, then }])
+   * apply for a call with these arguments. A comparison counts only when
+   * both sides become plain text (no unresolved $N, no macro calls such as
+   * eval(...)); otherwise the branch is taken to apply.
+   */
+  whenHolds(when, args) {
+    if (!when) return true;
+    const sub = (s) => s.replace(/\$(\d+)/g, (_, n) => (args[+n - 1] !== undefined ? args[+n - 1] : '')).replace(/[`']/g, '').trim();
+    for (const w of when) {
+      if (/\$[*@#]|\(/.test(w.a + w.b)) continue;
+      const a = sub(w.a), b = sub(w.b);
+      if (/[$()]/.test(a + b)) continue;
+      if ((a === b) !== w.then) return false;
+    }
+    return true;
+  }
+
   /** Whether modules.conf (+ APPS_MODS) builds a module at all (base or module). */
   isEnabled(module) {
     const k = this.moduleKinds && this.moduleKinds.get(module);
@@ -94,14 +112,14 @@ class PolicyIndex {
     return res;
   }
 
-  /** 'type' | 'attribute' if some interface requires `name` as such (the devel headers declare nothing), else null. */
+  /** 'type' | 'attribute' | 'bool' if some interface requires `name` as such (the devel headers declare nothing), else null. */
   requiredKind(name) {
     if (!this._requiredKinds) {
       this._requiredKinds = new Map();
       for (const list of this.defs.values()) {
         for (const d of list) {
           for (const r of d.requires || []) {
-            if ((r.kind === 'type' || r.kind === 'attribute') && ID_RE.test(r.name) && !this._requiredKinds.has(r.name)) this._requiredKinds.set(r.name, r.kind);
+            if ((r.kind === 'type' || r.kind === 'attribute' || r.kind === 'bool') && ID_RE.test(r.name) && !this._requiredKinds.has(r.name)) this._requiredKinds.set(r.name, r.kind);
           }
         }
       }
@@ -343,6 +361,7 @@ class PolicyIndex {
       if (depth > 5) return;
       for (const d of defs.get(name) || []) {
         for (const p of d.declPatterns) {
+          if (!this.whenHolds(p.when, args)) continue;
           const n = subst(p.pattern, args);
           if (!valid(n)) continue;
           if (p.kind === 'interface' || p.kind === 'template' || p.kind === 'define') {
@@ -353,7 +372,7 @@ class PolicyIndex {
           }
         }
         for (const bc of d.bodyCalls) {
-          if (!generative.has(bc.name)) continue;
+          if (!generative.has(bc.name) || !this.whenHolds(bc.when, args)) continue;
           expand(bc.name, spliceArgs(bc.args, args), site, depth + 1);
         }
       }

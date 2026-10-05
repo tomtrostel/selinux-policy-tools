@@ -454,8 +454,17 @@ Package: `npx @vscode/vsce package`.
   policy.
 - `.te` require check only for modules known to be loadable (devel mode,
   or `module` in modules.conf / APPS_MODS); none without modules.conf.
-- `ifelse` and ifdef on non-build-flag names are indexed as all-active;
-  without make (Windows local) nothing is decided.
+- ifdef on non-build-flag names is indexed as all-active; without make
+  (Windows local) nothing is decided. `ifelse` only occurs inside
+  definitions; the parser records enclosing 4-arg ifelse branches as
+  `when: [{a, b, then}]` on declPatterns, requires and bodyCalls, and
+  `idx.whenHolds(when, args)` decides them per call (plain-text sides
+  only) in expandGenerated and callRequires (test/ifelse-test.js).
+- .te require check covers booleans (kind from decls / requiredKind);
+  `tunable_policy` provides its condition's names when the tree's macro
+  calls declare_required_symbols (`autoRequiringTunables`), at top level
+  and inside interfaces (callRequires handles tunable_policy bodyCalls).
+  gen_tunable/gen_bool with `$N` names in templates are declPatterns now.
 - Windows paths: indexed paths come from `URI.fsPath` (lowercase drive
   letter); keep all path keys going through `toPath()` for consistency.
 

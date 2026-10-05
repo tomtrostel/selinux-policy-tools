@@ -178,6 +178,25 @@ function parsePolicy(text) {
     }
     return false;
   };
+  // Enclosing ifelse(`a', `b', then, else) branches inside the innermost
+  // definition, as [{ a, b, then: bool }], so a call with concrete arguments
+  // can tell whether the branch applies. Only the 4-argument form counts;
+  // anything else (comparison arguments, longer chains) is left undecided.
+  // `below`: start under this stack index (a definition's own frame).
+  const ifelseWhen = (below = stack.length) => {
+    const out = [];
+    for (let k = below - 1; k >= 0; k--) {
+      const f = stack[k];
+      if (f.k !== 'call') continue;
+      if (f.def && f.argIdx >= 1) break;
+      if (f.name !== 'ifelse' || (f.argIdx !== 2 && f.argIdx !== 3)) continue;
+      const a0 = f.args[0], a1 = f.args[1];
+      if (!a0 || !a1 || a0.e === undefined || a1.e === undefined) continue;
+      out.push({ a: cleanArg(text.slice(a0.s, a0.e)), b: cleanArg(text.slice(a1.s, a1.e)), then: f.argIdx === 2 });
+    }
+    return out.length ? out : null;
+  };
+  const withWhen = (o, below) => { const w = ifelseWhen(below); if (w) o.when = w; return o; };
   const inRequire = () => stack.some(f => (f.k === 'call' && REQUIRE_MACROS.has(f.name)) || (f.k === 'brace' && f.req));
   const resetStmt = () => { stmtStart = true; decl = null; av = null; };
 
@@ -185,12 +204,12 @@ function parsePolicy(text) {
     const req = inRequire();
     const def = currentDef();
     if (req) {
-      if (def) def.requires.push(condInDef() ? { kind, name: tk.v, cond: true } : { kind, name: tk.v });
+      if (def) def.requires.push(withWhen(condInDef() ? { kind, name: tk.v, cond: true } : { kind, name: tk.v }));
       else out.requires.push({ kind, name: tk.v, l: tk.l, c: tk.c });
       return null;
     }
     if (tk.v.includes('$')) {
-      if (def) def.declPatterns.push({ kind, pattern: tk.v });
+      if (def) def.declPatterns.push(withWhen({ kind, pattern: tk.v }));
       return null;
     }
     const d = { kind, name: tk.v, l: tk.l, c: tk.c, len: tk.v.length, attrs: [], ...extra };
@@ -360,7 +379,7 @@ function parsePolicy(text) {
     frame.def = def;
     if (nameTok.v.includes('$')) {
       def.isPattern = true;
-      if (frame.parentDef) frame.parentDef.declPatterns.push({ kind: frame.name, pattern: nameTok.v, doc: def.doc });
+      if (frame.parentDef) frame.parentDef.declPatterns.push(withWhen({ kind: frame.name, pattern: nameTok.v, doc: def.doc }, stack.lastIndexOf(frame)));
     } else {
       out.defs.push(def);
     }
@@ -393,14 +412,15 @@ function parsePolicy(text) {
     }
     if (enclosing) {
       call.inDef = enclosing.name;
-      enclosing.bodyCalls.push(condInDef() ? { name: frame.name, args, cond: true } : { name: frame.name, args });
+      enclosing.bodyCalls.push(withWhen(condInDef() ? { name: frame.name, args, cond: true } : { name: frame.name, args }));
       if (REQUIRE_MACROS.has(frame.name)) {
         enclosing.reqBlocks.push({ l: frame.tok.l, c: frame.tok.c, endL: closeTok.l, endC: closeTok.c });
       }
     }
     out.calls.push(call);
 
-    if (BOOL_MACROS.has(frame.name) && args[0] && /^\w+$/.test(args[0])) {
+    // gen_tunable(`$1_exec_content', ...) in a template declares a pattern (recordDecl → declPatterns).
+    if (BOOL_MACROS.has(frame.name) && args[0] && /^[\w$]+$/.test(args[0])) {
       const t = frame.firstIdent;
       if (t) {
         const d = recordDecl('bool', t, { tunable: frame.name === 'gen_tunable', default: args[1] || '' });

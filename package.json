@@ -492,7 +492,7 @@
     }
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js",
     "test:build": "node test/build-e2e.js",
     "test:tree": "node test/build-tree-e2e.js",
     "test:rhel": "node test/build-rhel-e2e.js",
@@ -504,7 +504,8 @@
     "test:mono": "node test/build-mono-e2e.js",
     "test:scratch": "node test/scratch-e2e.js",
     "survey": "node test/diag-survey.js",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test:ifelse": "node test/ifelse-test.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",
