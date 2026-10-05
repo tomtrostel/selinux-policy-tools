@@ -443,17 +443,29 @@ function syncTree(root, work, readText, overlays = new Map()) {
     const t = overlays.has(rel) ? overlays.get(rel) : readText(src, true);
     if (t == null) continue;
     const buf = Buffer.isBuffer(t) ? t : Buffer.from(t);
+    // Keep the execute bit: some Makefiles run their scripts directly
+    // (upstream refpolicy: support/gentemplates.sh).
+    let exec = false;
+    if (!overlays.has(rel)) { try { exec = (fs.statSync(src).mode & 0o111) !== 0; } catch { /* gone */ } }
     let cur = null;
     try { cur = fs.readFileSync(dst); } catch { /* new */ }
-    if (cur && cur.equals(buf)) continue;
+    if (cur && cur.equals(buf)) {
+      if (exec) { try { if ((fs.statSync(dst).mode & 0o111) === 0) fs.chmodSync(dst, 0o755); } catch { /* ignore */ } }
+      continue;
+    }
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.writeFileSync(dst, buf);
+    fs.writeFileSync(dst, buf, exec ? { mode: 0o755 } : undefined);
+    if (exec) fs.chmodSync(dst, 0o755); // writeFileSync's mode only applies to new files
     written++;
   }
-  // Drop files deleted from the tree (build outputs are left alone).
-  for (const rel of treeSources(work)) if (!want.has(rel)) { fs.rmSync(path.join(work, rel), { force: true }); written++; }
+  // Drop files deleted from the tree (build outputs are left alone, and so is
+  // the configuration `make conf` generated when the tree has none).
+  for (const rel of treeSources(work)) if (!want.has(rel) && !CONF_OUTPUTS.includes(rel)) { fs.rmSync(path.join(work, rel), { force: true }); written++; }
   return written;
 }
+
+// What `make conf` writes; upstream refpolicy ships without them.
+const CONF_OUTPUTS = ['policy/modules.conf', 'policy/booleans.conf'];
 
 /**
  * refpolicy's Makefile doesn't notice when the set of enabled modules changes
@@ -651,7 +663,20 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
   if (sync) forgetStaleModuleSet(work, makeArgs);
   const monolithic = (treeOption(root, makeArgs, 'MONOLITHIC') || 'n').toLowerCase() === 'y';
   if (!targets || !targets.length) targets = monolithic ? ['policy'] : ['base.pp', 'modules', 'validate'];
+  // A tree without modules.conf (upstream refpolicy) needs `make conf` first:
+  // its defaults come from the modules' XML documentation.
+  let confLog = '';
+  if (!fs.existsSync(path.join(work, 'policy', 'modules.conf')) && !targets.includes('conf')) {
+    const c = await run([...makeArgs, 'conf'], work, timeoutMs);
+    confLog = `${c.out}\n`;
+    if (c.code !== 0) {
+      return { ok: false, tree: true, module: path.basename(root), root, workDir: work, ms: Date.now() - t0, synced, log: confLog,
+        diagnostics: [{ file: null, l: 0, severity: 'error', tool: 'make', msg: 'The tree has no policy/modules.conf and `make conf` failed to generate one; see the SELinux Build output.' }],
+        resolveFile: () => null, monolithic, policyBin: null, packages: 0 };
+    }
+  }
   const result = await run([`-j${jobs}`, ...makeArgs, ...targets], work, timeoutMs);
+  if (confLog) result.out = confLog + result.out;
 
   const resolveFile = (f) => {
     if (path.isAbsolute(f)) f = path.relative(work, f);

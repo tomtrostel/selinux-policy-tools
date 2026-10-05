@@ -501,6 +501,7 @@
     "test:webview": "node test/webview-transitions-test.js",
     "test:checks": "node test/checks-e2e.js",
     "test:modchecks": "node test/module-checks-e2e.js",
+    "test:mono": "node test/build-mono-e2e.js",
     "test:scratch": "node test/scratch-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package"

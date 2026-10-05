@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* **All build variants verified**: RHEL 9 and RHEL 10 targeted, minimum,
+  mls and automotive, and monolithic builds (upstream refpolicy).
+* **Fix: trees without `policy/modules.conf`** (upstream refpolicy) failed
+  to build ("No enabled modules!"); the scratch copy now gets one from
+  `make conf`.
+* **Fix: scripts in the scratch copy lost their execute bit**, which broke
+  trees whose Makefile runs them directly (upstream refpolicy's
+  `support/gentemplates.sh`).
+
 * **Link failures before you build**: in a tree, a loadable module that
   needs a type outside `optional_policy` which only modules turned off in
   `modules.conf` declare is flagged where the requirement comes from (the

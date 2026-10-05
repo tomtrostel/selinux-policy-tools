@@ -164,8 +164,15 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    (also portcon/nodecon/netifcon errors, which checkpolicy attributes to
    the last #line file). diagnostics.js `checkNetworkPorts`: range,
    protocol, exact duplicates (codes `net-port`, `net-port-duplicate`).
-   Remaining: several trees per workspace,
-   test automotive and RHEL 9 minimum/mls variants, monolithic builds.
+   Variants (done, after 0.5.0): RHEL 9 minimum/mls/automotive and RHEL 10
+   automotive pass build-rhel-e2e; monolithic verified on upstream
+   refpolicy (~/sepol-test/refpolicy, test/build-mono-e2e.js). Found on the
+   way: buildTree runs `make conf` when the scratch copy has no
+   policy/modules.conf (CONF_OUTPUTS kept by syncTree), and syncTree keeps
+   the execute bit (refpolicy runs support/gentemplates.sh directly).
+   RHEL/CLIP don't build MONOLITHIC=y themselves; upstream validate fails
+   with semodule 3.6 (roletype in unconfined/cil).
+   Remaining: several trees per workspace.
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
@@ -422,8 +429,8 @@ Package: `npx @vscode/vsce package`.
   users-NAME, from the spec's directory). Overlays are applied in syncTree
   as part of the wanted set, so unchanged overlays aren't rewritten. In
   RHEL, container_t exists via virt.te (aliases); use an off module such
-  as timidity for link-error tests. Untested: automotive, RHEL 9
-  minimum/mls (RHEL 10 targeted/mls/minimum verified). make validate uses legacy link/expand while installed policies
+  as timidity for link-error tests. All four spec variants verified on
+  RHEL 9 and RHEL 10. make validate uses legacy link/expand while installed policies
   are CIL-built, so sediff against /etc/selinux/*/policy is dominated by
   attribute representation; a faithful build would go through
   `make load SEMODULE="semodule -p <scratch root> -X 100"` (works unprivileged).

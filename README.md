@@ -495,6 +495,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   turns off. Compared with the policy installed on the same host, the
   types, booleans and roles differ only by the separately packaged
   `container-selinux` module.
+* All spec variants: RHEL 9 minimum (434 modules), mls (262) and automotive
+  (432), and RHEL 10 automotive (362, after both module lists), each built
+  and validated with the spec's settings, boolean defaults and `ifdef`
+  flags (`enable_mls` for mls) checked.
+* Monolithic: upstream refpolicy (SELinuxProject/refpolicy) with
+  `MONOLITHIC=y` builds in ~12 s; compile errors land on their lines, the
+  hover, expanded view, Compiled Policy view (4,510 types, all located),
+  rule origins, property checks, Changes since HEAD and the export all
+  work on `policy.conf`/`policy.33`. Testing it found two problems that
+  affected any tree without `modules.conf` or with executable scripts,
+  modular too: the extension now runs `make conf` when needed and keeps
+  the scripts' execute bit in the scratch copy.
 * RHEL 10 (selinux-policy 42.1.18, from the Rocky Linux 10.2 source RPM),
   built on the Rocky 9.8 host with RHEL 9's tools: checkpolicy 3.6 compiles
   the whole tree (it uses no newer language features), writing policy
@@ -592,11 +604,20 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 * Builds need Linux with the tools above; on Windows/macOS they report
   themselves unavailable (use Remote-SSH).
-* Full-tree builds are verified on CLIP for RHEL 9, the RHEL 9 targeted
-  policy, and the RHEL 10 targeted, mls and minimum policies. The automotive
-  variant, RHEL 9's minimum and mls, and monolithic (`MONOLITHIC=y`) builds
-  are untested. For *minimum*, the RPM turns most modules off at install
-  time, which the build doesn't reproduce.
+* Full-tree builds are verified on CLIP for RHEL 9, all four spec variants
+  of RHEL 9 and RHEL 10 (targeted, minimum, mls, automotive), and upstream
+  refpolicy (monolithic and modular). For *minimum*, the RPM turns most
+  modules off at install time, which the build doesn't reproduce.
+* Monolithic builds (`MONOLITHIC=y`) work like modular ones except where a
+  feature needs module packages: there is no link step (so no link errors
+  and no static link check against packages) and *Compare Build with
+  Installed Policy* says it needs a modular build. RHEL and CLIP trees
+  don't build monolithic themselves (undefined interfaces and scope errors
+  that only show without modules), and upstream refpolicy's current
+  `validate` fails with RHEL 9's semodule 3.6 (its compile works).
+* A tree without `policy/modules.conf` (upstream refpolicy) gets one from
+  `make conf` in the scratch copy on the first build (the modules' default
+  states); static checks that need module states stay off for it.
 * Built with RHEL 9's checkpolicy, a RHEL 10 policy comes out as policy
   version 33 (RHEL 10 ships 35). The sources don't use the newer features
   today; if a future release does (e.g. netlink extended permissions),
@@ -703,6 +724,7 @@ npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
 npm run test:webview   # transition graph webview script against a fake DOM (any OS)
 npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
 npm run test:modchecks # property checks for a standalone module linked with the installed policy (Linux)
+npm run test:mono      # monolithic build of upstream refpolicy (Linux; ~/sepol-test/refpolicy)
 npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
