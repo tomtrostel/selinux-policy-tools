@@ -6,14 +6,16 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.6.0 released** (GitHub release `v0.6.0`;
+Status as of 2026-10-04: **v0.7.0 released** (GitHub release `v0.7.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
 0.6.0 adds the static link check, corenetwork.te.in mapping and port
 checks, booleans in the .te check, ifelse decisions, all build variants
-(and the `make conf` / exec-bit fixes). After 0.6.0: several trees per
-workspace (the last item under 5).
+(and the `make conf` / exec-bit fixes); 0.7.0 adds several trees per
+workspace (the last item under 5, confirmed interactively). Roadmap steps
+1-5 are done; next: interactive use of the 0.5.0/0.6.0 features, or new
+ideas from the user.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
 reported. Next: items under 5 (hardening), or new ideas from the user.
@@ -176,7 +178,7 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    the execute bit (refpolicy runs support/gentemplates.sh directly).
    RHEL/CLIP don't build MONOLITHIC=y themselves; upstream validate fails
    with semodule 3.6 (roletype in unconfined/cil).
-   Several trees per workspace (done, after 0.6.0): build.js `findTrees`
+   Several trees per workspace (done, 0.7.0): build.js `findTrees`
    (Makefile + Rules.modular + build.conf + obj_perm_sets.spt, depth 6,
    stops at a tree). One active tree: server `trees`, `activeTree`
    (`pickTree`: settings.activeTree from the client's workspaceState, else

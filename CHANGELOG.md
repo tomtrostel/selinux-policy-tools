@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0 (2026-10-04)
+
+Several policy trees in one workspace.
+
+**New**
+
 * **Several policy trees in one workspace**: the extension works on one
   tree at a time (indexed, built, shown in the views; named in the status
   bar), switches when you open a file of another tree (or with *SELinux:
@@ -9,7 +15,11 @@
   build settings in the new `selinux.build.trees` setting (*Configure
   Build from Spec File…* writes there when there are several trees) and
   keeps its own build results. Previously all trees were merged into one
-  index and the first one found was built.
+  index and the first one found was built. New settings:
+  `selinux.build.trees`, `selinux.tree.autoSwitch`; new command *SELinux:
+  Select Policy Tree…* (also on the status bar item).
+
+**Tests**: `npm run test:multi` (CLIP and RHEL 10 in one workspace).
 
 ## 0.6.0 (2026-10-04)
 
