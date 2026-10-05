@@ -218,6 +218,11 @@
         "command": "selinux.compareWith",
         "title": "SELinux: Compare Compiled Policy with…",
         "icon": "$(git-branch)"
+      },
+      {
+        "command": "selinux.selectTree",
+        "title": "SELinux: Select Policy Tree…",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -487,6 +492,19 @@
           "type": "string",
           "default": "selinux.checks",
           "markdownDescription": "Property checks file, relative to the policy tree root (for a standalone module: the workspace folder; it is checked against the module linked with the installed policy). Each line is an assertion about the compiled policy (`only X may write T`, `never X may read T`, `never X reaches Y`, `never T flows to U`, `require X may append T:file`), checked after every build and whenever the file is saved. See the README."
+        },
+        "selinux.build.trees": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object"
+          },
+          "markdownDescription": "Build settings per policy tree, for workspaces with several trees: `{ \"rhel10\": { \"makeArgs\": [...], \"files\": {...} } }`, keyed by the tree path (relative to the workspace folder, or absolute). An entry overrides `selinux.build.tree.*` (`makeArgs`, `files`, `targets`, `validate`, `outputDir`) while that tree is active. *SELinux: Configure Build from Spec File…* writes here when the workspace has several trees."
+        },
+        "selinux.tree.autoSwitch": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "With several policy trees in the workspace, switch to the tree of the file you open (indexing, diagnostics, builds and views follow it). Otherwise switch with *SELinux: Select Policy Tree…* (or the status bar item)."
         }
       }
     }
@@ -505,7 +523,8 @@
     "test:scratch": "node test/scratch-e2e.js",
     "survey": "node test/diag-survey.js",
     "package": "vsce package",
-    "test:ifelse": "node test/ifelse-test.js"
+    "test:ifelse": "node test/ifelse-test.js",
+    "test:multi": "node test/multi-tree-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",
@@ -523,7 +542,8 @@
         "selinux.build.tree.makeArgs",
         "selinux.build.tree.targets",
         "selinux.build.tree.files",
-        "selinux.build.tree.outputDir"
+        "selinux.build.tree.outputDir",
+        "selinux.build.trees"
       ]
     }
   }

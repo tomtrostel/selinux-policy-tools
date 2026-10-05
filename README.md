@@ -99,6 +99,17 @@ Open one of these as the workspace folder:
   as the `selinux-policy-devel` Makefile expects). If the folder has no
   support macros, the extension indexes the installed devel headers
   (`/usr/share/selinux/devel/include`) instead.
+* **Several trees** (e.g. `rhel9/`, `rhel10/` and `clip/` in one folder, or
+  as folders of a multi-root workspace). The extension works on one tree at
+  a time, since their names would collide: that tree is indexed, built and
+  shown in the views, and the status bar names it. Opening a file of
+  another tree switches to it (a second or two to reindex;
+  `selinux.tree.autoSwitch` turns that off), and *SELinux: Select Policy
+  Tree…* (or clicking the status bar item) switches by hand; the choice is
+  remembered for the workspace. Files of the other trees show a hint
+  instead of diagnostics. Each tree keeps its own build results, and its
+  own build settings in `selinux.build.trees` (*Configure Build from Spec
+  File…* writes there when there are several trees).
 
 ## Features
 
@@ -459,6 +470,8 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.tree.validate` | `true` | Run `make validate` after a modular tree compiles |
 | `selinux.build.tree.outputDir` | `""` | Where *SELinux: Build* copies a tree's outputs (`~/…` or relative to the tree root); empty keeps them only in the scratch directory |
 | `selinux.build.tree.files` | `{}` | Files to put into the scratch copy before building: `"policy/modules.conf": ["a.conf", "b.conf"]` (concatenated); a source can also be `{ "from": "dist/targeted/modules.conf", "disable": ["…/modules-dropped.lst"] }` (that file with the listed non-base modules turned off, as the RHEL 10 spec does); your tree is not modified |
+| `selinux.build.trees` | `{}` | Build settings per tree when the workspace has several: `{ "rhel10": { "makeArgs": [...], "files": {...} } }` (key: path relative to the workspace folder, or absolute); overrides `selinux.build.tree.*` for that tree |
+| `selinux.tree.autoSwitch` | `true` | With several trees, switch to the tree of the file you open |
 | `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
@@ -497,6 +510,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   mismatched line on all three trees); a duplicate port is flagged while
   typing and its build error lands on the `.te.in` line instead of on
   `ubac.te`; a port of 99999999 is flagged.
+* Several trees: a workspace with CLIP and RHEL 10 side by side, each with
+  its own `selinux.build.trees` settings. Only the active tree is indexed
+  (`syslogd_t` resolves to that tree's `logging.te`), the other tree's
+  files get a hint, each builds with its own settings and `ifdef` flags
+  (CLIP with UBAC, RHEL 10 without; 90 and 420 packages), switching moves
+  the index, diagnostics, builds and the Compiled Policy view, and coming
+  back shows the earlier build without rebuilding. (The automatic switch
+  when opening a file is client code over the same request; not exercised
+  by the automated tests.)
 * Booleans in the `.te` require check: no findings on the four trees; a raw
   `if (allow_raw_memory_access)` in CLIP's loadable `cron.te` is flagged
   (checkmodule: "unknown boolean … in conditional expression"), the same
@@ -669,8 +691,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   two windows on the same tree build independently (each keeps its own
   copy: twice the disk space and build time). Areas left by crashed servers
   are removed when the next server starts.
-* One source tree per workspace: if the workspace contains several, the
-  first one found is built.
+* With several trees in a workspace, only the active one is analyzed;
+  switching reindexes (1–2 s). Trees are found up to six directory levels
+  below the workspace folders.
 * Without `selinux.build.tree.outputDir`, full-tree outputs stay in the
   language server's scratch area (`/tmp/selinux-policy-tools-<uid>/<pid>/`),
   which is removed when the server exits.
@@ -763,6 +786,7 @@ npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
 npm run test:modchecks # property checks for a standalone module linked with the installed policy (Linux)
 npm run test:mono      # monolithic build of upstream refpolicy (Linux; ~/sepol-test/refpolicy)
 npm run test:ifelse    # ifelse decisions in template expansion (any OS; also part of npm test)
+npm run test:multi     # several trees in one workspace: CLIP + RHEL 10 (Linux)
 npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix

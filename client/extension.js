@@ -34,6 +34,42 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 # never user_u may use sysadm_r
 `;
 
+/* ---------------- several policy trees in one workspace ---------------- */
+
+let policyTrees = [];       // [{ root, name, active }] from the last indexing
+let switching = null;
+
+/** Make `root` the policy tree the server indexes and builds (remembered for the workspace). */
+async function selectTree(root, auto) {
+  if (switching) return;
+  switching = root;
+  try {
+    const r = await client.sendRequest('selinux/selectTree', { root });
+    if (r.error) { vscode.window.showWarningMessage(r.error); return; }
+    await extensionContext.workspaceState.update('selinux.activeTree', r.tree);
+    if (!r.unchanged) vscode.window.setStatusBarMessage(`$(shield) SELinux: ${auto ? 'switched to' : 'now working on'} ${r.name}`, 4000);
+  } finally {
+    switching = null;
+  }
+}
+
+/** Opening a file of another tree switches to it (after a short pause, so tabbing through doesn't reindex each time). */
+function watchTreeOfEditor(context) {
+  let timer = null;
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((ed) => {
+    clearTimeout(timer);
+    if (!ed || ed.document.uri.scheme !== 'file' || policyTrees.length < 2) return;
+    if (vscode.workspace.getConfiguration('selinux').get('tree.autoSwitch') === false) return;
+    const p = ed.document.uri.fsPath;
+    const t = policyTrees.find(x => p === x.root || p.startsWith(x.root + path.sep));
+    if (!t || t.active) return;
+    timer = setTimeout(() => {
+      const now = vscode.window.activeTextEditor;
+      if (now && now.document.uri.fsPath === p) selectTree(t.root, true);
+    }, 800);
+  }));
+}
+
 /** Run `sudo semodule -i <pkg>` in a terminal on the policy host, so the user sees it and types the password. */
 function installPackage(pkg) {
   let term = vscode.window.terminals.find(t => t.name === 'SELinux Install');
@@ -45,7 +81,11 @@ function installPackage(pkg) {
 /** "1 module", "2 modules", "1 class", "3 classes" */
 const count = (n, word) => `${n} ${n === 1 ? word : word + (/(s|x|ch|sh)$/.test(word) ? 'es' : 's')}`;
 
+let extensionContext = null;
+
 function activate(context) {
+  extensionContext = context;
+  watchTreeOfEditor(context);
   const serverModule = context.asAbsolutePath(path.join('server', 'server.js'));
   const cfg = () => vscode.workspace.getConfiguration('selinux');
 
@@ -65,6 +105,8 @@ function activate(context) {
       diagnostics: cfg().get('diagnostics'),
       build: cfg().get('build'),
       trusted: vscode.workspace.isTrusted,
+      // The policy tree last worked on, when the workspace has several.
+      activeTree: context.workspaceState.get('selinux.activeTree') || null,
     },
   });
   context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
@@ -129,8 +171,13 @@ function activate(context) {
       if (p.state === 'start') status.text = '$(sync~spin) SELinux: indexing…';
       else {
         const s = p.stats;
-        status.text = `$(shield) SELinux: ${count(s.modules, 'module')}, ${count(s.interfaces, 'interface')}`;
-        status.tooltip = `${count(s.files, 'file')}, ${count(s.types, 'type')}, ${count(s.classes, 'class')}. Indexed in ${s.ms} ms. Click for details.`;
+        policyTrees = s.trees || [];
+        const several = policyTrees.length > 1;
+        const active = policyTrees.find(t => t.active);
+        status.text = `$(shield) SELinux: ${several && active ? `${active.name} · ` : ''}${count(s.modules, 'module')}, ${count(s.interfaces, 'interface')}`;
+        status.tooltip = `${count(s.files, 'file')}, ${count(s.types, 'type')}, ${count(s.classes, 'class')}. Indexed in ${s.ms} ms.` +
+          (several ? `\nPolicy tree: ${active ? active.name : '?'} (${policyTrees.length} in this workspace). Click to switch.` : ' Click for details.');
+        status.command = several ? 'selinux.selectTree' : 'selinux.showStats';
         explorer.refresh();
         compiled.refresh();
         dimAll();
@@ -236,11 +283,26 @@ function activate(context) {
       })), { placeHolder: 'Policy variant to build' });
       if (!pick) return;
       const conf = vscode.workspace.getConfiguration('selinux');
-      await conf.update('build.tree.makeArgs', pick.c.makeArgs, vscode.ConfigurationTarget.Workspace);
-      await conf.update('build.tree.files', pick.c.files, vscode.ConfigurationTarget.Workspace);
+      const active = policyTrees.find(t => t.active);
+      if (policyTrees.length > 1 && active) {
+        // Several trees: these settings belong to the active one (selinux.build.trees).
+        const per = { ...(conf.get('build.trees') || {}) };
+        per[active.key] = { ...(per[active.key] || {}), makeArgs: pick.c.makeArgs, files: pick.c.files };
+        await conf.update('build.trees', per, vscode.ConfigurationTarget.Workspace);
+      } else {
+        await conf.update('build.tree.makeArgs', pick.c.makeArgs, vscode.ConfigurationTarget.Workspace);
+        await conf.update('build.tree.files', pick.c.files, vscode.ConfigurationTarget.Workspace);
+      }
       const go = await vscode.window.showInformationMessage(
-        `Workspace build settings now match the spec's ${pick.c.variant} build (${count(pick.c.makeArgs.length, 'make variable')}, ${count(Object.keys(pick.c.files).length, 'config file')}).`, 'Build Now');
+        `${policyTrees.length > 1 && active ? `Build settings for ${active.name}` : 'Workspace build settings'} now match the spec's ${pick.c.variant} build (${count(pick.c.makeArgs.length, 'make variable')}, ${count(Object.keys(pick.c.files).length, 'config file')}).`, 'Build Now');
       if (go) vscode.commands.executeCommand('selinux.buildModule');
+    }),
+    vscode.commands.registerCommand('selinux.selectTree', async () => {
+      const r = await client.sendRequest('selinux/trees');
+      if (!r.trees.length) { vscode.window.showInformationMessage('No refpolicy source tree in this workspace.'); return; }
+      const pick = await vscode.window.showQuickPick(r.trees.map(t => ({ label: t.name, description: t.active ? 'active' : '', detail: t.root, t })),
+        { placeHolder: 'Policy tree to work on (indexed, built and shown in the views)' });
+      if (pick) await selectTree(pick.t.root, false);
     }),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
     vscode.commands.registerCommand('selinux.openChecks', async () => {

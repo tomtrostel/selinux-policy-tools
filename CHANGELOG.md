@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* **Several policy trees in one workspace**: the extension works on one
+  tree at a time (indexed, built, shown in the views; named in the status
+  bar), switches when you open a file of another tree (or with *SELinux:
+  Select Policy Tree…*), and remembers the choice. Each tree has its own
+  build settings in the new `selinux.build.trees` setting (*Configure
+  Build from Spec File…* writes there when there are several trees) and
+  keeps its own build results. Previously all trees were merged into one
+  index and the first one found was built.
+
 ## 0.6.0 (2026-10-04)
 
 Catching link failures and port mistakes before you build, booleans in the

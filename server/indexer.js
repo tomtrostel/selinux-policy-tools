@@ -198,10 +198,12 @@ class PolicyIndex {
 
   /* ----- loading ----- */
 
-  scanRoots(roots) {
+  /** Index every policy file under `roots`, except in the `exclude` directories (other policy trees). */
+  scanRoots(roots, exclude = []) {
     const found = [];
+    const skip = new Set(exclude);
     const walk = (dir, depth) => {
-      if (depth > 12) return;
+      if (depth > 12 || skip.has(dir)) return;
       let ents;
       try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {

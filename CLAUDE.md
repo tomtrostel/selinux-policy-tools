@@ -12,8 +12,8 @@ v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
 0.6.0 adds the static link check, corenetwork.te.in mapping and port
 checks, booleans in the .te check, ifelse decisions, all build variants
-(and the `make conf` / exec-bit fixes). Only "several trees per workspace"
-remains under 5.
+(and the `make conf` / exec-bit fixes). After 0.6.0: several trees per
+workspace (the last item under 5).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
 reported. Next: items under 5 (hardening), or new ideas from the user.
@@ -176,7 +176,19 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    the execute bit (refpolicy runs support/gentemplates.sh directly).
    RHEL/CLIP don't build MONOLITHIC=y themselves; upstream validate fails
    with semodule 3.6 (roletype in unconfined/cil).
-   Remaining: several trees per workspace.
+   Several trees per workspace (done, after 0.6.0): build.js `findTrees`
+   (Makefile + Rules.modular + build.conf + obj_perm_sets.spt, depth 6,
+   stops at a tree). One active tree: server `trees`, `activeTree`
+   (`pickTree`: settings.activeTree from the client's workspaceState, else
+   tree of an open document, else first), `excludedTrees` kept out of
+   `idx.scanRoots(roots, exclude)` and document sync; files there get an
+   `inactive-tree` INFO. `treeCfg()` = build.tree + the matching
+   `settings.build.trees` entry (key relative to a workspace folder or
+   absolute; `treeKey`). Requests `selinux/trees`, `selinux/selectTree`;
+   stats carry `tree` + `trees`. Client: status bar shows the tree and
+   switches on click, `selinux.selectTree`, auto-switch on active editor
+   (800 ms settle, `selinux.tree.autoSwitch`), Configure from Spec writes
+   `build.trees[key]`. Test: test/multi-tree-e2e.js.
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release

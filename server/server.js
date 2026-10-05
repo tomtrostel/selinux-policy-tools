@@ -26,7 +26,11 @@ let settings = {
   ifdef: { evaluate: true },
   checks: { file: 'selinux.checks' },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
-    tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} } },
+    tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} },
+    // Per-tree overrides of `tree`, keyed by tree path (absolute or relative to a workspace folder).
+    trees: {} },
+  // The policy tree to work on when the workspace has several (sent by the client).
+  activeTree: null,
   // Set by the client from vscode.workspace.isTrusted. Building runs the tree's
   // Makefile and the build settings can carry commands, so untrusted
   // workspaces never build. Defaults to trusted for non-VS Code clients.
@@ -90,7 +94,12 @@ function reindex() {
       const t0 = Date.now();
       idx.files.clear();
       const scanRoots = [...roots, ...(settings.extraIncludePaths || [])].filter(p => fs.existsSync(p));
-      let n = idx.scanRoots(scanRoots);
+      // Several refpolicy trees in the workspace: work on one at a time (their
+      // names would collide in one index); the others stay out of it.
+      trees = build.findTrees(scanRoots);
+      if (!activeTree || !trees.includes(activeTree)) activeTree = pickTree();
+      excludedTrees = trees.length > 1 ? trees.filter(t => t !== activeTree) : [];
+      let n = idx.scanRoots(scanRoots, excludedTrees);
       const devel = settings.develHeadersPath;
       const wantDevel = settings.useDevelHeaders === 'always' ||
         (settings.useDevelHeaders === 'auto' && !idx.defs.has('gen_require'));
@@ -99,13 +108,14 @@ function reindex() {
         log(`support macros not found in workspace; indexing devel headers from ${devel}`);
         n += idx.scanRoots([devel]);
       }
-      for (const d of documents.all()) idx.setFile(toPath(d.uri), d.getText(), true);
+      for (const d of documents.all()) if (!inExcludedTree(toPath(d.uri))) idx.setFile(toPath(d.uri), d.getText(), true);
       idx.rebuild();
       findTreeRoot();
       updateModuleKinds();
       toolchain = null; // the mode (and so the tools needed) may have changed
       if (treeRoot) log(`refpolicy source tree: ${treeRoot}`);
-      const stats = { ...idx.stats(), ms: Date.now() - t0, buildMode: usingDevel ? 'module' : treeRoot ? 'tree' : null };
+      const stats = { ...idx.stats(), ms: Date.now() - t0, buildMode: usingDevel ? 'module' : treeRoot ? 'tree' : null,
+        tree: treeRoot, trees: trees.map(t => ({ root: t, name: treeName(t), key: treeKey(t), active: t === activeTree })) };
       connection.sendNotification('selinux/indexing', { state: 'done', stats });
       publishAll();
       resolve();
@@ -127,7 +137,7 @@ let m4Key = null;
 async function updateM4Defines() {
   let job = null;
   if (settings.ifdef.evaluate !== false && settings.trusted !== false && process.platform !== 'win32') {
-    if (treeRoot) job = { cwd: treeRoot, makeArgs: settings.build.tree.makeArgs || [] };
+    if (treeRoot) job = { cwd: treeRoot, makeArgs: treeCfg().makeArgs || [] };
     else if (usingDevel && roots[0] && fs.existsSync(settings.build.develMakefile || '')) job = { cwd: roots[0], makefile: settings.build.develMakefile };
   }
   const key = JSON.stringify(job);
@@ -172,6 +182,7 @@ function updateModuleKinds() {
 documents.onDidChangeContent((e) => {
   const p = toPath(e.document.uri);
   if (isChecksFile(p)) { clearTimeout(checksTimer); checksTimer = setTimeout(() => runChecks().catch(err => log(`checks failed: ${err.message}`)), 500); return; }
+  if (inExcludedTree(p)) { publish(e.document); return; }
   idx.setFile(p, e.document.getText(), true);
   scheduleRebuild();
 });
@@ -179,6 +190,7 @@ let checksTimer = null;
 
 documents.onDidClose((e) => {
   const p = toPath(e.document.uri);
+  if (inExcludedTree(p)) { connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] }); return; }
   try { idx.setFile(p, fs.readFileSync(p, 'utf8'), true); } catch { idx.files.delete(p); }
   connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
   scheduleRebuild();
@@ -191,6 +203,7 @@ connection.onDidChangeWatchedFiles((ev) => {
     if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
     // modules.conf (or a spec module list): which modules are built changed; re-read on the rebuild below.
     if (/(^|[\\/])modules[^\\/]*\.conf$|\.lst$/.test(p)) continue;
+    if (inExcludedTree(p)) continue;
     if (ch.type === FileChangeType.Deleted) idx.files.delete(p);
     else { try { idx.setFile(p, fs.readFileSync(p, 'utf8'), true); } catch { /* ignore */ } }
   }
@@ -204,6 +217,12 @@ function publishAll() {
 function publish(doc) {
   const p = toPath(doc.uri);
   if (isChecksFile(p)) { connection.sendDiagnostics({ uri: doc.uri, diagnostics: checksDiagnostics() }); return; }
+  if (inExcludedTree(p)) {
+    const t = excludedTrees.find(x => p.startsWith(x + path.sep));
+    connection.sendDiagnostics({ uri: doc.uri, diagnostics: [{ range: range(0, 0, 0), severity: DiagnosticSeverity.Information, source: 'selinux', code: 'inactive-tree',
+      message: `This file is in the policy tree ${treeName(t)}, but ${treeName(activeTree)} is the one being worked on, so it isn't analyzed. Switch with "SELinux: Select Policy Tree…".` }] });
+    return;
+  }
   const f = idx.files.get(p);
   const diags = diagnose(idx, f, settings.diagnostics).map(d => ({
     range: range(d.l, d.c, d.len),
@@ -227,6 +246,47 @@ function publish(doc) {
  *    at once; phase 2 runs `validate` (link + expand + file contexts).
  */
 let toolchain = null;             // cached detectToolchain() result
+let trees = [];                   // refpolicy trees found in the workspace
+let activeTree = null;            // the one indexed and built
+let excludedTrees = [];           // the others (kept out of the index)
+
+const inExcludedTree = (p) => excludedTrees.some(t => p === t || p.startsWith(t + path.sep));
+/** A tree's display name: its path relative to the workspace folder (or its basename). */
+function treeName(t) {
+  if (!t) return '';
+  for (const r of roots) if (t === r) return path.basename(t);
+  for (const r of roots) if (t.startsWith(r + path.sep)) return path.relative(r, t).split(path.sep).join('/');
+  return path.basename(t);
+}
+/** The key for its selinux.build.trees entry: relative to the workspace folder it is under, else absolute. */
+function treeKey(t) {
+  for (const r of roots) if (t.startsWith(r + path.sep)) return path.relative(r, t).split(path.sep).join('/');
+  return t;
+}
+/** Without a choice: the tree of the first open policy file, else the first tree. */
+function pickTree() {
+  if (settings.activeTree) {
+    const want = path.resolve(settings.activeTree);
+    const hit = trees.find(t => path.resolve(t) === want || path.resolve(t).toLowerCase() === want.toLowerCase());
+    if (hit) return hit;
+  }
+  for (const d of documents.all()) {
+    const p = toPath(d.uri);
+    const t = trees.find(x => p.startsWith(x + path.sep));
+    if (t) return t;
+  }
+  return trees[0] || null;
+}
+/** The build settings for the current tree: selinux.build.tree, overridden by its selinux.build.trees entry. */
+function treeCfg() {
+  const base = settings.build.tree || {};
+  if (!treeRoot) return base;
+  for (const [k, v] of Object.entries(settings.build.trees || {})) {
+    const cands = path.isAbsolute(k) ? [k] : roots.map(r => path.resolve(r, k));
+    if (cands.some(c => path.resolve(c) === treeRoot || path.resolve(c).toLowerCase() === treeRoot.toLowerCase())) return { ...base, ...(v || {}) };
+  }
+  return base;
+}
 let treeRoot = null;              // refpolicy tree in the workspace, if any
 const lastBuild = new Map();      // build key -> build result
 const builtText = new Map();      // source path -> text the last module build compiled
@@ -248,6 +308,7 @@ process.on('SIGTERM', () => process.exit(0));
 function findTreeRoot() {
   treeRoot = null;
   if (usingDevel) return;
+  if (activeTree) { treeRoot = activeTree; return; }
   for (const p of idx.files.keys()) {
     const r = build.treeRootOf(p);
     if (r && roots.concat(settings.extraIncludePaths || []).some(w => r === w || r.startsWith(w + path.sep) || w.startsWith(r + path.sep))) { treeRoot = r; return; }
@@ -309,8 +370,8 @@ function runBuild(key, pkg = false, trigger = null) {
         st.pkg = false;
         res = isTreeKey(key) ? await treeBuild(key, st) : await moduleBuild(key, wantPkg);
         // Explicit builds of a tree keep their outputs (builds on save are checks only).
-        if (res.tree && wantPkg && res.ok && settings.build.tree.outputDir) {
-          try { res.exported = build.exportTreeOutputs(res, resolvePath(key, settings.build.tree.outputDir), settings.build.tree.makeArgs || []); } catch (e) { res.exportError = e.message; }
+        if (res.tree && wantPkg && res.ok && treeCfg().outputDir) {
+          try { res.exported = build.exportTreeOutputs(res, resolvePath(key, treeCfg().outputDir), treeCfg().makeArgs || []); } catch (e) { res.exportError = e.message; }
         }
         res.trigger = st.trigger;
         lastBuild.set(key, res);
@@ -357,15 +418,15 @@ function resolvePath(root, dir) {
 async function treeBuild(root, st) {
   const name = path.basename(root);
   const files = {};
-  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
-  const opts = { makeArgs: settings.build.tree.makeArgs || [], files };
+  for (const [rel, srcs] of Object.entries(treeCfg().files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
+  const opts = { makeArgs: treeCfg().makeArgs || [], files };
   const readText = (p) => { const d = documents.get(toUri(p)); if (d) return d.getText(); try { return fs.readFileSync(p); } catch { return null; } };
   connection.sendNotification('selinux/build', { state: 'start', module: name });
-  const custom = (settings.build.tree.targets || []).length > 0;
-  const res = await build.buildTree(root, readText, { ...opts, targets: custom ? settings.build.tree.targets : phase1Targets(root, opts.makeArgs) });
+  const custom = (treeCfg().targets || []).length > 0;
+  const res = await build.buildTree(root, readText, { ...opts, targets: custom ? treeCfg().targets : phase1Targets(root, opts.makeArgs) });
   workDirs.add(res.workDir);
   mapLinkDiagnostics(res);
-  if (custom || res.monolithic || !res.ok || st.again || !settings.build.tree.validate) return res;
+  if (custom || res.monolithic || !res.ok || st.again || !treeCfg().validate) return res;
   // Phase 2: report compile results now, then link-validate in the background.
   lastBuild.set(root, res);
   publishBuild(res);
@@ -922,6 +983,22 @@ function teRequireEdit(doc, f, data) {
 connection.onRequest('selinux/modules', async () => { await indexing; return idx.modules(); });
 connection.onRequest('selinux/moduleContents', async ({ path: p }) => { await indexing; return idx.moduleContents(p); });
 connection.onRequest('selinux/stats', async () => { await indexing; return idx.stats(); });
+// The policy trees in the workspace, and switching between them.
+connection.onRequest('selinux/trees', async () => {
+  await indexing;
+  return { trees: trees.map(t => ({ root: t, name: treeName(t), key: treeKey(t), active: t === activeTree })), active: activeTree };
+});
+connection.onRequest('selinux/selectTree', async ({ root }) => {
+  await indexing;
+  const t = trees.find(x => path.resolve(x) === path.resolve(root || ''));
+  if (!t) return { error: `${root} is not a policy tree in this workspace.` };
+  if (t === activeTree) return { ok: true, tree: t, name: treeName(t), unchanged: true };
+  settings.activeTree = t;
+  activeTree = t;
+  m4Key = null; // the flags come from this tree's Makefile
+  await reindex();
+  return { ok: true, tree: t, name: treeName(t) };
+});
 connection.onRequest('selinux/reindex', async () => { await reindex(); return idx.stats(); });
 function buildRequestTarget(uri) {
   const why = buildUnavailable();
@@ -995,10 +1072,10 @@ let explainIdle = null;
 
 function treeBuildOptions(root) {
   const files = {};
-  for (const [rel, srcs] of Object.entries(settings.build.tree.files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
-  const makeArgs = settings.build.tree.makeArgs || [];
-  const custom = (settings.build.tree.targets || []).length > 0;
-  const p1 = custom ? settings.build.tree.targets : phase1Targets(root, makeArgs);
+  for (const [rel, srcs] of Object.entries(treeCfg().files || {})) files[rel] = [].concat(srcs).map(s => resolveOverlay(root, s));
+  const makeArgs = treeCfg().makeArgs || [];
+  const custom = (treeCfg().targets || []).length > 0;
+  const p1 = custom ? treeCfg().targets : phase1Targets(root, makeArgs);
   return { makeArgs, files, targets: custom || p1.includes('policy') ? p1 : [...p1, 'validate'] };
 }
 
@@ -1165,7 +1242,7 @@ function explainDiff(diff, a, b) {
 let cilCache = { key: null, res: null };
 
 function buildName(root) {
-  for (const a of settings.build.tree.makeArgs || []) { const m = /^NAME=(\S+)/.exec(a); if (m) return m[1]; }
+  for (const a of treeCfg().makeArgs || []) { const m = /^NAME=(\S+)/.exec(a); if (m) return m[1]; }
   try { const m = /^\s*NAME\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) return m[1]; } catch { /* none */ }
   return 'refpolicy';
 }
@@ -1219,7 +1296,7 @@ const MODULES_CONF = 'policy/modules.conf';
 
 /** The modules.conf the build uses: the spec overlay if configured, else the tree's (editor contents win). */
 function effectiveModulesConf(root) {
-  const overlay = settings.build.tree.files && settings.build.tree.files[MODULES_CONF];
+  const overlay = treeCfg().files && treeCfg().files[MODULES_CONF];
   if (overlay) {
     // A filtered source ({ from, disable }) is edited in its `from` file: the filter keeps line numbers.
     const srcs = [].concat(overlay).map(s => resolveOverlay(root, s));
@@ -1243,7 +1320,7 @@ function moduleStates(root) {
   const conf = effectiveModulesConf(root);
   const states = new Map();
   if (conf) for (const m of conf.text.matchAll(/^\s*([\w-]+)\s*=\s*(\w+)\s*$/gm)) states.set(m[1], m[2]);
-  const apps = (settings.build.tree.makeArgs || []).map(a => /^APPS_MODS=(.*)$/.exec(a)).filter(Boolean).flatMap(m => m[1].split(/\s+/).filter(Boolean));
+  const apps = (treeCfg().makeArgs || []).map(a => /^APPS_MODS=(.*)$/.exec(a)).filter(Boolean).flatMap(m => m[1].split(/\s+/).filter(Boolean));
   return { conf, states, apps: new Set(apps) };
 }
 
@@ -1595,7 +1672,7 @@ function sourceLocation(name, kinds) {
  */
 function seusersMappings(root) {
   let type = null;
-  for (const a of settings.build.tree.makeArgs || []) { const m = /^TYPE=(\S+)/.exec(a); if (m) type = m[1]; }
+  for (const a of treeCfg().makeArgs || []) { const m = /^TYPE=(\S+)/.exec(a); if (m) type = m[1]; }
   if (!type) { try { const m = /^\s*TYPE\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) type = m[1]; } catch { /* none */ } }
   const file = path.join(root, 'config', `appconfig-${type || 'mcs'}`, 'seusers');
   const text = readSource(file);

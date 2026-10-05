@@ -395,6 +395,28 @@ function treeOutputs(res) {
 
 /* ---------- full source trees (refpolicy Makefile) ---------- */
 
+/**
+ * refpolicy source trees under `roots` (a directory with Makefile,
+ * Rules.modular, build.conf and policy/support/obj_perm_sets.spt). A tree's
+ * own subdirectories aren't searched; the walk stops `maxDepth` levels down.
+ */
+function findTrees(roots, maxDepth = 6) {
+  const out = [];
+  const isTree = (d) => ['Makefile', 'Rules.modular', 'build.conf'].every(f => fs.existsSync(path.join(d, f)))
+    && fs.existsSync(path.join(d, 'policy', 'support', 'obj_perm_sets.spt'));
+  const walk = (d, depth) => {
+    if (isTree(d)) { out.push(d); return; }
+    if (depth >= maxDepth) return;
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.isDirectory() && !e.name.startsWith('.') && !['node_modules', 'tmp', 'man', 'doc'].includes(e.name)) walk(path.join(d, e.name), depth + 1);
+    }
+  };
+  for (const r of roots) walk(r, 0);
+  return [...new Set(out)].sort();
+}
+
 /** The refpolicy tree root for an indexed support file path, or null. */
 function treeRootOf(p) {
   const m = /^(.*)[\\/]policy[\\/]support[\\/]obj_perm_sets\.spt$/.exec(p);
@@ -872,4 +894,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, findTrees, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
