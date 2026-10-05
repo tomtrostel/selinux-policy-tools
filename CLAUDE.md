@@ -6,10 +6,14 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.5.0 released** (GitHub release `v0.5.0`;
+Status as of 2026-10-04: **v0.6.0 released** (GitHub release `v0.6.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
-checks; 0.5.0 adds the .te missing-require check and RHEL 10 support.
+checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
+0.6.0 adds the static link check, corenetwork.te.in mapping and port
+checks, booleans in the .te check, ifelse decisions, all build variants
+(and the `make conf` / exec-bit fixes). Only "several trees per workspace"
+remains under 5.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
 reported. Next: items under 5 (hardening), or new ideas from the user.
@@ -148,7 +152,7 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    come from `idx.requiredKind()` (interfaces' requires). Quick fix
    `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
    RHEL 10 (done, 0.5.0): see Known limitations.
-   Link errors (done, after 0.5.0): diagnostics.js `globalRequirements(f)`
+   Link errors (done, 0.6.0): diagnostics.js `globalRequirements(f)`
    = require entries + `callRequires(..., mandatory=true)` of top-level calls
    outside optional_policy / undecided ifdefs (parser now marks def
    requires/bodyCalls inside optional_policy or ifdef/ifndef/ifelse of the
@@ -157,14 +161,14 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    whose `idx.declaringModules(name)` are all off. mapLinkDiagnostics places
    semodule_link errors on the first global-requirement site. Client
    watches `modules*.conf` and `*.lst`; server re-reads module states.
-   corenetwork (done, after 0.5.0): build.js `alignGenerated(gen, src)`
+   corenetwork (done, 0.6.0): build.js `alignGenerated(gen, src)`
    (quote-insensitive line alignment; non-verbatim lines → the pending
    network_* call, preferring the one whose name prefixes a type in the
    line, else a wrapper like build_option) and `mapGeneratedDiagnostics`
    (also portcon/nodecon/netifcon errors, which checkpolicy attributes to
    the last #line file). diagnostics.js `checkNetworkPorts`: range,
    protocol, exact duplicates (codes `net-port`, `net-port-duplicate`).
-   Variants (done, after 0.5.0): RHEL 9 minimum/mls/automotive and RHEL 10
+   Variants (done, 0.6.0): RHEL 9 minimum/mls/automotive and RHEL 10
    automotive pass build-rhel-e2e; monolithic verified on upstream
    refpolicy (~/sepol-test/refpolicy, test/build-mono-e2e.js). Found on the
    way: buildTree runs `make conf` when the scratch copy has no

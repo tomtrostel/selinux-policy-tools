@@ -2,37 +2,52 @@
 
 ## Unreleased
 
-* **Booleans in the `.te` require check**: a boolean from another module
-  (or the global tunables) tested in an `if (...)` statement without
-  `require { bool …; }` is flagged, with a quick fix. Booleans in
-  `tunable_policy` need none (the macro requires them).
-* **`ifelse` in definitions** is decided per call when it compares plain
-  values (e.g. the user templates' `ifelse(\`$1',\`unconfined', …)`), so
-  template expansion no longer generates names from branches that don't
-  apply, and the require analysis follows the right branch.
-* Template-generated booleans (`gen_tunable(\`$1_exec_content', …)`, e.g.
-  `staff_exec_content`) are now indexed: definition, hover, completion.
+## 0.6.0 (2026-10-04)
 
-* **All build variants verified**: RHEL 9 and RHEL 10 targeted, minimum,
-  mls and automotive, and monolithic builds (upstream refpolicy).
-* **Fix: trees without `policy/modules.conf`** (upstream refpolicy) failed
-  to build ("No enabled modules!"); the scratch copy now gets one from
-  `make conf`.
-* **Fix: scripts in the scratch copy lost their execute bit**, which broke
-  trees whose Makefile runs them directly (upstream refpolicy's
-  `support/gentemplates.sh`).
+Catching link failures and port mistakes before you build, booleans in the
+`.te` require check, `ifelse` in templates, and every build variant
+verified.
+
+**New**
 
 * **Link failures before you build**: in a tree, a loadable module that
   needs a type outside `optional_policy` which only modules turned off in
-  `modules.conf` declare is flagged where the requirement comes from (the
-  require entry or the interface call), for all modules at once and as
-  soon as `modules.conf` is saved. Build-reported link errors are placed
-  the same way (previously: the first mention of the type anywhere).
+  `modules.conf` declare (or that no module in the tree declares) is
+  flagged where the requirement comes from (the require entry or the
+  interface call), for all modules at once and as soon as `modules.conf`
+  is saved. `semodule_link` reports one module per build and no line.
+  Build-reported link errors are placed the same way (previously: the first
+  mention of the type anywhere).
 * **`corenetwork.te.in`**: build errors in the generated `corenetwork.te`
   are shown on the `.te.in` line they come from; duplicate-port errors,
   which checkpolicy reports against an unrelated file, land on the
   duplicate declaration. New checks while typing: ports outside 0–65535,
   backwards ranges, unknown protocols, ports declared twice.
+* **Booleans in the `.te` require check**: a boolean from another module
+  (or the global tunables) tested in an `if (...)` statement without
+  `require { bool …; }` is flagged, with a quick fix. Booleans in
+  `tunable_policy` need none (the macro requires them), also when an
+  interface passes one in.
+* **`ifelse` in templates** is decided per call when it compares plain
+  values (e.g. the user templates' ``ifelse(`$1',`unconfined', …)``), so
+  template expansion no longer generates names from branches that don't
+  apply, and the require analysis follows the right branch.
+* **Template-generated booleans** (``gen_tunable(`$1_exec_content', …)``,
+  e.g. `staff_exec_content`) are indexed: definition, hover, completion.
+* **All build variants verified**: RHEL 9 and RHEL 10 targeted, minimum,
+  mls and automotive, and monolithic builds (upstream refpolicy).
+
+**Fixes**
+
+* Trees without `policy/modules.conf` (upstream refpolicy) failed to build
+  ("No enabled modules!"); the scratch copy now gets one from `make conf`.
+* Scripts in the scratch copy lost their execute bit, which broke trees
+  whose Makefile runs them directly (upstream refpolicy's
+  `support/gentemplates.sh`).
+
+**Tests**: `npm run test:mono` (monolithic build of upstream refpolicy),
+`npm run test:ifelse` (part of `npm test`), and the survey's `--modules` /
+`--loadable` options.
 
 ## 0.5.0 (2026-10-04)
 
