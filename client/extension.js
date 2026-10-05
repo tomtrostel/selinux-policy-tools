@@ -56,7 +56,7 @@ function activate(context) {
     documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }, { scheme: 'file', language: 'selinux-checks' }],
     synchronize: {
       configurationSection: 'selinux',
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks}'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst}'),
     },
     initializationOptions: {
       extraIncludePaths: cfg().get('extraIncludePaths'),

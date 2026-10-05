@@ -492,6 +492,97 @@ function treeOption(root, makeArgs, name) {
  * APPS_MODS an RPM spec passes); `targets` default to a modular build plus
  * link validation, or `policy` for MONOLITHIC=y trees.
  */
+/* ---------- the generated corenetwork.te ---------- */
+
+/*
+ * The Makefile generates policy/modules/kernel/corenetwork.te from
+ * corenetwork.te.in: a header, then m4 (with corenetwork.te.m4's macros) over
+ * the .in file. Ordinary lines come through verbatim; each network_port(...),
+ * network_node(...) etc. call expands into a few declarations. Errors in the
+ * generated file are mapped back by aligning the two.
+ */
+const NET_DECL = /^\s*(network_(interface|node|port|packet)\w*|ib_(pkey|endport)\w*)\s*\(/;
+
+/** For each line of the generated file, the .in line it comes from (-1: header or unknown). */
+function alignGenerated(genText, srcText) {
+  // Compared without m4 quotes (m4 removes one level) and with whitespace runs collapsed.
+  const norm = (l) => l.replace(/[`']/g, '').replace(/\s+/g, ' ').trim();
+  const gen = String(genText).split('\n').map(norm), src = String(srcText).split('\n').map(norm);
+  const map = new Array(gen.length).fill(-1);
+  // Skip the Makefile's "# This is a generated file!" header.
+  const hdr = gen.findIndex(l => /This is a generated file/.test(l));
+  let i = hdr >= 0 && hdr < 5 ? hdr + 3 : 0;
+  let j = 0;
+  for (; i < gen.length; i++) {
+    const g = gen[i];
+    let k = -1;
+    if (g === '') { if (src[j] === '') k = j; }
+    else {
+      for (let x = j; x < Math.min(src.length, j + 40); x++) if (src[x] === g) { k = x; break; }
+      // m4 dropped a long stretch (an inactive ifdef): look further for this exact line.
+      if (k < 0 && g.length > 10) k = src.indexOf(g, j + 40);
+    }
+    if (k >= 0) { map[i] = k; j = k + 1; continue; }
+    // Not verbatim: part of the expansion of a pending macro call. Among the
+    // next few source lines, prefer the declaration whose name the generated
+    // line uses (lo_netif_t: network_interface(lo, ...)), then any declaration,
+    // then a wrapper call (build_option(`enable_mls', ...) becomes an ifdef).
+    const cands = [];
+    for (let x = j; x < src.length && cands.length < 4; x++) if (src[x] !== '' && !/^#/.test(src[x])) cands.push(x);
+    const named = cands.find((x) => {
+      const m = NET_DECL.test(src[x]) && /\(\s*(\w+)/.exec(src[x]);
+      return m && new RegExp(`\\b${m[1]}_`).test(g);
+    });
+    const pick = named !== undefined ? named : cands.find(x => NET_DECL.test(src[x])) !== undefined ? cands.find(x => NET_DECL.test(src[x]))
+      : (cands.length && /^\w+\(/.test(src[cands[0]]) ? cands[0] : -1);
+    map[i] = pick;
+  }
+  return map;
+}
+
+/**
+ * Tree-build diagnostics in the generated corenetwork.te, and portcon /
+ * nodecon / netifcon errors (checkpolicy reports those against whatever
+ * #line marker came last, e.g. "ubac.te:2042"), placed on the .te.in line
+ * that declares them.
+ */
+function mapGeneratedDiagnostics(diagnostics, root, work) {
+  const rel = 'policy/modules/kernel/corenetwork.te';
+  const srcPath = path.join(root, rel + '.in');
+  let gen, src;
+  try { gen = fs.readFileSync(path.join(work, rel), 'utf8'); src = fs.readFileSync(path.join(work, rel + '.in'), 'utf8'); } catch { return; }
+  let map = null;
+  const align = () => map || (map = alignGenerated(gen, src));
+  const genLines = gen.split('\n'), srcLines = src.split('\n');
+  for (const d of diagnostics) {
+    // "duplicate portcon entry for tcp 80-80", "... nodecon ...", "... netifcon ...".
+    const ctx = /\b(portcon|nodecon|netifcon)\b(?:\s+entry)?\s+for\s+(\S+)(?:\s+(\d+)(?:-(\d+))?)?/.exec(d.msg || '');
+    if (ctx) {
+      const [, kind, a, lo, hi] = ctx;
+      const hits = [];
+      genLines.forEach((l, n) => {
+        const m = /^\s*(portcon|nodecon|netifcon)\s+(\S+)(?:\s+(\d+)(?:-(\d+))?)?/.exec(l);
+        if (!m || m[1] !== kind || m[2] !== a) return;
+        if (kind === 'portcon' && !(+m[3] === +lo && +(m[4] || m[3]) === +(hi || lo))) return;
+        hits.push(n);
+      });
+      const at = hits.map(n => align()[n]).filter(n => n >= 0);
+      if (at.length) {
+        d.path = srcPath; d.l = at[at.length - 1]; d.c = 0;
+        if (at.length > 1) d.msg += ` (also declared on line ${at[at.length - 2] + 1})`;
+        d.token = (/^\s*(\w+)/.exec(srcLines[d.l]) || [])[1] || d.token;
+      }
+      continue;
+    }
+    if (d.path || !d.file || !/(^|[\\/])corenetwork\.te$/.test(d.file)) continue;
+    const n = align()[d.l];
+    if (n >= 0) {
+      d.msg += ` (in the generated corenetwork.te, line ${d.l + 1})`;
+      d.path = srcPath; d.l = n;
+    }
+  }
+}
+
 /**
  * modules.conf with the listed modules turned off, base modules excepted:
  * what the RHEL 10 spec's process-modules-filtered.py does in "disabled"
@@ -570,6 +661,7 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
     return fs.existsSync(real) ? real : null;
   };
   const diagnostics = parseBuildOutput(result.out).map(d => ({ ...d, path: d.file ? resolveFile(d.file) : null }));
+  mapGeneratedDiagnostics(diagnostics, root, work);
   const policyBin = [path.join(work, 'tmp', 'policy.bin'), ...fs.readdirSync(work).filter(n => /^policy\.\d+$/.test(n)).map(n => path.join(work, n))]
     .find(p => fs.existsSync(p)) || null;
   return {
@@ -755,4 +847,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

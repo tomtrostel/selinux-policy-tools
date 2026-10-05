@@ -167,6 +167,17 @@ function parsePolicy(text) {
     }
     return null;
   };
+  // Inside the innermost definition: is the current point in an optional_policy
+  // or an m4 conditional of its body? (Such requirements aren't unconditional.)
+  const condInDef = () => {
+    for (let k = stack.length - 1; k >= 0; k--) {
+      const f = stack[k];
+      if (f.k !== 'call') continue;
+      if (f.def && f.argIdx >= 1) return false;
+      if (f.name === 'optional_policy' || CONDITIONALS.has(f.name) || f.name === 'ifelse') return true;
+    }
+    return false;
+  };
   const inRequire = () => stack.some(f => (f.k === 'call' && REQUIRE_MACROS.has(f.name)) || (f.k === 'brace' && f.req));
   const resetStmt = () => { stmtStart = true; decl = null; av = null; };
 
@@ -174,7 +185,7 @@ function parsePolicy(text) {
     const req = inRequire();
     const def = currentDef();
     if (req) {
-      if (def) def.requires.push({ kind, name: tk.v });
+      if (def) def.requires.push(condInDef() ? { kind, name: tk.v, cond: true } : { kind, name: tk.v });
       else out.requires.push({ kind, name: tk.v, l: tk.l, c: tk.c });
       return null;
     }
@@ -382,7 +393,7 @@ function parsePolicy(text) {
     }
     if (enclosing) {
       call.inDef = enclosing.name;
-      enclosing.bodyCalls.push({ name: frame.name, args });
+      enclosing.bodyCalls.push(condInDef() ? { name: frame.name, args, cond: true } : { name: frame.name, args });
       if (REQUIRE_MACROS.has(frame.name)) {
         enclosing.reqBlocks.push({ l: frame.tok.l, c: frame.tok.c, endL: closeTok.l, endC: closeTok.c });
       }

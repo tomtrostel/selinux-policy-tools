@@ -100,15 +100,79 @@ const hover = async (f, text, needle) => {
   check(!r.ok && d && d.range.start.line === lineOf(t, 'nosuch_t'), 'base module (files.te) error on the right line', fmt(FILES));
   await edit(FILES, ORIG[FILES]);
 
-  // 4. Link error: requiring a type whose module is off in modules.conf.
+  // 4. Link error: requiring a type whose module is off in modules.conf. The
+  // static check reports it as you type (on the require); the build's
+  // semodule_link error on the same line is folded into it.
   t = ORIG[LOGGING] + "gen_require(`\n\ttype squid_t;\n')\nallow syslogd_t squid_t:process signal;\n";
   await edit(LOGGING, t);
+  const lm = (diags[uri(LOGGING)] || []).filter(x => x.code === 'link-missing');
+  check(lm.length === 1 && lm[0].range.start.line === lineOf(t, 'type squid_t') && /only the squid module, which is off in modules\.conf, declares it/.test(lm[0].message),
+    `static link check before building: ${lm.map(x => `${x.range.start.line + 1}: ${x.message.slice(0, 90)}`).join(' | ')}`, fmt(LOGGING));
   r = await save(LOGGING);
-  d = (diags[uri(LOGGING)] || []).find(x => x.source === 'semodule_link');
-  check(!r.ok && d && d.range.start.line === lineOf(t, 'type squid_t') && /squid_t/.test(d.message), 'link error placed on the require of squid_t', { ok: r.ok, diags: fmt(LOGGING), log: r.log.slice(-600) });
+  check(!r.ok && /squid_t/.test(r.log) && !(diags[uri(LOGGING)] || []).some(x => x.source === 'semodule_link' && x.range.start.line === lineOf(t, 'type squid_t')),
+    'the build fails to link; its error on that line is folded into the static one', { ok: r.ok, diags: fmt(LOGGING), log: r.log.slice(-600) });
   await edit(LOGGING, ORIG[LOGGING]);
   r = await save(LOGGING);
   check(r.ok && r.validated && !(diags[uri(LOGGING)] || []).some(x => x.source !== 'selinux'), 'reverted tree builds and validates cleanly', fmt(LOGGING));
+
+  // 4c. Turning a module off in modules.conf (on disk) shows every module that
+  // hard-depends on it at once, where the requirement comes from: CLIP's
+  // postfix needs mta's types through mta_* interface calls outside
+  // optional_policy (semodule_link would report one at a time, without lines).
+  {
+    const CONF = P('policy/modules.conf');
+    const POSTFIX = P('policy/modules/services/postfix.te');
+    const conf = fs.readFileSync(CONF, 'utf8');
+    if (/^mta = module$/m.test(conf) && fs.existsSync(POSTFIX)) {
+      open(POSTFIX);
+      await sleep(500);
+      check(!(diags[uri(POSTFIX)] || []).some(x => x.code === 'link-missing'), 'postfix.te: no link warnings while mta is on');
+      fs.writeFileSync(CONF, conf.replace(/^mta = module$/m, 'mta = off'));
+      conn.sendNotification('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(CONF), type: 2 }] });
+      await sleep(1200);
+      const pl = (diags[uri(POSTFIX)] || []).filter(x => x.code === 'link-missing');
+      const ptext = fs.readFileSync(POSTFIX, 'utf8');
+      const spool = pl.find(x => /'mail_spool_t' \(required by mta_getattr_spool\(\)\)/.test(x.message));
+      check(pl.length >= 5 && spool && spool.range.start.line === lineOf(ptext, 'mta_getattr_spool') && pl.every(x => /the mta module, which is off/.test(x.message)),
+        `mta off: ${pl.length} link warnings in postfix.te, e.g. line ${spool && spool.range.start.line + 1}: ${spool && spool.message.slice(0, 80)}`, (diags[uri(POSTFIX)] || []).map(x => `${x.range.start.line + 1} ${x.message.slice(0, 80)}`));
+      fs.writeFileSync(CONF, conf);
+      conn.sendNotification('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(CONF), type: 2 }] });
+      await sleep(1200);
+      check(!(diags[uri(POSTFIX)] || []).some(x => x.code === 'link-missing'), 'mta back on: the warnings are gone');
+    }
+  }
+
+  // 4d. corenetwork.te is generated from corenetwork.te.in: build errors in it
+  // land on the .te.in line; duplicate ports (which checkpolicy reports
+  // against an unrelated file) and out-of-range ports are flagged as you type.
+  {
+    const CN = P('policy/modules/kernel/corenetwork.te.in');
+    const cnOrig = fs.readFileSync(CN, 'utf8');
+    open(CN);
+    let ct = cnOrig + '\nallow nosuch_t kernel_t:process signal;\n';
+    await edit(CN, ct);
+    r = await save(CN);
+    let cd = (diags[uri(CN)] || []).find(x => x.source === 'checkmodule');
+    check(!r.ok && cd && cd.range.start.line === lineOf(ct, 'allow nosuch_t') && /unknown type nosuch_t/.test(cd.message) && /in the generated corenetwork\.te, line \d+/.test(cd.message),
+      `error in the generated corenetwork.te shown on corenetwork.te.in:${cd && cd.range.start.line + 1}: ${cd && cd.message}`, fmt(CN));
+
+    const httpLine = lineOf(cnOrig, 'network_port(http,');
+    ct = cnOrig + '\nnetwork_port(dupe_http, tcp,80,s0)\nnetwork_port(toobig, tcp,99999999,s0)\n';
+    await edit(CN, ct);
+    await sleep(400);
+    const dup = (diags[uri(CN)] || []).find(x => x.code === 'net-port-duplicate');
+    const big = (diags[uri(CN)] || []).find(x => x.code === 'net-port');
+    check(dup && dup.range.start.line === lineOf(ct, 'dupe_http') && new RegExp(`already declared by network_port\\(http\\) on line ${httpLine + 1}`).test(dup.message)
+      && big && big.range.start.line === lineOf(ct, 'toobig') && /out of range/.test(big.message),
+      `static port checks: ${dup && dup.message.slice(0, 70)} | ${big && big.message.slice(0, 60)}`, fmt(CN));
+    r = await save(CN);
+    const elsewhere = Object.entries(diags).filter(([u, ds]) => u !== uri(CN) && ds.some(x => /portcon/.test(x.message)));
+    check(!r.ok && /duplicate portcon/.test(r.log) && elsewhere.length === 0 && !(diags[uri(CN)] || []).some(x => x.source === 'checkmodule' && x.range.start.line !== lineOf(ct, 'dupe_http')),
+      'the build rejects the duplicate; its error is placed on the .te.in line (folded into the static warning), not on another file', { elsewhere: elsewhere.map(([u, ds]) => [u, ds.map(x => x.message)]), cn: fmt(CN) });
+    await edit(CN, cnOrig);
+    r = await save(CN);
+    check(r.ok && !(diags[uri(CN)] || []).length, 'corenetwork.te.in reverted: clean build, no diagnostics', fmt(CN));
+  }
 
   // 4b. Build outputs: builds on save never export; the explicit Build copies them to outputDir.
   check(!fs.existsSync(OUT), 'builds on save do not write to outputDir');

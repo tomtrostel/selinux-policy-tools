@@ -66,6 +66,34 @@ class PolicyIndex {
     return !!(this.moduleKinds && module && this.moduleKinds.get(module) === 'module');
   }
 
+  /** Whether modules.conf (+ APPS_MODS) builds a module at all (base or module). */
+  isEnabled(module) {
+    const k = this.moduleKinds && this.moduleKinds.get(module);
+    return k === 'base' || k === 'module';
+  }
+
+  /**
+   * Modules whose .te declares type/attribute `name` (directly or by a
+   * template call), or null if unknown: not a type/attribute, or also
+   * declared outside a module's .te (then it is always there).
+   */
+  declaringModules(name) {
+    if (!this._declMods) this._declMods = new Map();
+    if (this._declMods.has(name)) return this._declMods.get(name);
+    let res = null;
+    const decls = (this.decls.get(name) || []).filter(d => d.kind === 'type' || d.kind === 'attribute');
+    if (decls.length) {
+      res = new Set();
+      for (const d of decls) {
+        const f = this.files.get(d.path);
+        if (!f || !f.module || !/\.te(\.in)?$/.test(d.path)) { res = null; break; }
+        res.add(f.module);
+      }
+    }
+    this._declMods.set(name, res);
+    return res;
+  }
+
   /** 'type' | 'attribute' if some interface requires `name` as such (the devel headers declare nothing), else null. */
   requiredKind(name) {
     if (!this._requiredKinds) {
@@ -197,6 +225,7 @@ class PolicyIndex {
     this._genSites = null;
     this._teRequires = null;
     this._requiredKinds = null;
+    this._declMods = null;
     const defs = new Map();   // name -> [def]
     const decls = new Map();  // name -> [decl]
     const classes = new Map();

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* **Link failures before you build**: in a tree, a loadable module that
+  needs a type outside `optional_policy` which only modules turned off in
+  `modules.conf` declare is flagged where the requirement comes from (the
+  require entry or the interface call), for all modules at once and as
+  soon as `modules.conf` is saved. Build-reported link errors are placed
+  the same way (previously: the first mention of the type anywhere).
+* **`corenetwork.te.in`**: build errors in the generated `corenetwork.te`
+  are shown on the `.te.in` line they come from; duplicate-port errors,
+  which checkpolicy reports against an unrelated file, land on the
+  duplicate declaration. New checks while typing: ports outside 0–65535,
+  backwards ranges, unknown protocols, ports declared twice.
+
 ## 0.5.0 (2026-10-04)
 
 RHEL 10 support and a check for missing requires in `.te` files.

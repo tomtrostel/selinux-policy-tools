@@ -149,8 +149,9 @@ const configure = async (tree) => {
   const t = ORIG + "gen_require(`\n\ttype timidity_t;\n')\nallow syslogd_t timidity_t:process signal;\n";
   await edit(t);
   r = await save();
-  const d = (diags[uri(LOGGING)] || []).find(x => x.source === 'semodule_link');
-  check(!r.ok && d && d.range.start.line === t.split('\n').findIndex(l => l.includes('type timidity_t')), 'link error on the require of timidity_t', (diags[uri(LOGGING)] || []).map(x => `${x.range.start.line + 1} [${x.source}] ${x.message}`));
+  // The static link check flags it as you type; the build's own link error on that line is folded into it.
+  const d = (diags[uri(LOGGING)] || []).find(x => x.source === 'semodule_link' || x.code === 'link-missing');
+  check(!r.ok && d && d.range.start.line === t.split('\n').findIndex(l => l.includes('type timidity_t')), `link error on the require of timidity_t (${d && (d.code || d.source)})`, (diags[uri(LOGGING)] || []).map(x => `${x.range.start.line + 1} [${x.source}] ${x.message}`));
   await edit(ORIG);
   r = await save();
   check(r.ok, 'reverted build ok');

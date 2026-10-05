@@ -9,7 +9,7 @@ const {
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { URI } = require('vscode-uri');
 const { PolicyIndex } = require('./indexer');
-const { diagnose } = require('./diagnostics');
+const { diagnose, globalRequirements } = require('./diagnostics');
 const build = require('./build');
 
 const connection = createConnection(ProposedFeatures.all);
@@ -189,6 +189,8 @@ connection.onDidChangeWatchedFiles((ev) => {
     if (documents.get(ch.uri)) continue; // open editors are authoritative
     const p = toPath(ch.uri);
     if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
+    // modules.conf (or a spec module list): which modules are built changed; re-read on the rebuild below.
+    if (/(^|[\\/])modules[^\\/]*\.conf$|\.lst$/.test(p)) continue;
     if (ch.type === FileChangeType.Deleted) idx.files.delete(p);
     else { try { idx.setFile(p, fs.readFileSync(p, 'utf8'), true); } catch { /* ignore */ } }
   }
@@ -387,10 +389,19 @@ function mapLinkDiagnostics(res) {
     const f = [...idx.files.values()].find(x => x.module === d.linkModule && /\.te(\.in)?$/.test(x.path) && x.path.startsWith(res.root + path.sep));
     if (!f) continue;
     d.path = f.path;
+    // Where the module requires it outside optional_policy (only there can a
+    // missing requirement fail the link): a require entry, or the interface
+    // call that brings it in.
+    const sites = globalRequirements(idx, f).names.get(d.token);
+    if (sites && sites.length) {
+      const s = sites[0];
+      d.l = s.l;
+      if (s.via) { d.msg += ` (required through ${s.via}())`; d.token = s.via; }
+      continue;
+    }
     const hit = f.refs && f.refs.get(d.token);
     if (hit) { d.l = hit[0][0]; continue; }
-    // Usually the requirement comes from an interface the module calls:
-    // point at the first call whose interface (or one it calls) requires it.
+    // Otherwise the first call whose interface (or one it calls) requires it.
     const call = (f.calls || []).find(c => interfaceRequires(c.name, d.token, 3) && idx.isActive(f, c.l, c.c));
     if (call) { d.l = call.l; d.token = call.name; d.msg += ` (required through ${call.name}())`; } else d.l = 0;
   }
@@ -440,7 +451,7 @@ function buildDiagnosticsFor(p, text, staticDiags) {
   const home = res.tree ? res.trigger : res.tePath;
   // Static checks carry quick fixes; when one already flags a line, the
   // compiler's report of the same problem is redundant.
-  const staticLines = new Set(staticDiags.filter(d => /^unknown-|^missing-te-require$/.test(d.code)).map(d => d.range.start.line));
+  const staticLines = new Set(staticDiags.filter(d => /^unknown-|^missing-te-require$|^link-missing$|^net-port/.test(d.code)).map(d => d.range.start.line));
   const out = [];
   for (const d of res.diagnostics) {
     const own = d.path === p;

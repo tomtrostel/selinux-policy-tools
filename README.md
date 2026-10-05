@@ -148,6 +148,21 @@ Open one of these as the workspace folder:
     modules are always loadable; in a tree, modules marked `module` in
     `modules.conf` (and `APPS_MODS`) are checked, base modules aren't (they
     are compiled together and need no requires);
+  * link failures before you build: in a tree, a loadable module that
+    needs a type or attribute outside `optional_policy` (a require entry, or
+    an interface called at the top level that always requires it) which
+    only modules turned off in `modules.conf` declare (or that no module
+    in the tree declares, like `timidity_t` in RHEL 10, which ships
+    `timidity.if` without `timidity.te`). Each one is shown
+    where the requirement comes from (`postfix.te:313: … 'mail_spool_t'
+    (required by mta_getattr_spool()) … only the mta module, which is off
+    in modules.conf, declares it`), all at once and updated when
+    `modules.conf` is saved; `semodule_link` itself reports one module per
+    build and no line;
+  * in `corenetwork.te.in`: `network_port` ports outside 0–65535, ranges
+    that run backwards, unknown protocols, and a port declared twice
+    (checkmodule accepts the first silently and reports the second against
+    an unrelated file);
   * unbalanced parentheses / m4 quotes;
   * in `gen_user(...)` lines (`policy/users`): roles that aren't declared
     anywhere, MLS/MCS sensitivities and categories outside what the build
@@ -452,6 +467,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   hand and are real problems in those trees: on RHEL 9, mostly missing
   `gen_require` entries that later Fedora versions fixed; on CLIP, four
   latent bugs in interfaces nothing currently calls.
+* Link failures and `corenetwork.te.in`: the static link check and the port
+  checks report nothing on the Fedora, RHEL 9, RHEL 10 and CLIP trees with
+  their module configurations (all of which link). Turning `mta` off in
+  CLIP's `modules.conf` shows the 11 places where `postfix` hard-depends on
+  it, each on the interface call responsible (the build reports one).
+  An error added to `corenetwork.te.in` is shown on its line (the
+  generated file's 2,000+ lines align with the source with no unmapped or
+  mismatched line on all three trees); a duplicate port is flagged while
+  typing and its build error lands on the `.te.in` line instead of on
+  `ubac.te`; a port of 99999999 is flagged.
 * The `.te` require check: no findings on the loadable modules of all three
   trees (Fedora with `dist/targeted/modules.conf`: 425; RHEL 9 targeted
   from the spec's module lists: 434; CLIP: 79 incl. `APPS_MODS`), which
@@ -595,17 +620,26 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   to a test system and install them there. *Install Module* covers
   standalone modules only.
 * Link errors from `semodule_link` carry no line number; the extension
-  places them on the first reference to the missing type in that module,
-  or on the first interface call whose interface (up to three levels deep)
-  requires it. `semodule_link` stops at the first module that fails, so a
-  build shows one link error at a time.
+  places them where the module requires the missing type outside
+  `optional_policy` (the require entry, or the interface call that brings
+  it in). `semodule_link` stops at the first module that fails, so a build
+  reports one at a time; the static link check above shows all of them,
+  but only for requirements it can work out (interfaces it knows, ifdef
+  branches the build flags decide) and only against `modules.conf`, not
+  for a Module Preview's changed configuration (the preview build reports
+  those).
 * Module Preview finds dependent `optional_policy` blocks statically (calls
   to the module's interfaces, including template-generated ones, and its
   type/attribute names); blocks that depend on the module only indirectly,
   through another module's interface, show up in the rule changes but not
   in the block list.
-  Errors inside the generated `corenetwork.te` are shown without a source
-  line.
+* Errors in the generated `corenetwork.te` are shown on the
+  `corenetwork.te.in` line they come from (found by aligning the generated
+  file with its source; a declaration's expansion maps to the
+  `network_port(...)` call), with the generated line number in the message.
+  `portcon`/`nodecon`/`netifcon` errors, which checkpolicy reports against
+  the last `#line` marker (some unrelated file), are placed on the
+  declaration they name.
 * Build results, the "Compiles to" hover and the expanded view describe the
   last build: once you edit a file they are hidden until the next build.
 

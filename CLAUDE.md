@@ -148,8 +148,23 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    come from `idx.requiredKind()` (interfaces' requires). Quick fix
    `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
    RHEL 10 (done, 0.5.0): see Known limitations.
-   Remaining: link-error placement,
-   generated corenetwork.te error mapping, several trees per workspace,
+   Link errors (done, after 0.5.0): diagnostics.js `globalRequirements(f)`
+   = require entries + `callRequires(..., mandatory=true)` of top-level calls
+   outside optional_policy / undecided ifdefs (parser now marks def
+   requires/bodyCalls inside optional_policy or ifdef/ifndef/ifelse of the
+   body with `cond: true`; mandatory mode skips them). `checkLinkRequires`
+   (code `link-missing`, trees with moduleKinds only): a global requirement
+   whose `idx.declaringModules(name)` are all off. mapLinkDiagnostics places
+   semodule_link errors on the first global-requirement site. Client
+   watches `modules*.conf` and `*.lst`; server re-reads module states.
+   corenetwork (done, after 0.5.0): build.js `alignGenerated(gen, src)`
+   (quote-insensitive line alignment; non-verbatim lines → the pending
+   network_* call, preferring the one whose name prefixes a type in the
+   line, else a wrapper like build_option) and `mapGeneratedDiagnostics`
+   (also portcon/nodecon/netifcon errors, which checkpolicy attributes to
+   the last #line file). diagnostics.js `checkNetworkPorts`: range,
+   protocol, exact duplicates (codes `net-port`, `net-port-duplicate`).
+   Remaining: several trees per workspace,
    test automotive and RHEL 9 minimum/mls variants, monolithic builds.
 
 Open decision for the user: the GitHub repo
@@ -234,7 +249,9 @@ is only visible to collaborators; making it public is the user's call.
   incremental) publishes compile errors; phase 2 `validate` (~6 s: link
   3.4 s + expand 2.9 s) adds link errors. semodule_link reports only
   "<mod>'s global requirements were not met: type X"; the server places it
-  on the first reference to X in that module's .te. Hover/expanded view
+  where that module's .te requires X outside optional_policy
+  (`globalRequirements`), and the static `link-missing` check reports all
+  of them before building. Hover/expanded view
   read `tmp/<mod>.tmp` (loadable modules) or `base.conf` (base modules),
   parsed lazily and cached by mtime.
   Explicit Build (request `package: true`) of a tree copies outputs to
