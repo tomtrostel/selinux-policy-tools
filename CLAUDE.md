@@ -188,7 +188,8 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    stats carry `tree` + `trees`. Client: status bar shows the tree and
    switches on click, `selinux.selectTree`, auto-switch on active editor
    (800 ms settle, `selinux.tree.autoSwitch`), Configure from Spec writes
-   `build.trees[key]`. Test: test/multi-tree-e2e.js.
+   `build.trees[key]`. Test: test/multi-tree-e2e.js. Confirmed working
+   interactively by the user (VS Code over Remote-SSH).
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release

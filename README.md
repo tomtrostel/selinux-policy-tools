@@ -516,9 +516,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   files get a hint, each builds with its own settings and `ifdef` flags
   (CLIP with UBAC, RHEL 10 without; 90 and 420 packages), switching moves
   the index, diagnostics, builds and the Compiled Policy view, and coming
-  back shows the earlier build without rebuilding. (The automatic switch
-  when opening a file is client code over the same request; not exercised
-  by the automated tests.)
+  back shows the earlier build without rebuilding. Tree switching
+  (automatic on opening a file, and by hand) was also tried in VS Code over
+  Remote-SSH and works as designed.
 * Booleans in the `.te` require check: no findings on the four trees; a raw
   `if (allow_raw_memory_access)` in CLIP's loadable `cron.te` is flagged
   (checkmodule: "unknown boolean … in conditional expression"), the same
