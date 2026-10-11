@@ -175,6 +175,7 @@ function activate(context) {
       develHeadersPath: cfg().get('develHeadersPath'),
       diagnostics: cfg().get('diagnostics'),
       build: cfg().get('build'),
+      packaging: cfg().get('packaging'),
       trusted: vscode.workspace.isTrusted,
       // The policy tree last worked on, when the workspace has several.
       activeTree: context.workspaceState.get('selinux.activeTree') || null,

@@ -339,6 +339,14 @@ for (const [p, spec] of [['/var/lib/foo/', '/var/lib/foo(/.*)?'], ['/etc/foo.con
   check(svc.fcFromPath(p).spec === spec && svc.pathFromFc(spec) === p, `path ${p} ⇄ ${spec}`);
 }
 
+/* ---------- RPM packaging (standalone modules) ---------- */
+
+const pkgSpec = require('../server/packaging');
+check(/^License:\s+MIT$/m.test(pkgSpec.specText({ name: 'x' })) && /^License:\s+GPL-2\.0-or-later$/m.test(pkgSpec.specText({ name: 'x', license: 'GPL-2.0-or-later' })), 'spec License: MIT by default, or the given one');
+check(!/semanage/.test(pkgSpec.specText({ name: 'x' })) && /semanage port -d -t x_port_t -p udp 9/.test(pkgSpec.specText({ name: 'x', ports: [{ type: 'x_port_t', proto: 'udp', port: '9' }] })), 'spec: port labels only when the module has port numbers');
+check(/^\* \w{3} \w{3} \d{2} \d{4} A B <a@b> - 2\.1-1$/m.test(pkgSpec.specText({ name: 'x', version: '2.1', packager: 'A B <a@b>' })), 'spec: %changelog entry with date, packager and version');
+check(/^rpm: /m.test(pkgSpec.makefileText('x')) && /\trpmbuild -bb/.test(pkgSpec.makefileText('x')), 'Makefile: rpm target with a tab-indented recipe');
+
 /* ---------- webview ---------- */
 
 class El {

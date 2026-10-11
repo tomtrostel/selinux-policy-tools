@@ -341,7 +341,7 @@ module goes in `<workspace>/<name>-selinux/` (or the folder you give) with:
   `%selinux_relabel_pre` / `%selinux_relabel_post`, and labels the module's
   port numbers with `semanage port` in `%post` (removed on erase). Version
   from `policy_module()`, packager from git's `user.name` / `user.email`;
-  the License line is GPL-2.0-or-later, change it to yours.
+  `License:` from the `selinux.packaging.license` setting (default `MIT`).
 * `Makefile`: `make` builds the module, `make rpm` the RPM under
   `./rpmbuild`.
 
@@ -730,6 +730,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.trees` | `{}` | Build settings per tree when the workspace has several: `{ "rhel10": { "makeArgs": [...], "files": {...} } }` (key: path relative to the workspace folder, or absolute); overrides `selinux.build.tree.*` for that tree |
 | `selinux.tree.autoSwitch` | `true` | With several trees, switch to the tree of the file you open |
 | `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
+| `selinux.packaging.license` | `MIT` | `License:` of the RPM spec generated for new standalone service modules (SPDX expression); existing specs are left alone |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
 settings can carry commands. In VS Code's Restricted Mode, navigation and

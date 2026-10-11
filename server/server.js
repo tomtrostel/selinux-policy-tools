@@ -25,6 +25,8 @@ let settings = {
   diagnostics: { unknownMacros: true, classPerms: true, genRequire: true },
   ifdef: { evaluate: true },
   checks: { file: 'selinux.checks' },
+  // RPM specs of standalone service modules.
+  packaging: { license: 'MIT' },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
     tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} },
     // Per-tree overrides of `tree`, keyed by tree path (absolute or relative to a workspace folder).
@@ -83,6 +85,7 @@ function mergeSettings(s) {
   settings = { ...settings, ...s, diagnostics: { ...settings.diagnostics, ...(s.diagnostics || {}) },
     ifdef: { ...settings.ifdef, ...(s.ifdef || {}) },
     checks: { ...settings.checks, ...(s.checks || {}) },
+    packaging: { ...settings.packaging, ...(s.packaging || {}) },
     build: { ...settings.build, ...(s.build || {}), tree: { ...settings.build.tree, ...((s.build && s.build.tree) || {}) } } };
   toolchain = null;
 }
@@ -1827,7 +1830,7 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, 
     }
     const spec = path.join(dir, `${model.name}-selinux.spec`), mk = path.join(dir, 'Makefile');
     if (readSource(spec) == null) {
-      const text = packaging.specText({ name: model.name, version, summary: model.summary, ports, packager: gitPackager(dir) });
+      const text = packaging.specText({ name: model.name, version, summary: model.summary, ports, packager: gitPackager(dir), license: (settings.packaging.license || '').trim() || 'MIT' });
       files.push({ path: spec, kind: 'spec', exists: false, text, changed: true, diff: service.lineDiff('', text) });
     }
     if (readSource(mk) == null) {

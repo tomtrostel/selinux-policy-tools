@@ -11,7 +11,8 @@
   port types declared in the module, nothing added to the tree. It comes
   with `<name>-selinux.spec` (an independent package following Fedora's
   SELinux packaging guidelines: install/uninstall/relabel macros, port
-  labels) and a Makefile; **SELinux: Build RPM** builds the package. Module
+  labels; `License:` from the new `selinux.packaging.license` setting,
+  default MIT) and a Makefile; **SELinux: Build RPM** builds the package. Module
   folders next to a tree now build with the devel Makefile.
 * **Denial assistant** (*SELinux: Analyze Denials…*): paste audit records,
   open a log, or read them from the host (`ausearch` with sudo in a

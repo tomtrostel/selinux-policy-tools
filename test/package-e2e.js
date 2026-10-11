@@ -93,6 +93,12 @@ async function write(plan) {
   const spec = plan.files.find(f => f.kind === 'spec').text;
   check(/^Name:\s+%\{modulename\}-selinux$/m.test(spec) && /^Version:\s+1\.0\.0$/m.test(spec) && /%selinux_modules_install -s %\{selinuxtype\}/.test(spec)
     && /semanage port -a -t pkgsvc_port_t -p tcp 47130/.test(spec) && /Requires\(post\): policycoreutils-python-utils/.test(spec), 'spec: package, version, install macros, port labels', spec);
+  check(/^License:\s+MIT$/m.test(spec), 'spec: License MIT by default (selinux.packaging.license)', (spec.match(/^License:.*$/m) || [])[0]);
+  conn.sendNotification('workspace/didChangeConfiguration', { settings: { selinux: { packaging: { license: 'Apache-2.0' } } } });
+  await sleep(300);
+  const lic = await conn.sendRequest('selinux/servicePlan', { model: { ...model, name: 'licsvc' }, module: null, where: null, standalone: true });
+  check(/^License:\s+Apache-2\.0$/m.test((lic.files.find(f => f.kind === 'spec') || {}).text || ''), 'spec: License follows the setting (Apache-2.0)');
+  conn.sendNotification('workspace/didChangeConfiguration', { settings: { selinux: { packaging: { license: 'MIT' } } } });
 
   // A CLIP-only interface is refused for a standalone module.
   const devNames = new Set(info.interfaces.map(x => x.n));

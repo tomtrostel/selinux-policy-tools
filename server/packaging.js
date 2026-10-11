@@ -19,9 +19,10 @@ const changelogDate = (d) => `${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${Stri
  *   name: module name; version: policy_module version; summary: one line;
  *   ports: [{ type, proto, port }] port numbers to label after installing
  *          (a loadable module can't carry portcon statements of its own);
- *   packager: "Name <email>"; date: Date.
+ *   packager: "Name <email>"; date: Date;
+ *   license: the License: tag (selinux.packaging.license, default MIT).
  */
-function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date() }) {
+function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date(), license = 'MIT' }) {
   const desc = summary || `SELinux policy for the ${name} service`;
   const semanage = ports.length > 0;
   const portAdd = ports.map(p => `semanage port -a -t ${p.type} -p ${p.proto} ${p.port} 2>/dev/null || semanage port -m -t ${p.type} -p ${p.proto} ${p.port} || :`).join('\n');
@@ -39,8 +40,8 @@ Name:           %{modulename}-selinux
 Version:        ${version}
 Release:        1%{?dist}
 Summary:        SELinux policy module for ${name}
-# The license of this policy module: change it to yours.
-License:        GPL-2.0-or-later
+# From the selinux.packaging.license setting.
+License:        ${license}
 Source0:        %{modulename}.te
 Source1:        %{modulename}.if
 Source2:        %{modulename}.fc

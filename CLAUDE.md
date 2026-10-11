@@ -333,7 +333,9 @@ so far covered by the e2e tests only.
    uninstall, relabel_pre/post, .pp.bz2 in /usr/share/selinux/packages/
    targeted, .if in devel/include/distributed, %ghost active/modules/200,
    semanage port add/delete for the module's port numbers, version from
-   policy_module, packager from git config) + makefileText (make / make rpm
+   policy_module, packager from git config, License from the
+   `selinux.packaging.license` setting, default MIT: the user's call, the
+   repo itself is MIT) + makefileText (make / make rpm
    with _sourcedir/_topdir). serviceModules includes standalone modules;
    denialFix targets them (optional per the devel ctx). Webview: Module
    radio (in the tree / standalone) when canStandalone; switching re-inits
