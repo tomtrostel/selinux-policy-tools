@@ -333,9 +333,16 @@ so far covered by the e2e tests only.
    uninstall, relabel_pre/post, .pp.bz2 in /usr/share/selinux/packages/
    targeted, .if in devel/include/distributed, %ghost active/modules/200,
    semanage port add/delete for the module's port numbers, version from
-   policy_module, packager from git config, License from the
-   `selinux.packaging.license` setting, default MIT: the user's call, the
-   repo itself is MIT) + makefileText (make / make rpm
+   policy_module, packager from git config, License chosen in the form:
+   packaging.LICENSES (10 SPDX ids) + settings packaging.customLicenses +
+   Custom… field; default packaging.license = MIT (the user's call; repo is
+   MIT); `licenseProblem()` refuses empty, %, #, newlines, > 200 chars;
+   serviceInfo `licenses` {common, custom, default} for standalone (null for
+   an existing module that has a spec); plan/apply carry `license`; client
+   `saveLicense(lic, asDefault, defaultOnly)` updates the settings (workspace
+   level if set there, else user), skips common ones in the saved list,
+   answers `licenseSaved`; exported for the stub-vscode test in
+   service-test.js) + makefileText (make / make rpm
    with _sourcedir/_topdir). serviceModules includes standalone modules;
    denialFix targets them (optional per the devel ctx). Webview: Module
    radio (in the tree / standalone) when canStandalone; switching re-inits

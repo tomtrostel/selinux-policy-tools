@@ -119,4 +119,32 @@ clean:
 `;
 }
 
-module.exports = { specText, makefileText, changelogDate };
+/** Common open source licenses offered in the service editor (SPDX identifiers). */
+const LICENSES = [
+  { id: 'MIT', label: 'MIT' },
+  { id: 'Apache-2.0', label: 'Apache License 2.0' },
+  { id: 'GPL-2.0-or-later', label: 'GNU GPL v2 or later' },
+  { id: 'GPL-2.0-only', label: 'GNU GPL v2 only' },
+  { id: 'GPL-3.0-or-later', label: 'GNU GPL v3 or later' },
+  { id: 'LGPL-2.1-or-later', label: 'GNU LGPL v2.1 or later' },
+  { id: 'BSD-3-Clause', label: 'BSD 3-Clause' },
+  { id: 'BSD-2-Clause', label: 'BSD 2-Clause' },
+  { id: 'MPL-2.0', label: 'Mozilla Public License 2.0' },
+  { id: 'ISC', label: 'ISC' },
+];
+
+/**
+ * Why a license can't go into the spec's License: tag, or null. Any text on
+ * one line works for rpmbuild (an SPDX expression is the convention, e.g.
+ * "MIT AND BSD-3-Clause" or "LicenseRef-Acme-Proprietary"), but % would be
+ * expanded as a macro and # starts a comment.
+ */
+function licenseProblem(s) {
+  const t = (s || '').trim();
+  if (!t) return 'The license is empty: pick one or enter your own.';
+  if (/[%#\r\n]/.test(t)) return `The license "${t}" can't contain %, # or line breaks (rpmbuild reads % as a macro and # as a comment).`;
+  if (t.length > 200) return 'The license is longer than 200 characters.';
+  return null;
+}
+
+module.exports = { specText, makefileText, changelogDate, LICENSES, licenseProblem };

@@ -98,7 +98,17 @@ async function write(plan) {
   await sleep(300);
   const lic = await conn.sendRequest('selinux/servicePlan', { model: { ...model, name: 'licsvc' }, module: null, where: null, standalone: true });
   check(/^License:\s+Apache-2\.0$/m.test((lic.files.find(f => f.kind === 'spec') || {}).text || ''), 'spec: License follows the setting (Apache-2.0)');
-  conn.sendNotification('workspace/didChangeConfiguration', { settings: { selinux: { packaging: { license: 'MIT' } } } });
+  // The license chosen in the form (common, saved or custom) goes into the spec; % or # are refused.
+  conn.sendNotification('workspace/didChangeConfiguration', { settings: { selinux: { packaging: { license: 'MIT', customLicenses: ['LicenseRef-Acme-Proprietary'] } } } });
+  await sleep(300);
+  const li = await conn.sendRequest('selinux/serviceInfo', { standalone: true });
+  check(li.licenses && li.licenses.default === 'MIT' && li.licenses.common.length >= 8 && li.licenses.common.some(x => x.id === 'GPL-2.0-or-later') && li.licenses.custom.join() === 'LicenseRef-Acme-Proprietary',
+    `the form offers ${li.licenses && li.licenses.common.length} common licenses and the saved ones; default MIT`, li.licenses);
+  const custom = await conn.sendRequest('selinux/servicePlan', { model: { ...model, name: 'licsvc' }, module: null, where: null, standalone: true, license: 'LicenseRef-Acme-Proprietary' });
+  check(/^License:\s+LicenseRef-Acme-Proprietary$/m.test((custom.files.find(f => f.kind === 'spec') || {}).text || '') && !(custom.problems || []).some(p => /license/i.test(p)), 'a custom license goes into the spec',
+    { problems: custom.problems, license: ((custom.files.find(f => f.kind === 'spec') || {}).text || '').match(/^License:.*$/m) });
+  const badLic = await conn.sendRequest('selinux/servicePlan', { model: { ...model, name: 'licsvc' }, module: null, where: null, standalone: true, license: 'Acme %{dist}' });
+  check((badLic.problems || []).some(p => /can't contain %/.test(p)), 'a license with % is refused (rpmbuild would expand it)', badLic.problems);
 
   // A CLIP-only interface is refused for a standalone module.
   const devNames = new Set(info.interfaces.map(x => x.n));

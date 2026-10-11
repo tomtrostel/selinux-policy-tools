@@ -545,7 +545,15 @@
         "selinux.packaging.license": {
           "type": "string",
           "default": "MIT",
-          "markdownDescription": "License written into the RPM spec (`License:`) generated for new standalone service modules (`<name>-selinux.spec`). An SPDX expression, e.g. `MIT`, `GPL-2.0-or-later`, `Apache-2.0`. Existing specs are not changed."
+          "markdownDescription": "Default license for the RPM spec (`License:`) generated for new standalone service modules (`<name>-selinux.spec`): an SPDX expression, e.g. `MIT`, `GPL-2.0-or-later`, `Apache-2.0`, `LicenseRef-Acme-Proprietary`. The service editor offers it first; **Save as my default** there sets it. Existing specs are not changed."
+        },
+        "selinux.packaging.customLicenses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Your own licenses, offered in the service editor next to the common open source ones (e.g. `LicenseRef-Acme-Proprietary`, `MIT AND BSD-3-Clause`). **Save to my list** in the editor adds to it."
         },
         "selinux.build.trees": {
           "type": "object",

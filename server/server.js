@@ -26,7 +26,7 @@ let settings = {
   ifdef: { evaluate: true },
   checks: { file: 'selinux.checks' },
   // RPM specs of standalone service modules.
-  packaging: { license: 'MIT' },
+  packaging: { license: 'MIT', customLicenses: [] },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
     tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} },
     // Per-tree overrides of `tree`, keyed by tree path (absolute or relative to a workspace folder).
@@ -1742,6 +1742,8 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
     layers: inTree ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
     folder: roots[0] || null,
     folderSuffix: sa && !usingDevel ? '-selinux' : '',
+    // License for the RPM spec of a standalone module: common ones, the user's saved ones, their default.
+    licenses: sa ? { common: packaging.LICENSES, custom: [...new Set((settings.packaging.customLicenses || []).map(x => String(x).trim()).filter(Boolean))], default: (settings.packaging.license || '').trim() || 'MIT' } : null,
     standalone: sa, canStandalone: canStandalone && !mod,
     develMakefile: settings.build.develMakefile,
   };
@@ -1754,10 +1756,12 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
   if (rec.error) return { unavailable: rec.error };
   const prov = new Set(rec.provided);
   rec.model.provides = service.PROVIDES.map(p => p[0]).filter(id => prov.has(service.PROVIDES.find(p => p[0] === id)[1].replace(/%/g, mod)));
+  // An existing standalone module gets a spec only if it has none yet: only then does the license matter.
+  if (info.licenses && fs.existsSync(path.join(path.dirname(m.files.te), `${mod}-selinux.spec`))) info.licenses = null;
   return { ...info, isNew: false, module: mod, layer: m.layer, files: m.files, model: rec.model, kept: rec.kept, provided: rec.provided, domains: rec.domains };
 });
 
-connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, standalone }) => {
+connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, standalone, license }) => {
   await indexing;
   const isNew = !mod;
   const existingMod = mod ? serviceModules().find(x => x.module === mod) : null;
@@ -1830,7 +1834,10 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, 
     }
     const spec = path.join(dir, `${model.name}-selinux.spec`), mk = path.join(dir, 'Makefile');
     if (readSource(spec) == null) {
-      const text = packaging.specText({ name: model.name, version, summary: model.summary, ports, packager: gitPackager(dir), license: (settings.packaging.license || '').trim() || 'MIT' });
+      const lic = license != null ? String(license).trim() : ((settings.packaging.license || '').trim() || 'MIT');
+      const why = packaging.licenseProblem(lic);
+      if (why) problems.push(why);
+      const text = packaging.specText({ name: model.name, version, summary: model.summary, ports, packager: gitPackager(dir), license: lic });
       files.push({ path: spec, kind: 'spec', exists: false, text, changed: true, diff: service.lineDiff('', text) });
     }
     if (readSource(mk) == null) {

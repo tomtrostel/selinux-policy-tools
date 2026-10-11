@@ -347,6 +347,39 @@ check(!/semanage/.test(pkgSpec.specText({ name: 'x' })) && /semanage port -d -t 
 check(/^\* \w{3} \w{3} \d{2} \d{4} A B <a@b> - 2\.1-1$/m.test(pkgSpec.specText({ name: 'x', version: '2.1', packager: 'A B <a@b>' })), 'spec: %changelog entry with date, packager and version');
 check(/^rpm: /m.test(pkgSpec.makefileText('x')) && /\trpmbuild -bb/.test(pkgSpec.makefileText('x')), 'Makefile: rpm target with a tab-indented recipe');
 
+// Saving a license from the form: stored in the settings (user level unless the workspace sets it).
+(() => {
+  const Module = require('module');
+  const store = { global: { 'packaging.customLicenses': ['LicenseRef-Old'] }, workspace: {} };
+  const updates = [];
+  const conf = {
+    get: (k) => (k in store.workspace ? store.workspace[k] : store.global[k]),
+    inspect: (k) => ({ workspaceValue: store.workspace[k] }),
+    update: async (k, v, target) => { updates.push([k, v, target]); (target === 2 ? store.workspace : store.global)[k] = v; },
+  };
+  const messages = [];
+  const stub = { workspace: { getConfiguration: () => conf }, ConfigurationTarget: { Global: 1, Workspace: 2 },
+    window: { showWarningMessage: (m) => messages.push(m), setStatusBarMessage: () => {} } };
+  const load = Module._load;
+  Module._load = function (req, ...rest) { return req === 'vscode' ? stub : req === 'vscode-languageclient/node' ? { LanguageClient: class {}, TransportKind: {} } : load.call(this, req, ...rest); };
+  const { saveLicense } = require('../client/extension');
+  Module._load = load;
+  return (async () => {
+    let r = await saveLicense(' LicenseRef-Acme ', false, false);
+    check(r.license === 'LicenseRef-Acme' && updates.length === 1 && updates[0][1].join() === 'LicenseRef-Old,LicenseRef-Acme' && updates[0][2] === 1 && r.licenses.custom.join() === 'LicenseRef-Old,LicenseRef-Acme' && r.licenses.default === 'MIT',
+      'Save to my list: appended to selinux.packaging.customLicenses in the user settings', updates);
+    await saveLicense('LicenseRef-Acme', true, false);
+    check(updates.length === 2 && updates[1][0] === 'packaging.license' && updates[1][1] === 'LicenseRef-Acme', 'Save as my default: no duplicate in the list, sets selinux.packaging.license', updates);
+    await saveLicense('Apache-2.0', false, false);
+    check(updates.length === 2, 'common licenses are not added to the saved list');
+    store.workspace['packaging.license'] = 'GPL-2.0-only';
+    await saveLicense('MIT', true, true);
+    check(updates.length === 3 && updates[2][2] === 2 && store.workspace['packaging.license'] === 'MIT', 'a default the workspace sets is changed in the workspace settings', updates);
+    r = await saveLicense('Acme #1', false, false);
+    check(r.license === null && updates.length === 3 && /can't contain/.test(messages[0] || ''), 'a license with # is refused with a message, nothing stored');
+  })();
+})();
+
 /* ---------- webview ---------- */
 
 class El {
@@ -482,12 +515,34 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(radios.length === 2 && radios[0].checked && !radios[1].checked && radios.every(r => r.parent && r.parent.attrs.title), 'kind: in the tree / standalone, with hover help');
   radios[1].fire('change');
   check(last('standalone') && last('standalone').on === true, 'choosing standalone asks for the devel-header catalog');
-  send({ cmd: 'init', info: { ...info, mode: 'module', layers: null, folder: '/ws', folderSuffix: '-selinux', canStandalone: true, standalone: true }, keep: true });
+  const LICS = { common: [{ id: 'MIT', label: 'MIT' }, { id: 'Apache-2.0', label: 'Apache License 2.0' }], custom: ['LicenseRef-Old'], default: 'MIT' };
+  send({ cmd: 'init', info: { ...info, mode: 'module', layers: null, folder: '/ws', folderSuffix: '-selinux', canStandalone: true, standalone: true, licenses: LICS }, keep: true });
   check(find(e => e.attrs.id === 'name')[0].value === 'webby' && last('plan').standalone === true && /\/ws\/<name>-selinux/.test(JSON.stringify(find(e => e.tag === 'input' && e.attrs.placeholder && e.attrs.placeholder.includes('<name>')).map(e => e.attrs.placeholder))),
     'standalone: the form keeps its contents, plans say standalone, folder defaults to NAME-selinux');
   check(/make rpm/.test(form.textContent), 'standalone: says what the packaging files are');
+  // License: common ones, saved ones, or one of your own (stored in the settings).
+  const licSelect = () => find(e => e.tag === 'select' && (e.attrs.title || '').startsWith('The license'))[0];
+  check(licSelect() && licSelect().children.map(o => o.textContent).join('|') === 'MIT|Apache License 2.0 (Apache-2.0)|LicenseRef-Old (saved)|Custom…' && last('plan').license === 'MIT' && /your default/.test(form.textContent),
+    `license picker: ${licSelect() && licSelect().children.map(o => o.textContent).join('|')}; your default MIT selected`);
+  licSelect().value = 'Apache-2.0'; licSelect().fire('change');
+  await wait(300);
+  check(last('plan').license === 'Apache-2.0', 'a common license: plans use it');
+  buttonText('Make it my default').fire('click');
+  check(last('saveLicense') && last('saveLicense').license === 'Apache-2.0' && last('saveLicense').asDefault && last('saveLicense').defaultOnly, 'Make it my default stores the default only');
+  licSelect().value = '__custom__'; licSelect().fire('change');
+  const licInput = () => find(e => e.tag === 'input' && e.attrs.placeholder === 'e.g. LicenseRef-Acme-Proprietary')[0];
+  check(licInput() && buttonText('Save to my list') && buttonText('Save as my default'), 'Custom…: a field with Save to my list / Save as my default');
+  await wait(300);
+  check((last('plan').license || '') === '', 'Custom… starts empty (the plan then reports it)');
+  licInput().value = 'LicenseRef-Acme'; licInput().fire('input');
+  await wait(300);
+  check(last('plan').license === 'LicenseRef-Acme', 'the typed license goes into the plan');
+  buttonText('Save to my list').fire('click');
+  check(last('saveLicense').license === 'LicenseRef-Acme' && !last('saveLicense').asDefault, 'Save to my list asks to store it');
+  send({ cmd: 'licenseSaved', license: 'LicenseRef-Acme', licenses: { ...LICS, custom: ['LicenseRef-Old', 'LicenseRef-Acme'] } });
+  check(licSelect().children.some(o => o.textContent === 'LicenseRef-Acme (saved)' && o.attrs.selected !== undefined) && !licInput(), 'saved: offered in the list and selected');
   byId.apply.disabled = false; byId.apply.fire('click');
-  check(last('apply').standalone === true, 'apply says standalone');
+  check(last('apply').standalone === true && last('apply').license === 'LicenseRef-Acme', 'apply says standalone, with the license');
   // Existing module: kept statements, existing interfaces disabled.
   const r2 = svc.recognize(legacy, ctx, {});
   send({ cmd: 'init', info: { ...info, isNew: false, module: 'legacyd', layer: 'contrib', files: { te: '/t/legacyd.te' }, model: { ...r2.model, provides: [] }, kept: r2.kept, provided: ['legacyd_domtrans'], domains: r2.domains } });

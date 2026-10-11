@@ -341,11 +341,23 @@ module goes in `<workspace>/<name>-selinux/` (or the folder you give) with:
   `%selinux_relabel_pre` / `%selinux_relabel_post`, and labels the module's
   port numbers with `semanage port` in `%post` (removed on erase). Version
   from `policy_module()`, packager from git's `user.name` / `user.email`;
-  `License:` from the `selinux.packaging.license` setting (default `MIT`).
+  `License:` as chosen in the form (below).
 * `Makefile`: `make` builds the module, `make rpm` the RPM under
   `./rpmbuild`.
 
-Both are written once and then left alone, so edit them freely. New
+**License.** For a standalone module the form has a **License** picker: ten
+common open source licenses (MIT, Apache-2.0, GPL-2.0-or-later,
+GPL-2.0-only, GPL-3.0-or-later, LGPL-2.1-or-later, BSD-3-Clause,
+BSD-2-Clause, MPL-2.0, ISC), the licenses you saved, or **Custom…** to type
+your own (an SPDX expression such as `LicenseRef-Acme-Proprietary` or `MIT
+AND BSD-3-Clause`; `%` and `#` are refused, since rpmbuild would read them
+as a macro or a comment). **Save to my list** stores a custom license in
+`selinux.packaging.customLicenses`, **Save as my default** (or **Make it my
+default** on a listed one) in `selinux.packaging.license`, which the form
+starts with (MIT unless you change it). Both go to your user settings, so
+they are offered in every workspace, unless the workspace already sets them.
+
+Both files are written once and then left alone, so edit them freely. New
 services in a standalone workspace (a module folder, no tree) get them too. **SELinux:
 Build RPM** runs `make rpm` for the module of the active editor (or one you
 pick) in a terminal. Standalone modules next to a tree (any module folder
@@ -730,7 +742,8 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.trees` | `{}` | Build settings per tree when the workspace has several: `{ "rhel10": { "makeArgs": [...], "files": {...} } }` (key: path relative to the workspace folder, or absolute); overrides `selinux.build.tree.*` for that tree |
 | `selinux.tree.autoSwitch` | `true` | With several trees, switch to the tree of the file you open |
 | `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
-| `selinux.packaging.license` | `MIT` | `License:` of the RPM spec generated for new standalone service modules (SPDX expression); existing specs are left alone |
+| `selinux.packaging.license` | `MIT` | The license the service editor starts with for a standalone module's RPM spec (SPDX expression); existing specs are left alone |
+| `selinux.packaging.customLicenses` | `[]` | Your own licenses, offered in the service editor's License picker next to the common ones (filled by *Save to my list*) |
 
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
 settings can carry commands. In VS Code's Restricted Mode, navigation and

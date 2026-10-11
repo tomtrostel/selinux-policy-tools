@@ -8,6 +8,8 @@
   let plan = null;   // last selinux/servicePlan result
   let tab = 'te';
   let where = null;  // layer (tree) or folder (standalone) for a new module
+  let license = null; // License: of the RPM spec (standalone modules)
+  let customLicense = false; // entering a license of one's own
   let planTimer = null;
   let dirty = false;
 
@@ -32,7 +34,7 @@
   function changed() {
     dirty = true;
     clearTimeout(planTimer);
-    planTimer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone }), 250);
+    planTimer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone, license }), 250);
   }
 
   /* ---------- sections ---------- */
@@ -41,6 +43,7 @@
   const LAYER_TIP = 'The directory under policy/modules/ the module goes in; it is also added to modules.conf as a loadable module';
   const FOLDER_TIP = 'Where to write the module’s files (a new folder named after the module by default)';
   const KIND_TIP = 'In the policy tree: the module becomes part of this tree’s policy (policy/modules/<layer>, modules.conf). Standalone: a module of its own, built against this host’s selinux-policy-devel headers, with an RPM spec so it can be packaged (NAME-selinux) and installed next to the service';
+  const LICENSE_TIP = 'The license of this policy module, written into the RPM spec (License:). Pick a common open source license, one you saved, or Custom… to enter your own (an SPDX expression such as LicenseRef-Acme-Proprietary or "MIT AND BSD-3-Clause")';
   const SA_NOTE = 'Built against the devel headers of this host; only their interfaces are offered. Adds NAME-selinux.spec and a Makefile (make rpm builds the RPM).';
   const DESC_TIP = 'One line saying what the service does; becomes the summary at the top of the .if';
   const PROG_TIP = 'The daemon’s executable(s), one per line. They are labeled NAME_exec_t, and when systemd (init) runs them the process enters the service’s domain';
@@ -59,6 +62,35 @@
   const tipOf = (text) => ({ title: sub(text), onmouseenter: (e) => { e.currentTarget.title = sub(text); } });
   const lines = (arr) => (arr || []).join('\n');
   const unlines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
+
+  /** License for the RPM spec: common ones, the user's saved ones, or Custom… (with Save to my list / Save as my default). */
+  function licenseRow() {
+    const L = info.licenses;
+    if (!L) return null;
+    const known = [...L.common.map(x => x.id), ...L.custom];
+    const custom = customLicense || (license && !known.includes(license));
+    const opts = [
+      ...L.common.map(x => h('option', { value: x.id, selected: !custom && x.id === license }, x.id === x.label ? x.id : `${x.label} (${x.id})`)),
+      ...L.custom.filter(x => !L.common.some(c => c.id === x)).map(x => h('option', { value: x, selected: !custom && x === license }, `${x} (saved)`)),
+      h('option', { value: '__custom__', selected: custom }, 'Custom…'),
+    ];
+    const sel = h('select', { title: LICENSE_TIP, onchange: (e) => {
+      if (e.target.value === '__custom__') { customLicense = true; license = ''; render(); changed(); return; }
+      customLicense = false; license = e.target.value; render(); changed();
+    } }, opts);
+    const save = (asDefault) => h('button', { class: 'chip', title: asDefault ? 'Store this license in your settings and make it the one new standalone modules start with' : 'Store this license in your settings (selinux.packaging.customLicenses) so it is offered next time, in any workspace',
+      onclick: () => vscode.postMessage({ cmd: 'saveLicense', license, asDefault }) }, asDefault ? 'Save as my default' : 'Save to my list');
+    const parts = [h('span', { class: 'lbl', title: LICENSE_TIP }, 'License'), sel];
+    if (custom) {
+      parts.push(h('input', { type: 'text', value: license || '', placeholder: 'e.g. LicenseRef-Acme-Proprietary', size: 30, spellcheck: 'false', title: 'Your license, as it should appear after License: in the spec (no %, # or line breaks)',
+        oninput: (e) => { license = e.target.value.trim(); changed(); } }), save(false), save(true));
+    } else if (license === L.default) {
+      parts.push(h('span', { class: 'muted' }, ' your default'));
+    } else {
+      parts.push(h('button', { class: 'chip', title: 'Make this the license new standalone modules start with (selinux.packaging.license)', onclick: () => vscode.postMessage({ cmd: 'saveLicense', license, asDefault: true, defaultOnly: true }) }, 'Make it my default'));
+    }
+    return h('div', { class: 'row' }, parts);
+  }
 
   function serviceSection() {
     const rows = [];
@@ -81,6 +113,8 @@
           h('input', { type: 'text', title: FOLDER_TIP, value: where || '', placeholder: `${info.folder || ''}/<name>${info.folderSuffix || ''}`, size: 40, spellcheck: 'false', oninput: (e) => { where = e.target.value.trim() || null; changed(); } })));
         if (info.standalone && info.canStandalone) rows.push(h('div', { class: 'muted small', ...tipOf(SA_NOTE) }, sub(SA_NOTE)));
       }
+      const lic = licenseRow();
+      if (lic) rows.push(lic);
     } else {
       rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('b', {}, model.name), h('span', { class: 'muted' }, ` (${info.layer})`),
         info.domains.length > 1 ? h('span', {}, h('span', { class: 'lbl', style: 'margin-left:16px' }, 'Domain'),
@@ -450,13 +484,14 @@
     if (m.cmd === 'init') {
       info = m.info;
       if (!(m.keep && model)) model = JSON.parse(JSON.stringify(info.model));
+      if (!(m.keep && license != null && info.licenses)) { license = info.licenses ? info.licenses.default : null; customLicense = false; }
       model.provides = model.provides || [];
       where = info.isNew ? (info.defaultLayer || null) : null;
       plan = null; dirty = false;
       $('form').textContent = '';
       render();
       $('stale').hidden = true;
-      vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone });
+      vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone, license });
     } else if (m.cmd === 'plan') {
       plan = m.plan;
       renderPreview();
@@ -466,12 +501,18 @@
     } else if (m.cmd === 'stale') {
       if (dirty) $('stale').hidden = false;
       else vscode.postMessage({ cmd: 'reload' });
+    } else if (m.cmd === 'licenseSaved') {
+      info.licenses = m.licenses;
+      license = m.license;
+      customLicense = false;
+      render();
+      changed();
     } else if (m.cmd === 'busy') {
       $('apply').disabled = true;
       $('status').textContent = m.text;
     }
   });
-  $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where, standalone: !!info.standalone }));
+  $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where, standalone: !!info.standalone, license }));
   $('reload').addEventListener('click', () => vscode.postMessage({ cmd: 'reload' }));
   vscode.postMessage({ cmd: 'ready' });
 })();

@@ -688,6 +688,31 @@ async function pickService() {
   return pick ? pick.label : null;
 }
 
+/**
+ * Store a license for RPM specs in the settings (where it is already set, else
+ * the user's settings): added to selinux.packaging.customLicenses unless it is
+ * a common one, and with asDefault also selinux.packaging.license.
+ * Returns { license, licenses } for the form.
+ */
+async function saveLicense(raw, asDefault, defaultOnly) {
+  const pkg = require('../server/packaging');
+  const lic = String(raw || '').trim();
+  const why = pkg.licenseProblem(lic);
+  const conf = () => vscode.workspace.getConfiguration('selinux');
+  const target = (key) => (conf().inspect(key).workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+  if (why) vscode.window.showWarningMessage(why);
+  else {
+    const list = (conf().get('packaging.customLicenses') || []).map(String);
+    if (!defaultOnly && !list.includes(lic) && !pkg.LICENSES.some(x => x.id === lic)) await conf().update('packaging.customLicenses', [...list, lic], target('packaging.customLicenses'));
+    if (asDefault) await conf().update('packaging.license', lic, target('packaging.license'));
+    vscode.window.setStatusBarMessage(asDefault ? `${lic} is now your default license for RPM specs` : `Saved ${lic} to your licenses`, 4000);
+  }
+  return {
+    license: why ? null : lic,
+    licenses: { common: pkg.LICENSES, custom: [...new Set((conf().get('packaging.customLicenses') || []).map(x => String(x).trim()).filter(Boolean))], default: (conf().get('packaging.license') || '').trim() || 'MIT' },
+  };
+}
+
 /** Write a plan's files as one workspace edit (undoable), save them, open the .te. */
 async function applyServicePlan(plan) {
   const edit = new vscode.WorkspaceEdit();
@@ -818,10 +843,11 @@ function showServiceEditor(context, mod) {
       if (m.cmd === 'ready' || m.cmd === 'reload') await load();
       else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
       else if (m.cmd === 'standalone') { current.standalone = !!m.on; await load(true); }
-      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone }) });
+      else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
       else if (m.cmd === 'apply') {
-        const plan = await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone });
+        const plan = await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone, license: m.license });
         const blocking = (plan.problems || []).filter(p => !p.startsWith('Note:'));
         if (blocking.length) { post({ cmd: 'plan', plan }); return; }
         post({ cmd: 'busy', text: 'Writing files…' });
@@ -1599,4 +1625,4 @@ async function applyDenialFix(plan) {
 
 function deactivate() { return client ? client.stop() : undefined; }
 
-module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView };
+module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView, saveLicense };
