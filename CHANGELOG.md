@@ -4,6 +4,13 @@
 
 **New**
 
+* **Service editor: more services, login services**: modules whose
+  domains are started by `init_system_domain`, `init_domain` or a ranged
+  variant open too (on RHEL 9 51 more, e.g. `xserver`, `dbus`, `getty`),
+  keeping how init starts them; domains declared by a template
+  (`ssh_server_template(sshd)`) read back. A **Logins** group (log users
+  in, start their sessions, login records, session contexts, terminals) and
+  a pty type of its own for logins. Paths under `HOME_DIR/` are accepted.
 * **Standalone service modules, packaged as RPMs**: in a tree workspace,
   *SELinux: New Service…* can make a **Standalone module (packaged as an
   RPM)** instead of a tree module: built against the host's

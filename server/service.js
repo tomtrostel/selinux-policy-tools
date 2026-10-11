@@ -98,12 +98,29 @@ const ACCESS_GROUPS = [
     ['dbus', 'Use the D-Bus system bus', [['dbus_system_bus_client']]],
     ['mail', 'Send mail', [['mta_send_mail']]],
   ]],
+  ['Logins', [
+    ['loginpgm', 'Log users in: PAM, and switching to the user’s identity and role (a login program)', [['auth_login_pgm_domain']]],
+    ['sessions', 'Start users’ sessions in their own domains, and signal them', [['userdom_spec_domtrans_all_users'], ['userdom_signal_all_users']]],
+    ['loginrecords', 'Record logins (utmp, wtmp)', [['auth_rw_login_records']]],
+    ['lastlog', 'Update lastlog', [['auth_rw_lastlog']]],
+    ['faillog', 'Record failed logins (faillog)', [['auth_rw_faillog']]],
+    ['usercontexts', 'Work out the SELinux context of a user’s session', [['seutil_read_default_contexts'], ['selinux_compute_user_contexts']]],
+    ['ttys', 'Use the console and virtual terminals', [['term_use_unallocated_ttys'], ['term_setattr_unallocated_ttys']]],
+    ['ptys', 'Use users’ pseudo-terminals', [['term_use_all_ptys'], ['term_setattr_all_ptys']]],
+  ]],
   ['Started by systemd', [
     ['nnp', 'Allow starting with NoNewPrivileges (systemd hardening options)', [['init_nnp_daemon_domain']]],
     ['ttyfds', 'Use descriptors inherited from the session that started it', [['domain_use_interactive_fds']]],
     ['homequiet', 'Quietly refuse to search home directories (no audit noise)', [['userdom_dontaudit_search_user_home_dirs']]],
   ]],
 ];
+/**
+ * Calls that make a domain one init/systemd starts: (domain, program type[, MLS range]).
+ * New services use init_daemon_domain; existing modules keep whichever they have.
+ */
+const ENTRY_CALLS = ['init_daemon_domain', 'init_ranged_daemon_domain', 'init_system_domain', 'init_ranged_system_domain', 'init_domain', 'init_ranged_domain'];
+const ENTRY = new Set(ENTRY_CALLS);
+
 const ACCESS = Object.fromEntries(ACCESS_GROUPS.flatMap(([, items]) => items.map(([id, label, calls]) => [id, { id, label, calls }])));
 
 // Rules on the domain's own processes and sockets: class -> perms.
@@ -212,6 +229,14 @@ const HELP = {
     kmod: 'Ask the kernel to load a kernel module on demand (e.g. for a protocol). The kernel loads it, not the service.',
     dbus: 'Connect to the D-Bus system bus to send and receive messages. Which services it may talk to is decided separately (D-Bus policy and rules for each peer).',
     mail: 'Run sendmail to send mail (e.g. alerts). The mail program runs in its own domain.',
+    loginpgm: 'Makes it a login program, like sshd, login or a display manager: PAM, reading shadow through the password checker, and setting the SELinux user, role and level of the sessions it starts. Grants a lot; only for programs that really log users in.',
+    sessions: 'Start a logged-in user’s shell or session in that user’s own domain (user_t, staff_t, unconfined_t, …) instead of its own, and signal those sessions (e.g. to end them at logout).',
+    loginrecords: 'Add and remove entries in /run/utmp and /var/log/wtmp, as login programs do for who and last.',
+    lastlog: 'Update /var/log/lastlog with each user’s last login.',
+    faillog: 'Record failed login attempts (faillog, faillock).',
+    usercontexts: 'Read the default_contexts configuration and ask the kernel which contexts a user may have, to start the session in the right SELinux context.',
+    ttys: 'Read and write the console and virtual terminals (/dev/console, /dev/tty1…) and set their owner and mode, as getty and login do.',
+    ptys: 'Read and write any user’s pseudo-terminal (/dev/pts/*) and set its owner and mode. For a pty type of its own for the sessions it creates, tick “Pseudo-terminals for logins”.',
     nnp: 'Lets systemd start it in its domain when the unit sets NoNewPrivileges=yes or options that imply it (e.g. SystemCallFilter=); without this the start is refused.',
     ttyfds: 'Use descriptors inherited from whoever started it, e.g. the terminal when an administrator runs it by hand.',
     homequiet: 'Grants nothing: refusals to look into users’ home directories are just not logged, so harmless probing doesn’t fill the audit log.',
@@ -383,7 +408,15 @@ function unitsOf(model, ctx) {
   const callOf = call;
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
 
-  add('domain', { D, E }, [type(D), type(E), call('init_daemon_domain', [D, E], 'decl')]);
+  const entries = model.entries && model.entries.length ? model.entries : [{ name: 'init_daemon_domain', args: [] }];
+  const by = model.declaredBy || null;
+  add('domain', { D, E, entries, by }, [by ? call(by.name, by.args, 'decl') : type(D), ...(by && by.execToo ? [] : [type(E)]), ...entries.map(e => call(e.name, [D, E, ...(e.args || [])], 'decl'))]);
+  if (model.loginPty) {
+    const P = `${D.replace(/_t$/, '')}_devpts_t`;
+    add('loginpty', 1, [type(P), call('term_login_pty', [P], 'decl'),
+      { key: allowKey(D, P, 'chr_file', ['rw_chr_file_perms', 'setattr_chr_file_perms', 'relabelfrom']), kind: 'allow', name: 'allow', text: `allow ${D} ${P}:chr_file { rw_chr_file_perms setattr_chr_file_perms relabelfrom };`, section: 'local', group: 'loginpty' },
+      call('term_create_pty', [D, P], 'local', 'loginpty')].map(x => (x.opt ? { ...x, opt: false } : x)));
+  }
   if (model.permissive) add('permissive', 1, [{ key: 'permissive', kind: 'permissive', text: `permissive ${D};`, section: 'decl' }]);
 
   for (const row of model.files || []) {
@@ -577,10 +610,16 @@ function scanTe(text) {
   return { parse: p, lines, stmts, blocks };
 }
 
-/** Daemon domains of a module: init_daemon_domain(D, E) calls in its .te. */
+/** Domains init starts, from a module's .te: (domain, program type) of its init_*domain() calls; init_daemon_domain's program type wins. */
 function daemonDomains(teText) {
-  return parsePolicy(teText).calls.filter(c => c.name === 'init_daemon_domain' && !c.inDef && c.args.length >= 2)
-    .map(c => ({ domain: c.args[0], exec: c.args[1] }));
+  const out = [];
+  for (const c of parsePolicy(teText).calls) {
+    if (!ENTRY.has(c.name) || c.inDef || c.args.length < 2) continue;
+    const have = out.find(x => x.domain === c.args[0]);
+    if (!have) out.push({ domain: c.args[0], exec: c.args[1], via: c.name });
+    else if (c.name === 'init_daemon_domain' && have.via !== 'init_daemon_domain') Object.assign(have, { exec: c.args[1], via: c.name });
+  }
+  return out;
 }
 
 function parseFcLines(text) {
@@ -602,7 +641,7 @@ function recognize(texts, ctx, opts = {}) {
   const te = scanTe(texts.te || '');
   const domains = daemonDomains(texts.te || '');
   const mod = te.parse.module || opts.module;
-  if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() call, so it isn't a service module the editor understands.` };
+  if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() (or init_system_domain(), init_domain(), …) call, so it isn't a service module the editor understands.` };
   const dom = domains.find(x => x.domain === opts.domain) || domains.find(x => x.domain === `${mod}_t`) || domains[0];
   const D = dom.domain, E = dom.exec;
   const editable = te.stmts.filter(s => s.top || s.opt || s.bool);
@@ -616,7 +655,35 @@ function recognize(texts, ctx, opts = {}) {
   if (m) model.summary = m[1];
   const claim = (pred) => { for (const s of editable) if (!claimed.has(s) && pred(s)) claimed.add(s); };
   claim(s => s.kind === 'type' && (s.name === D || s.name === E));
+  // How init starts it (init_daemon_domain, init_system_domain, a ranged variant, …), kept as written.
+  model.entries = [];
+  for (const st of editable) {
+    if (st.kind === 'call' && st.top && ENTRY.has(st.name) && st.args[0] === D && st.args[1] === E && !claimed.has(st)) {
+      claimed.add(st);
+      model.entries.push({ name: st.name, args: st.args.slice(2) });
+    }
+  }
   claim(s => s.kind === 'call' && s.name === 'init_daemon_domain' && s.args[0] === D);
+  // A domain declared by a template (e.g. ssh_server_template(sshd) declares sshd_t).
+  if (!editable.some(st => st.kind === 'type' && st.name === D) && ctx.declares) {
+    const t = editable.find(st => st.kind === 'call' && st.top && !claimed.has(st) && st.args.length >= 1 && `${st.args[0]}_t` === D && (ctx.declares(st.name) || []).includes('$1_t'));
+    if (t) {
+      claimed.add(t);
+      const pats = ctx.declares(t.name);
+      model.declaredBy = { name: t.name, args: t.args, execToo: !editable.some(st => st.kind === 'type' && st.name === E) && `${t.args[0]}_exec_t` === E && pats.includes('$1_exec_t') };
+    }
+  }
+  // A pty type of its own for the sessions it starts (term_login_pty).
+  for (const st of editable.filter(x => x.kind === 'type' && x.top && !claimed.has(x))) {
+    const decl = editable.find(x => x.kind === 'call' && x.top && x.name === 'term_login_pty' && x.args[0] === st.name);
+    if (!decl || st.name !== `${D.replace(/_t$/, '')}_devpts_t`) continue;
+    model.loginPty = true;
+    claimed.add(st); claimed.add(decl);
+    for (const x of editable) {
+      if (claimed.has(x) || x.bool) continue;
+      if ((x.kind === 'call' && x.name === 'term_create_pty' && x.args[0] === D && x.args[1] === st.name) || (x.kind === 'allow' && x.src === D && x.tgt === st.name && x.cls === 'chr_file')) ownAdd('loginpty', x);
+    }
+  }
   claim(s => s.kind === 'role' && s.name === D);
 
   // Owned file types: declared here, with a known declaration helper.
@@ -1181,7 +1248,7 @@ function editTe(text, rec, model, ctx) {
 
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
-  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat(['init_daemon_domain', 'domain_type', 'init_domain', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS]));
+  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat([...ENTRY_CALLS, 'domain_type', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS]));
   const firstLocal = top.find(s => (s.kind === 'allow' || s.kind === 'rule') || (s.kind === 'call' && !declHelpers.has(s.name) && !/^policy_module$/.test(s.name)));
   const localHeader = (() => {
     const lim = firstLocal ? firstLocal.l : lines.length;
@@ -1196,7 +1263,7 @@ function editTe(text, rec, model, ctx) {
     : Math.max(-1, ...top.filter(s => (s.kind === 'type' || s.kind === 'role' || (s.kind === 'call' && declHelpers.has(s.name))) && (localHeader == null || s.l < localHeader) && (!firstLocal || s.l < firstLocal.l)).map(s => s.endL));
   const policyModule = top.find(s => s.kind === 'call' && s.name === 'policy_module');
   const declAfter = declEnd >= 0 ? declEnd : policyModule ? policyModule.endL : -1;
-  const domTop = top.filter(s => (s.kind === 'call' && s.args[0] === D && s.name !== 'init_daemon_domain') || (s.kind === 'allow' && s.src === D));
+  const domTop = top.filter(s => (s.kind === 'call' && s.args[0] === D && !ENTRY.has(s.name)) || (s.kind === 'allow' && s.src === D));
   const lastSelf = selfStmts.filter(s => s.top && !delLines.has(s.l)).map(s => s.l);
   const localAfter = domTop.length ? Math.max(...domTop.map(s => s.endL)) : (lastSelf.length ? Math.max(...lastSelf) : lines.length - 1);
   const optBlocksOfD = scan.blocks.filter(b => b.name === 'optional_policy' && editable.some(s => s.opt === b && !s.bool && s.kind === 'call' && s.args[0] === D) && !delLines.has(b.l));
@@ -1204,7 +1271,7 @@ function editTe(text, rec, model, ctx) {
   const selfAfter = lastSelf.length ? Math.max(...lastSelf) : (localHeader != null ? localHeader + 4 : localAfter);
   // Boolean blocks go after the domain's last rule or block.
   const outerEnd = (s) => (s.opt ? s.opt.endL : s.tun ? s.tun.endL : s.endL);
-  const domAll = editable.filter(s => (s.kind === 'call' && s.args[0] === D && s.name !== 'init_daemon_domain') || (s.kind === 'allow' && s.src === D));
+  const domAll = editable.filter(s => (s.kind === 'call' && s.args[0] === D && !ENTRY.has(s.name)) || (s.kind === 'allow' && s.src === D));
   const boolAfter = Math.max(optAfter, ...domAll.map(outerEnd));
 
   // Declarations: booleans with the other gen_tunable lines (or above the domain's type), the rest after the last declaration.
@@ -1374,7 +1441,7 @@ function validate(model, ctx, opts = {}) {
     types.add(t);
     if (opts.isNew && ctx.typeExists && ctx.typeExists(t)) out.push(`Type ${t} is already declared elsewhere.`);
   }
-  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []))) if (p.trim() && !p.trim().startsWith('/')) out.push(`Path "${p}" must be absolute.`);
+  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []))) if (p.trim() && !/^(\/|HOME_DIR(\/|$)|HOME_ROOT(\/|$))/.test(p.trim())) out.push(`Path "${p}" must be absolute (or start with HOME_DIR/ or HOME_ROOT/, the home directory placeholders of .fc files).`);
   // One path, one label: setfiles refuses a file_contexts with two specifications for the same path.
   const specType = new Map();
   for (const e of fcEntries(model, ctx)) {
@@ -1547,6 +1614,9 @@ function catalog(ctx) {
     self: SELF.map(([id, label, perms, risky]) => ({ id, label, help: HELP.self[id], risky: !!risky, rule: Object.entries(perms).map(([c, ps]) => `${c} ${ps.join(' ')}`).join('; ') })),
     caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, help: HELP.cap[name], risky: !!risky })),
     provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, help: HELP.provides[id], needs: needs || null })),
+    // A pty type of its own for the sessions a login service starts (shown with the Logins options).
+    loginPty: ctx.has('term_login_pty') && ctx.has('term_create_pty') ? { label: 'Pseudo-terminals for logins (a pty type of its own)',
+      help: 'Gives the sessions it starts pseudo-terminals of a type of its own (DOMAIN_devpts_t, declared with term_login_pty), which it may create, use and hand to the user, as sshd does. The user’s session then gets the terminal relabeled to its own pty type.' } : null,
   };
 }
 

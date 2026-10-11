@@ -228,6 +228,42 @@ const build = async (te) => {
     check(b2 && b2.default === b.default && b2.grants.caps.includes(cap) && !b2.grants[kind].includes(dropped) && b2.desc === b.desc, `${bm}: ${b.name} reads back as edited (was ${before4.slice(0, 80)}…)`, b2);
   } else console.log('     (no enabled service with booleans of its own to edit)');
 
+  // 5. Daemons started by init_system_domain / init_domain (xserver), a template-declared domain (sshd_t),
+  // and a new login service with a pty type of its own: edit / create, then one build.
+  const list5 = await conn.sendRequest('selinux/serviceList');
+  const edited5 = [];
+  for (const [mod, dom] of [['xserver', 'xdm_t'], ['xserver', 'xserver_t'], ['ssh', 'sshd_t']]) {
+    const lm5 = list5.modules.find(x => x.module === mod);
+    if (!lm5 || !lm5.domains.some(d => d.domain === dom)) { console.log(`     (${mod}: no ${dom} here)`); continue; }
+    const x = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+    if (x.unavailable) { check(false, `${mod} ${dom} opens in the editor`, x.unavailable); continue; }
+    const m5 = JSON.parse(JSON.stringify(x.model));
+    const cap = ['ipc_lock', 'sys_tty_config', 'audit_write', 'fsetid', 'sys_nice'].find(c => !m5.caps.includes(c));
+    m5.caps.push(cap);
+    const p5 = await conn.sendRequest('selinux/servicePlan', { model: m5, module: mod });
+    const changed = p5.files.filter(f => f.changed);
+    check(!blocking(p5).length && changed.length === 1 && changed[0].kind === 'te' && changed[0].diff.filter(d => d[0] !== ' ').length <= 3,
+      `${mod} ${dom} (${(x.model.entries || []).map(e => e.name).join(' + ') || 'default entry'}${x.model.declaredBy ? `, declared by ${x.model.declaredBy.name}` : ''}): +${cap} changes one line`, { problems: p5.problems, diff: changed.map(f => f.diff.filter(d => d[0] !== ' ')) });
+    await write(p5);
+    edited5.push([mod, dom, cap]);
+  }
+  const lmod = (await conn.sendRequest('selinux/serviceInfo', {})).model; // a fresh one (section 1 filled in info.model)
+  const ids5 = new Set(info.catalog.access.flatMap(g => g.items.map(i => i.id)));
+  Object.assign(lmod, { name: 'logintest', summary: 'Login test service', exec: ['/usr/sbin/logintest'],
+    access: ['syslog', 'nsswitch', 'loginpgm', 'sessions', 'loginrecords', 'lastlog', 'usercontexts', 'ttys', 'ptys'].filter(a => ids5.has(a)), loginPty: !!info.catalog.loginPty });
+  check(['loginpgm', 'sessions', 'loginrecords', 'ttys'].every(a => lmod.access.includes(a)) && lmod.loginPty, `Logins options offered: ${lmod.access.join(', ')}; pty type: ${lmod.loginPty}`);
+  const p6 = await conn.sendRequest('selinux/servicePlan', { model: lmod, module: null, where: info.defaultLayer });
+  check(!blocking(p6).length && /auth_login_pgm_domain\(logintest_t\)/.test(p6.files[0].text) && /term_login_pty\(logintest_devpts_t\)/.test(p6.files[0].text), 'a new login service with a pty type of its own', p6.problems);
+  await write(p6);
+  r = await build(p6.files.find(f => f.kind === 'te').path);
+  check(r.ok && r.validated, `tree with xserver/ssh edited and logintest builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
+  for (const [mod, dom, cap] of edited5) {
+    const back = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+    check(back.model && back.model.caps.includes(cap), `${mod} ${dom} reads back with ${cap}`);
+  }
+  const back6 = await conn.sendRequest('selinux/serviceInfo', { module: 'logintest' });
+  check(back6.model && back6.model.loginPty && ['loginpgm', 'sessions', 'loginrecords', 'ttys'].every(a => back6.model.access.includes(a)) && !back6.kept.length, 'logintest reads back with its login options and pty type', back6.model && { access: back6.model.access, pty: back6.model.loginPty, kept: back6.kept });
+
   await conn.sendRequest('shutdown');
   conn.sendNotification('exit');
   await sleep(300);

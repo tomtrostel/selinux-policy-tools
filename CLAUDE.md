@@ -314,6 +314,31 @@ so far covered by the e2e tests only.
    `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
    module name on hover); service-test checks every catalog item has help
    and every button/field/checkbox in the form has a title.
+   More services and login services (done, unreleased; user: "why does
+   the service editor not handle ssh and xserver", then "do A and B"):
+   ENTRY_CALLS (init_daemon_domain, init_ranged_daemon_domain,
+   init_system_domain, init_ranged_system_domain, init_domain,
+   init_ranged_domain); `daemonDomains()` lists domains of any of them
+   (init_daemon_domain's program type wins); recognize sets
+   `model.entries` [{name, args (range)}] from top-level entry calls with
+   (D, E) and `model.declaredBy` {name, args, execToo} when no `type D`
+   statement exists and a top-level call's def declares `$1_t` with D =
+   args[0]_t (ctx.declares(name) → declPattern patterns; server
+   treeServiceCtx and the survey provide it); unitsOf's domain unit renders
+   declaredBy-or-type(D), type(E) unless execToo, and each entry (default
+   init_daemon_domain) — sig {D, E, entries, by}. Logins: ACCESS_GROUPS
+   group (loginpgm, sessions, loginrecords, lastlog, faillog,
+   usercontexts, ttys, ptys) + `model.loginPty` unit (type
+   <D-stem>_devpts_t, term_login_pty, allow D P:chr_file { rw_chr_file_perms
+   setattr_chr_file_perms relabelfrom }, term_create_pty(D, P); recognized
+   when that type has term_login_pty; catalog.loginPty when the tree has
+   both interfaces; form checkbox in the Logins group). editTe treats all
+   entry calls as declarations. serviceModules regex accepts every entry
+   call. validate accepts HOME_DIR/ and HOME_ROOT/ paths (RHEL xserver).
+   Survey: every domain of every module with an entry call (488 domains,
+   376 modules; 29 mutation kinds, 14,152 edits). e2e section 5 (CLIP,
+   RHEL 9, RHEL 10): xdm_t, xserver_t, sshd_t + a capability (one line),
+   new login service logintest with the options and pty, one tree build.
    Standalone modules as RPMs (done, unreleased; user: "make them a stand
    alone module … package the service and the policy in an RPM"; target =
    the build host's devel headers): `isStandaloneModule(p)` = module file in

@@ -221,9 +221,12 @@
 
   function accessSection() {
     const on = new Set(model.access);
+    const lp = info.catalog.loginPty;
+    const ptyType = () => `${(model.domain || `${model.name || 'NAME'}_t`).replace(/_t$/, '')}_devpts_t`;
     const groups = info.catalog.access.map(g => h('div', { class: 'group' }, h('div', { class: 'sub' }, g.group),
-      g.items.map(it => check(it.label, on.has(it.id), (v) => { model.access = v ? [...model.access, it.id] : model.access.filter(x => x !== it.id); }, { help: it.help, code: it.calls.join(', '), note: it.optional ? '(optional_policy)' : '' }))));
-    return section('System access', `${model.access.length} selected`, h('div', { class: 'cols' }, groups));
+      g.items.map(it => check(it.label, on.has(it.id), (v) => { model.access = v ? [...model.access, it.id] : model.access.filter(x => x !== it.id); }, { help: it.help, code: it.calls.join(', '), note: it.optional ? '(optional_policy)' : '' })),
+      g.group === 'Logins' && lp ? check(lp.label, !!model.loginPty, (v) => { model.loginPty = v; }, { help: lp.help.replace('DOMAIN_devpts_t', ptyType()), code: `${ptyType()}, term_login_pty, term_create_pty` }) : null));
+    return section('System access', `${model.access.length + (model.loginPty ? 1 : 0)} selected`, h('div', { class: 'cols' }, groups));
   }
 
   function selfSection() {

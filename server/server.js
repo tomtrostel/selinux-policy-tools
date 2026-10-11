@@ -1626,6 +1626,8 @@ function treeServiceCtx() {
   const mods = new Set(idx.modules().map(m => m.module));
   return {
     has: (n) => idx.defs.has(n),
+    // Name patterns a template declares ($1_t, …), to read back domains declared by one.
+    declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(p => p.pattern),
     // Calls into modules that may be turned off belong in optional_policy.
     optional: (n) => {
       const d = (idx.defs.get(n) || [])[0];
@@ -1668,7 +1670,7 @@ function serviceModules() {
   for (const m of idx.modules()) {
     if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te))) continue;
     const text = readSource(m.files.te);
-    if (!text || !/init_daemon_domain\s*\(/.test(text)) continue;
+    if (!text || !/\binit_(ranged_)?(daemon_|system_)?domain\s*\(/.test(text)) continue;
     out.push({ module: m.module, layer: m.layer, files: m.files, domains: service.daemonDomains(text) });
   }
   return out;

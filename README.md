@@ -366,8 +366,14 @@ service editor again, can be installed with *SELinux: Install Module*, and
 take fixes from the denial assistant. The service's own package can then
 require `<name>-selinux`.
 
-**Editing an existing service** opens any module with an
-`init_daemon_domain()` (several daemon domains: pick one). The editor reads
+**Editing an existing service** opens any module whose domains init
+starts: `init_daemon_domain()`, `init_system_domain()`, `init_domain()` or
+their ranged variants (several domains: pick one), so on RHEL also
+`xserver` (`xdm_t`, `xserver_t`), `dbus`, `rpm`, `getty`, `mount` and others
+declared that way. How init starts a domain is kept as written (an edit
+never turns `init_domain` into `init_daemon_domain`), and a domain declared
+by a template (`ssh_server_template(sshd)` declares `sshd_t`) reads back
+with that call as its declaration. The editor reads
 the module back into the same form and changes only the lines of the
 settings you change: turning a capability off rewrites just that
 `allow … self:capability` line (comments kept), removing a file type
@@ -387,6 +393,17 @@ as is*, each line clickable. Removing a file type, a boolean or a helper that th
 `.if` or another module still uses is refused, with the place that uses
 it. A path given for two types (say the service's program and a helper's)
 is refused too, since `setfiles` rejects the build.
+
+**Login services.** *System access* has a **Logins** group for programs
+that log users in, such as sshd, getty or a display manager: log users in
+(`auth_login_pgm_domain`: PAM, switching to the user's identity, role and
+level), start users' sessions in their own domains and signal them
+(`userdom_spec_domtrans_all_users`, `userdom_signal_all_users`), record
+logins in utmp/wtmp, lastlog and faillog, work out the session's SELinux
+context, use the console and virtual terminals, use users' pseudo-terminals,
+and **Pseudo-terminals for logins**: a pty type of its own
+(`<domain>_devpts_t` with `term_login_pty` and `term_create_pty`, as
+sshd's), which reads back like the other options.
 
 **Denial assistant** (*SELinux: Analyze Denials…*, or the shield icon in the
 Policy Explorer; Linux)
@@ -825,15 +842,22 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   from `apache.te` in `optional_policy`, and the rebuilt tree allows it.
   The practice module's four sample denials get their intended verdicts,
   and its HTTP fix resolves after a build (`npm run test:tutorial`).
-* Service editor: every daemon module of the Fedora tree (326) reads back
-  into the form, and saving it unchanged leaves all files byte-identical;
-  26 kinds of edits on each (capabilities, file types added, removed or
+* Service editor: every domain init starts in the Fedora tree (488 in 376
+  modules, 92 of them started by `init_system_domain`, `init_domain` or a
+  ranged variant and 11 declared by a template) reads back into the form,
+  and saving it unchanged leaves all files byte-identical; 29 kinds of
+  edits on each (14,152; the login options and the login pty type
+  included) read back and repeat as a no-op. Earlier, on the main daemon
+  domain of 326 modules: 26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
   permissive, program paths; booleans added, removed, with another default
   or description, grants added and removed, an existing boolean used;
   helpers added, removed, with other rights or file access) read back as
   the edited form and repeat as a no-op (8,476 edits); the 17 helper
-  domains among them read back. On CLIP, RHEL 9 and RHEL 10 a new service
+  domains among them read back. On CLIP, RHEL 9 and RHEL 10, `xserver`'s
+  `xdm_t` and `xserver_t` and `ssh`'s `sshd_t` each get a capability (one
+  line changes), a new login service with the login options and a pty type
+  of its own is created, and the tree builds and links; all read back. On CLIP, RHEL 9 and RHEL 10 a new service
   using every kind of setting (booleans, a port type and a helper program
   of its own included) builds and links with the full tree, with
   `portcon` entries for its port type and the transition into its helper,
@@ -1027,8 +1051,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   build on a host with that release's `selinux-policy-devel`. Port number
   conflicts are checked against the tree, not the target policy. The
   property checks and the Compiled Policy view still show the tree.
-* Services only: a domain started by init with `init_daemon_domain()`.
-  User applications and CGI scripts are edited in the `.te` as before.
+* Services only: a domain started by init (`init_daemon_domain()`,
+  `init_system_domain()`, `init_domain()` or a ranged variant). User
+  applications and CGI scripts are edited in the `.te` as before. Big
+  daemons such as sshd, xdm or the X server still list many interfaces
+  under *Other interfaces* (no option describes them) and keep the rules
+  of the module's other domains and those in `ifdef` blocks as they are.
 * Helpers: started by the service only (not by init or by users), with
   rights at the top level (not under a boolean); access to the service's
   file types, not file types of their own (give the service a type with

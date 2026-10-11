@@ -339,6 +339,74 @@ for (const [p, spec] of [['/var/lib/foo/', '/var/lib/foo(/.*)?'], ['/etc/foo.con
   check(svc.fcFromPath(p).spec === spec && svc.pathFromFc(spec) === p, `path ${p} ⇄ ${spec}`);
 }
 
+/* ---------- other init entry calls, template-declared domains, logins ---------- */
+
+{
+  const LOGIN = ['init_system_domain', 'init_domain', 'init_ranged_daemon_domain', 'auth_login_pgm_domain', 'userdom_spec_domtrans_all_users', 'userdom_signal_all_users',
+    'auth_rw_login_records', 'term_login_pty', 'term_create_pty', 'term_use_unallocated_ttys', 'term_setattr_unallocated_ttys', 'srv_server_template'];
+  const lctx = { ...ctx, has: (n) => KNOWN.has(n) || LOGIN.includes(n), declares: (n) => (n === 'srv_server_template' ? ['$1_t', '$1_devpts_t'] : []) };
+  // A display-manager-like module: init_domain + init_system_domain, no init_daemon_domain.
+  const dm = { te: `policy_module(dm, 1.0.0)
+
+type dm_t;
+type dm_exec_t;
+init_domain(dm_t, dm_exec_t)
+init_system_domain(dm_t, dm_exec_t)
+
+type dmx_t;
+type dmx_exec_t;
+init_ranged_daemon_domain(dmx_t, dmx_exec_t, s0 - mcs_systemhigh)
+
+########################################
+#
+# dm local policy
+#
+
+allow dm_t self:process signal_perms;
+auth_login_pgm_domain(dm_t)
+`, if: '## <summary>dm</summary>\n', fc: '' };
+  check(svc.daemonDomains(dm.te).map(d => `${d.domain}:${d.via}`).join() === 'dm_t:init_domain,dmx_t:init_ranged_daemon_domain', 'domains started by init_domain / init_ranged_daemon_domain are services too');
+  let r = svc.recognize(dm, lctx, {});
+  check(!r.error && r.model.entries.map(e => e.name).join() === 'init_domain,init_system_domain' && r.model.access.includes('loginpgm') && !r.kept.length, 'entry calls read back as written; auth_login_pgm_domain is the "log users in" option', r.error || r.model.entries);
+  let o = svc.plan(JSON.parse(JSON.stringify(r.model)), lctx, dm);
+  check(o.te === dm.te, 'no-op edit leaves it unchanged');
+  const m1 = JSON.parse(JSON.stringify(r.model));
+  m1.caps.push('setuid'); m1.access.push('sessions');
+  o = svc.plan(m1, lctx, dm);
+  check(!/init_daemon_domain/.test(o.te) && /userdom_spec_domtrans_all_users\(dm_t\)/.test(o.te) && /userdom_signal_all_users\(dm_t\)/.test(o.te) && /setuid/.test(o.te), 'an edit keeps init_domain/init_system_domain (no init_daemon_domain added)', o.te);
+  r = svc.recognize(dm, lctx, { domain: 'dmx_t' });
+  check(r.model.entries.length === 1 && r.model.entries[0].args.join() === 's0 - mcs_systemhigh' && svc.plan(JSON.parse(JSON.stringify(r.model)), lctx, dm).te === dm.te, 'a ranged entry keeps its range');
+  // A domain declared by a template.
+  const sv = { te: `policy_module(srv, 1.0.0)
+
+type srvd_exec_t;
+srv_server_template(srvd)
+init_daemon_domain(srvd_t, srvd_exec_t)
+
+allow srvd_t self:process signal_perms;
+`, if: '', fc: '' };
+  r = svc.recognize(sv, lctx, {});
+  check(!r.error && r.model.domain === 'srvd_t' && r.model.declaredBy && r.model.declaredBy.name === 'srv_server_template' && !r.kept.length, 'a domain declared by a template: the template call is its declaration', r.error || r.model.declaredBy);
+  const m2 = JSON.parse(JSON.stringify(r.model)); m2.caps.push('kill');
+  o = svc.plan(m2, lctx, sv);
+  check(!/^type srvd_t;/m.test(o.te) && /srv_server_template\(srvd\)/.test(o.te) && /kill/.test(o.te), 'editing it adds no type srvd_t (the template declares it)', o.te);
+  // A new login service with a pty type of its own.
+  const lm = svc.newModel();
+  Object.assign(lm, { name: 'logind2', exec: ['/usr/sbin/logind2'], access: ['loginpgm', 'sessions', 'loginrecords', 'ttys'], loginPty: true });
+  o = svc.plan(lm, lctx, null);
+  check(/auth_login_pgm_domain\(logind2_t\)/.test(o.te) && /^type logind2_devpts_t;$/m.test(o.te) && /term_login_pty\(logind2_devpts_t\)/.test(o.te) && /term_create_pty\(logind2_t, logind2_devpts_t\)/.test(o.te)
+    && /allow logind2_t logind2_devpts_t:chr_file \{ rw_chr_file_perms setattr_chr_file_perms relabelfrom \};/.test(o.te) && /term_use_unallocated_ttys\(logind2_t\)/.test(o.te), 'new login service: login options and a pty type of its own', o.te);
+  const rl = svc.recognize(o, lctx, {});
+  check(rl.model.loginPty && ['loginpgm', 'sessions', 'loginrecords', 'ttys'].every(a => rl.model.access.includes(a)) && !rl.kept.length, 'it reads back with the same options');
+  const lm2 = JSON.parse(JSON.stringify(rl.model)); lm2.loginPty = false;
+  o = svc.plan(lm2, lctx, o);
+  check(!/devpts/.test(o.te), 'turning the pty off removes its type and rules');
+  const hd = svc.newModel(); Object.assign(hd, { name: 'hd', exec: ['/usr/bin/hd'], files: [{ kind: 'other', type: 'hd_home_t', paths: ['HOME_DIR/.hd/', 'rel/x'], access: 'read' }] });
+  const hp = svc.validate(hd, lctx, { isNew: true });
+  check(!hp.some(p => p.includes('"HOME_DIR/.hd/"')) && hp.some(p => p.includes('"rel/x"')), 'paths: HOME_DIR/ (the .fc home placeholder) accepted, relative ones refused', hp);
+  check(svc.catalog(lctx).loginPty && svc.catalog(lctx).access.some(g => g.group === 'Logins' && g.items.some(i => i.id === 'loginpgm' && i.help)) && !svc.catalog(ctx).loginPty, 'catalog: Logins options and the pty option where the tree has the interfaces');
+}
+
 /* ---------- RPM packaging (standalone modules) ---------- */
 
 const pkgSpec = require('../server/packaging');
@@ -543,6 +611,15 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(licSelect().children.some(o => o.textContent === 'LicenseRef-Acme (saved)' && o.attrs.selected !== undefined) && !licInput(), 'saved: offered in the list and selected');
   byId.apply.disabled = false; byId.apply.fire('click');
   check(last('apply').standalone === true && last('apply').license === 'LicenseRef-Acme', 'apply says standalone, with the license');
+  // Logins: the options and the pty type of its own.
+  const lcat = svc.catalog({ ...ctx, has: (n) => KNOWN.has(n) || ['auth_login_pgm_domain', 'userdom_spec_domtrans_all_users', 'userdom_signal_all_users', 'term_login_pty', 'term_create_pty'].includes(n) });
+  send({ cmd: 'init', info: { ...info, catalog: lcat, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  check(checkbox('Log users in') && checkbox('Start users’ sessions'), 'Logins options in System access');
+  const pty = checkbox('Pseudo-terminals for logins');
+  check(pty && /webby_devpts_t/.test(find(e => e.tag === 'label' && e.textContent.includes('Pseudo-terminals')).map(l => l.attrs.title + l.textContent).join('')), 'the pty option names the type it adds');
+  pty.checked = true; pty.fire('change');
+  await wait(300);
+  check(last('plan').model.loginPty === true, 'ticking it puts loginPty in the plan');
   // Existing module: kept statements, existing interfaces disabled.
   const r2 = svc.recognize(legacy, ctx, {});
   send({ cmd: 'init', info: { ...info, isNew: false, module: 'legacyd', layer: 'contrib', files: { te: '/t/legacyd.te' }, model: { ...r2.model, provides: [] }, kept: r2.kept, provided: ['legacyd_domtrans'], domains: r2.domains } });
@@ -565,7 +642,8 @@ async function survey(root) {
   idx.scanRoots([root]);
   const layerOf = new Map();
   for (const [n, l] of idx.defs) layerOf.set(n, l[0].path);
-  const tctx = { has: (n) => idx.defs.has(n), optional: (n) => { const p = layerOf.get(n); return !!p && !/[\\/](kernel|system)[\\/]/.test(p); }, moduleArgs: 2 };
+  const tctx = { has: (n) => idx.defs.has(n), optional: (n) => { const p = layerOf.get(n); return !!p && !/[\\/](kernel|system)[\\/]/.test(p); }, moduleArgs: 2,
+    declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(p => p.pattern) };
   const muts = [
     m => { const c = ['sys_chroot', 'kill', 'setuid'].find(x => !m.caps.includes(x)); if (c) m.caps.push(c); },
     m => { m.caps.splice(0, 1); },
@@ -596,26 +674,39 @@ async function survey(root) {
     m => { const h = m.helpers[0]; if (!h) return; if (!h.caps.includes('kill')) h.caps.push('kill'); h.signal = !h.signal; if (h.extra.length) h.extra.splice(0, 1); },
     m => { const h = m.helpers[0]; if (!h) return; const x = h.files[0]; if (x) x.access = x.access === 'read' ? 'manage' : 'read'; else { const t = m.files.find(r => r.kind === 'config' || r.kind === 'state'); if (t) h.files.push({ type: t.type, access: 'read' }); } },
     m => { if (m.booleans.some(b => b.name === 'use_nfs_home_dirs')) return; m.booleans.push({ name: 'use_nfs_home_dirs', external: true, grants: { access: ['mail'], extra: [], caps: [], self: [], net: { listen: [], connect: [] } } }); },
+    // Logins.
+    // (interfaces an added option calls read back as part of it, as in the form)
+    m => { for (const a of ['loginpgm', 'sessions', 'loginrecords']) if (!m.access.includes(a)) m.access.push(a); m.extra = m.extra.filter(n => !['auth_login_pgm_domain', 'userdom_spec_domtrans_all_users', 'userdom_signal_all_users', 'auth_rw_login_records'].includes(n)); },
+    m => { const i = m.access.findIndex(a => ['loginpgm', 'sessions', 'ttys', 'ptys', 'loginrecords', 'lastlog', 'usercontexts'].includes(a)); if (i >= 0) m.access.splice(i, 1); },
+    m => { m.loginPty = !m.loginPty; },
   ];
   const bnorm = (m) => (m.booleans || []).filter(b => !b.external || Object.values(b.grants).some(v => (Array.isArray(v) ? v.length : v.listen.length + v.connect.length)))
     .map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : b.desc, JSON.stringify(grantsNorm(b.grants))]).sort((a, b) => a[0].localeCompare(b[0]));
   const tnorm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), [...m.self].sort(), [...m.caps].sort(),
     m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m),
-    (m.helpers || []).map(h => [svc.helperNames(m, h).H, !!h.signal, [...h.exec].sort(), h.files.map(x => x.type + x.access).sort(), JSON.stringify(grantsNorm(h))]).sort()]);
-  let mods = 0, same = 0, edits = 0, good = 0;
+    (m.helpers || []).map(h => [svc.helperNames(m, h).H, !!h.signal, [...h.exec].sort(), h.files.map(x => x.type + x.access).sort(), JSON.stringify(grantsNorm(h))]).sort(),
+    !!m.loginPty, JSON.stringify(m.entries || []), JSON.stringify(m.declaredBy || null)]);
+  let mods = 0, same = 0, edits = 0, good = 0, doms = 0, viaTemplate = 0, otherEntry = 0;
   const bad = [];
   for (const f of idx.files.values()) {
     if (!f.path.endsWith('.te') || !/modules/.test(f.path)) continue;
     const te = fs.readFileSync(f.path, 'utf8');
-    if (!/init_daemon_domain\(/.test(te)) continue;
+    if (!/\binit_(ranged_)?(daemon_|system_)?domain\(/.test(te)) continue;
     const base = f.path.slice(0, -3);
     const rd = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '');
     const texts = { te, if: rd(base + '.if'), fc: rd(base + '.fc') };
-    const r = svc.recognize(texts, tctx, {});
-    if (r.error) continue;
+    const first = svc.recognize(texts, tctx, {});
+    if (first.error) continue;
     mods++;
+    // Every domain init starts, not only the module's main one.
+    for (const dom of first.domains.map(x => x.domain)) {
+    const r = svc.recognize(texts, tctx, { domain: dom });
+    if (r.error) continue;
+    doms++;
+    if (r.model.declaredBy) viaTemplate++;
+    if ((r.model.entries || []).some(e => e.name !== 'init_daemon_domain')) otherEntry++;
     const o = svc.plan(JSON.parse(JSON.stringify(r.model)), tctx, texts);
-    if (o.te === texts.te && o.if === texts.if && o.fc === texts.fc) same++; else bad.push(`unchanged ${f.path}`);
+    if (o.te === texts.te && o.if === texts.if && o.fc === texts.fc) same++; else bad.push(`unchanged ${f.path} ${dom}`);
     for (const [i, mut] of muts.entries()) {
       edits++;
       const m = JSON.parse(JSON.stringify(r.model));
@@ -624,9 +715,10 @@ async function survey(root) {
       const r2 = svc.recognize(out2, tctx, { domain: m.domain });
       const again = svc.plan(JSON.parse(JSON.stringify(m)), tctx, out2);
       if (!r2.error && tnorm(r2.model) === tnorm(m) && again.te === out2.te && again.fc === out2.fc) good++;
-      else bad.push(`edit ${i} ${f.path}`);
+      else bad.push(`edit ${i} ${f.path} ${dom}`);
+    }
     }
   }
-  check(mods > 0 && same === mods, `${root}: ${same} of ${mods} daemon modules unchanged by a no-op edit`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
+  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by init_system_domain/init_domain/ranged variants, ${viaTemplate} declared by a template)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
   check(good === edits, `${root}: ${good} of ${edits} edits read back as the edited model and are idempotent`, bad.filter(b => b.startsWith('edit')).slice(0, 10));
 }
