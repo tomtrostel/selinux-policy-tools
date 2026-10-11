@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-10: **v0.7.0 released** (GitHub release `v0.7.0`;
+Status as of 2026-10-10: **v0.8.0 released** (GitHub release `v0.8.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -15,9 +15,9 @@ checks, booleans in the .te check, ifelse decisions, all build variants
 (and the `make conf` / exec-bit fixes); 0.7.0 adds several trees per
 workspace (the last item under 5, confirmed interactively). Roadmap steps
 1-5 are done; next: interactive use of the 0.5.0/0.6.0 features, or new
-ideas from the user. Unreleased since 0.7.0: ifdef on names that aren't
-build flags is decided from the sources (see Key design decisions); the
-.te require check works without modules.conf (make conf defaults).
+ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
+from the sources (see Key design decisions) and runs the .te require check
+without modules.conf (make conf defaults); not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -153,7 +153,7 @@ so far covered by the e2e tests only.
    → scope uncertain → silent; uses in undecided ifdef branches skipped.
    Loadable = `idx.isLoadable(module)`: `idx.allLoadable` in devel mode,
    else `idx.moduleKinds` from modules.conf + APPS_MODS
-   (`updateModuleKinds()` in server; without modules.conf (after 0.7.0)
+   (`updateModuleKinds()` in server; without modules.conf (0.8.0)
    `idx.defaultModuleKinds(root)` = what `make conf`/sedoctool writes:
    base if the module's .if has `## <required val="true">` (parser
    `f.required`), else module; identical to real make conf on upstream
@@ -315,7 +315,7 @@ is only visible to collaborators; making it public is the user's call.
   the "universe" of decidable flags is the Makefile's `-D` symbols (plus
   any `distro_*` when it passes `distro_$(DISTRO)`), minus flags Rules.*
   pass only for some steps (`m4.stepOnly`, undecided), minus anything
-  define()d in the sources. Other names (after 0.7.0): `idx.branchState(f, b)`
+  define()d in the sources. Other names (0.8.0): `idx.branchState(f, b)`
   → {v: defined? true/false/null, kind} from `symSites()` (parser
   `f.symDefs`: define/pushdef/undefine/popdef/interface/template sites,
   `inDef` = enclosing def name) and m4's read order (`m4Role`,

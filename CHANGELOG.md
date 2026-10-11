@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0 (2026-10-10)
+
+ifdef decisions on names that aren't build flags; the .te require check in
+trees without modules.conf.
+
 **New**
 
 * **`ifdef` on names that aren't build flags is decided**: interface
