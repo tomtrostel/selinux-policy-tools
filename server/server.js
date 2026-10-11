@@ -2150,6 +2150,135 @@ connection.onRequest('selinux/domains', async () => {
   return { domains: model.types.filter(t => t.attrs.includes('domain')).map(t => t.name).sort(), builtAt: model.builtAt };
 });
 
+/* ---------------- denial assistant ---------------- */
+
+const denials = require('./denials');
+
+/** Policies denials can be checked against: this host's installed policies and the workspace's last build. */
+function denialPolicies() {
+  const list = build.installedPolicies().map(p => ({
+    id: `installed:${p.name}`, label: `Installed ${p.name} policy${p.active ? ' (running here)' : ''}`, bin: p.policy, name: p.name, active: p.active,
+    // The running policy: matchpathcon's defaults include file_contexts.local and home directories.
+    fc: p.active ? null : path.join('/etc/selinux', p.name, 'contexts', 'files', 'file_contexts'),
+  }));
+  if (usingDevel) {
+    const res = lastModule && lastBuild.get(lastModule);
+    if (res && res.ok) list.push({ id: 'build', label: `This host's policy + ${res.module} (last build)`, build: true, fc: null });
+  } else if (treeRoot) {
+    const res = lastBuild.get(treeRoot);
+    if (res && res.policyBin && fs.existsSync(res.policyBin)) {
+      const fc = [path.join(res.workDir, 'file_contexts'), path.join(res.workDir, 'tmp', 'all_mods.fc')].find(f => fs.existsSync(f)) || null;
+      list.push({ id: 'build', label: `Last build of ${path.basename(treeRoot)}`, bin: res.policyBin, build: true, fc });
+    }
+  }
+  return list;
+}
+
+const execFileP = (cmd, args) => new Promise((resolve) => {
+  require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
+});
+
+/** Current boolean values of the running policy (/sys/fs/selinux/booleans), {} when not available. */
+function runningBooleans() {
+  const dir = '/sys/fs/selinux/booleans';
+  const out = {};
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return out; }
+  for (const n of names) {
+    try { out[n] = fs.readFileSync(path.join(dir, n), 'utf8').trim().split(/\s+/)[0] === '1'; } catch { /* unreadable */ }
+  }
+  return out;
+}
+
+/**
+ * Expected (file contexts) and current labels of the groups' paths:
+ * Map path → { expected, current } (types). matchpathcon per file kind, with
+ * the policy's file_contexts unless it is the running one; stat for the
+ * current label (missing files have none).
+ */
+async function denialLabels(groups, fc) {
+  const out = new Map();
+  if (process.platform === 'win32') return out;
+  const byMode = new Map();
+  for (const g of groups) {
+    const mode = denials.FILE_MODES[g.tclass];
+    if (!mode || g.kind !== 'deny') continue;
+    for (const p of g.paths) { if (!byMode.has(mode)) byMode.set(mode, new Set()); byMode.get(mode).add(p); }
+  }
+  const all = new Set();
+  for (const [mode, set] of byMode) {
+    const paths = [...set];
+    paths.forEach(p => all.add(p));
+    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', mode, ...paths]);
+    for (const line of r.stdout.split('\n')) {
+      const m = /^(.*)\t(\S+)$/.exec(line);
+      if (!m) continue;
+      const ctx = denials.parseContext(m[2]);
+      out.set(m[1], { expected: ctx ? ctx.type : null, current: null });
+    }
+  }
+  if (all.size) {
+    const r = await execFileP('stat', ['-c', '%n\t%C', '--', ...all]);
+    for (const line of r.stdout.split('\n')) {
+      const m = /^(.*)\t(\S+)$/.exec(line);
+      if (!m) continue;
+      const ctx = denials.parseContext(m[2]);
+      const e = out.get(m[1]) || { expected: null, current: null };
+      e.current = ctx ? ctx.type : null;
+      out.set(m[1], e);
+    }
+  }
+  return out;
+}
+
+connection.onRequest('selinux/denialPolicies', async () => {
+  await indexing;
+  const list = denialPolicies();
+  return { policies: list.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })) };
+});
+
+/**
+ * Parse audit text, group the denials and give each group a verdict against
+ * `against` (a denialPolicies id; default: the running installed policy, else
+ * the workspace build).
+ */
+connection.onRequest('selinux/analyzeDenials', async ({ text, against } = {}) => {
+  await indexing;
+  const parsed = denials.parseDenials(text || '');
+  const groups = denials.groupDenials(parsed);
+  const policies = denialPolicies();
+  const pol = policies.find(p => p.id === against) || policies.find(p => p.active) || policies.find(p => p.build) || policies[0] || null;
+  const notes = [];
+  const unparsed = (text || '').split('\n').filter(l => /avc:\s+denied/.test(l)).length - parsed.filter(d => d.kind !== 'error').length;
+  if (unparsed > 0) notes.push(`${unparsed} line${unparsed > 1 ? 's' : ''} mentioning "avc: denied" could not be read (no scontext/tcontext?).`);
+  let te = new Map(), labels = new Map(), policyName = pol ? pol.label : 'the policy';
+  if (!pol) notes.push(process.platform === 'win32' ? 'Checking denials against a policy needs a Linux host (use Remote-SSH).' : 'No policy to check against: no installed policy under /etc/selinux, and no workspace build.');
+  else if (groups.length) {
+    let bin = pol.bin;
+    if (pol.build && usingDevel) {
+      const l = await linkedPolicy();
+      if (l.unavailable) notes.push(l.unavailable); else bin = l.policy;
+    }
+    if (bin) {
+      const bools = pol.active ? runningBooleans() : {};
+      if (pol.active && Object.keys(bools).length) policyName = `the running ${pol.name} policy`;
+      const checks = groups.filter(g => g.kind === 'deny').map(g => ({ id: g.key, s: g.source, t: g.target, c: g.tclass, perms: g.perms }));
+      if (checks.length) {
+        const r = await policyQuery.request({ op: 'avc', bin, checks, bools });
+        if (r.error) notes.push(`Policy query failed: ${r.error}`);
+        else for (const x of r.results) te.set(x.id, x);
+      }
+      labels = await denialLabels(groups, pol.fc);
+    }
+  }
+  const out = groups.map(g => {
+    const lab = g.paths.filter(p => labels.has(p)).map(p => ({ path: p, ...labels.get(p) }));
+    return { ...g, labels: lab, v: denials.verdict(g, te.get(g.key) || null, lab, policyName),
+      srcLoc: sourceLocation(g.source, ['type']), tgtLoc: sourceLocation(g.target, ['type']) };
+  });
+  return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
+});
+
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */
 let ruleIndex = { key: null, side: null };
 async function currentSide() {

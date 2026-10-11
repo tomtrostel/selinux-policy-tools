@@ -27,6 +27,15 @@ leave it.
 
 **4. Something only some sites need.** Grant it under a boolean.
 
+**The denial assistant checks 2 and 4 for you.** In **SELinux: Analyze
+Denials…**, each group gets a verdict: *wrong label* (the policy's file
+contexts give the path another type; fix: `restorecon`), *boolean* (the
+policy allows it once a boolean is on; fix: `setsebool -P`), *generic
+label* (the file has a catch-all type such as `var_lib_t`), *already
+allowed*, or *missing rule*. Choose **Check against** the policy running on
+the host that logged the denials (normally the installed one), or your last
+build.
+
 **Use the extension to decide:** **Ctrl+T** → type the target type (e.g.
 `var_lib_t`) → hover it: you see its module and the paths that get it.
 In the **Compiled Policy** view, open the type → **Accessed by** to see

@@ -5,6 +5,8 @@ Reads one JSON request per line on stdin, writes one JSON response per line:
   {"id": 1, "op": "rules", "bin": "/path/policy.bin", "name": "syslogd_t",
    "dir": "source" | "target", "kinds": ["allow", ...]}
   -> {"id": 1, "rules": [{"rt", "s", "t", "c", "perms", "cond"}], "via": [...attrs]}
+Other ops: "transitions", "check" (property checks) and "avc" (is each denied
+permission allowed, allowed under other boolean settings, or missing).
 
 The policy is indexed once (rules bucketed by source and target name, each
 type's attributes) and re-indexed when the file changes, so a query is a
@@ -42,9 +44,13 @@ class Index:
         self.rules = []
         self.by_src, self.by_tgt = {}, {}
         self._pmap, self._rflow = None, {}
+        self.conds = {}  # rule index -> (ConditionalExpr, block): the rule is active when expr == block
+        self.bool_defaults = {str(b): bool(b.state) for b in p.bools()}
+        self.permissive = {str(t) for t in p.types() if t.ispermissive}
         for r in p.terules():
             try:
                 cond = "%s:%s" % (r.conditional, str(r.conditional_block).lower())
+                self.conds[len(self.rules)] = (r.conditional, bool(r.conditional_block))
             except setools.exception.RuleNotConditional:
                 cond = ""
             try:
@@ -359,6 +365,79 @@ class Index:
         except KeyError as e:
             return {"ok": False, "error": "unknown type or attribute %s in the compiled policy" % e.args[0]}
 
+    # ----- denials: is an access allowed, and under which boolean settings -----
+
+    def cond_active(self, i, states):
+        expr, block = self.conds[i]
+        vals = {str(b): states.get(str(b), self.bool_defaults.get(str(b), False)) for b in expr.booleans}
+        return expr.evaluate(**vals) == block
+
+    def cond_options(self, i, states):
+        """Boolean settings (only the changed ones) that make conditional rule i active, fewest changes first."""
+        expr, block = self.conds[i]
+        names = sorted(str(b) for b in expr.booleans)
+        cur = {b: states.get(b, self.bool_defaults.get(b, False)) for b in names}
+        out = []
+        if len(names) > 8:
+            return out
+        for mask in range(1 << len(names)):
+            vals = {b: bool(mask >> k & 1) for k, b in enumerate(names)}
+            if expr.evaluate(**vals) == block:
+                out.append({b: v for b, v in vals.items() if v != cur[b]})
+        out.sort(key=len)
+        return out[:4]
+
+    def avc(self, checks, states):
+        """For each {s, t, c, perms}: per permission 'allowed' | 'boolean' (with the settings that allow it) | 'missing'."""
+        out = []
+        for ch in checks:
+            s = self.aliases.get(ch["s"], ch["s"])
+            t = self.aliases.get(ch["t"], ch["t"])
+            cl, perms = ch["c"], ch["perms"]
+            res = {"id": ch.get("id"), "permissiveDomain": s in self.permissive}
+            unknown = [n for n in (s, t) if n not in self.attrs]
+            if unknown:
+                res["unknown"] = unknown
+                out.append(res)
+                continue
+            if cl not in self.classperms:
+                res["unknownClass"] = cl
+                out.append(res)
+                continue
+            tn = set([t] + self.attrs[t])
+            hits = {p: [] for p in perms}
+            for n in [s] + self.attrs[s]:
+                for i in self.by_src.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] != "allow" or r["c"] != cl:
+                        continue
+                    if not (r["t"] in tn or (r["t"] == "self" and s == t)):
+                        continue
+                    for p in perms:
+                        if p in r["perms"]:
+                            hits[p].append(i)
+            per = {}
+            for p, idxs in hits.items():
+                plain = [i for i in idxs if i not in self.conds]
+                active = [i for i in idxs if i in self.conds and self.cond_active(i, states)]
+                if plain or active:
+                    per[p] = {"status": "allowed", "rules": [self.rules[i] for i in (plain + active)[:3]], "conditional": not plain}
+                elif idxs:
+                    # Settings from rules on the type itself first (httpd_can_network_relay for
+                    # http_cache_port_t rather than httpd_can_network_connect for every port).
+                    idxs = sorted(idxs, key=lambda i: (self.rules[i]["t"] not in (t, "self"), i))
+                    opts = []
+                    for i in idxs:
+                        for o in self.cond_options(i, states):
+                            if o and o not in opts:
+                                opts.append(o)
+                    per[p] = {"status": "boolean", "options": opts[:6], "rules": [self.rules[i] for i in idxs[:3]]}
+                else:
+                    per[p] = {"status": "missing"}
+            res["perms"] = per
+            out.append(res)
+        return out
+
     def query(self, name, direction, kinds):
         # A type matches rules written for it or for any attribute it has.
         names = [name] + self.attrs.get(name, [])
@@ -391,6 +470,8 @@ def main():
                 resp.update(rules=rules, via=via, count=len(rules))
             elif req.get("op") == "transitions":
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
+            elif req.get("op") == "avc":
+                resp.update(results=idx.avc(req.get("checks", []), req.get("bools") or {}))
             elif req.get("op") == "check":
                 resp.update(results=[dict(id=c.get("id"), **idx.check(c)) for c in req.get("checks", [])])
             else:

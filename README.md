@@ -20,6 +20,10 @@ It works at two levels:
   a domain transition graph, security property checks re-run after every
   build, and validation of users, roles and MLS levels, all traced back to
   the source lines responsible.
+* **Writing and fixing policy.** A service editor that writes and edits a
+  daemon's module from a form, and a denial assistant that reads AVC
+  denials and tells a wrong label or a boolean that is off from a rule
+  that is really missing.
 
 ## Requirements
 
@@ -338,6 +342,38 @@ as is*, each line clickable. Removing a file type, a boolean or a helper that th
 it. A path given for two types (say the service's program and a helper's)
 is refused too, since `setfiles` rejects the build.
 
+**Denial assistant** (*SELinux: Analyze Denials…*, or the shield icon in the
+Policy Explorer; Linux)
+
+Paste audit records, open a saved log, or click *Read from this host*: it
+runs `sudo ausearch -m avc,user_avc,selinux_err` in a terminal (sudo asks
+for your password there) for the period you pick. Running the command with
+the active editor holding audit records (or a selection of them) starts
+from those. It reads `audit.log` lines, `ausearch` output (raw or `-i`) and
+kernel/journal `avc: denied` lines, and joins each denial with the
+program and full path from the same audit event (SYSCALL, CWD and PATH
+records, hex-encoded names decoded).
+
+Denials are grouped by source type, target type and class, and each group
+gets a verdict, checked in this order:
+
+| Verdict | When | Fix offered |
+| --- | --- | --- |
+| Wrong label | the policy's file contexts give the path another type (`matchpathcon`); for a `create`, the directory's label or a missing type transition | `restorecon -v <paths>` (none if the file has been relabeled since) |
+| Boolean | the policy allows it once a boolean is changed (settings from rules on the type itself first; the one that covers every permission) | `setsebool -P <boolean> on` |
+| Already allowed | the policy allows it now (an older denial, or a constraint / MLS rule) | none; the allowing rules are shown |
+| Generic label | the target is a catch-all type (`default_t`, `var_t`, `var_lib_t`, `usr_t`, …) | give the files a type of their own |
+| Missing rule | none of the above | the access needed, as one raw rule; grant it with an interface |
+
+Types the policy doesn't have ("from a different policy") and
+`SELINUX_ERR` records are reported as such; permissive mode and
+permissive domains are noted. *Check against* picks the policy: the one
+running on this host (with its current boolean values and
+`file_contexts.local`), another installed one, or the workspace's last
+build (a tree's `policy.bin` and file contexts; a standalone module linked
+with the installed policy). Each fix can be copied or put into a terminal
+with `sudo` (not run: you press Enter); types link to their declarations.
+
 **Building** (Linux)
 
 * **Build on save.** Saving a policy file compiles it in a private scratch
@@ -641,6 +677,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Denial assistant: audit records in raw, `ausearch -i`, kernel/journal and
+  USER_AVC form, joined events, hex names and grouping (unit tests); on
+  Rocky 9 against the running targeted policy: a file under `/var/www`
+  labeled `user_home_t` is a wrong label, `httpd_t` connecting to
+  `http_cache_port_t` asks for `httpd_can_network_relay`, reading
+  `user_home_t` without a path for `httpd_read_user_content`, an allowed
+  read is *Already allowed*, `default_t` a generic label, `chronyd_t`
+  writing `etc_t` a missing rule; against a standalone module linked with
+  the installed policy its own types are known, and against a CLIP tree
+  build labels come from the tree's file contexts.
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
   26 kinds of edits on each (capabilities, file types added, removed or
@@ -803,6 +849,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   intended.
 
 ## Limitations
+
+**Denial assistant**
+
+* It says what is wrong, but doesn't yet suggest the interface that grants a
+  missing access, nor write the fix into a module (planned).
+* Labels are checked only for denials whose full path is known (a `path=`
+  field, or PATH records of the same event, which need syscall auditing);
+  with only `name=` the label check is skipped. Commands are meant for the
+  host that logged the denials.
+* Constraint and MLS/MCS denials show up as *Already allowed*; a process
+  that didn't transition into its domain (e.g. a service running as
+  `unconfined_service_t`) isn't recognized yet.
 
 **Tutorials**
 

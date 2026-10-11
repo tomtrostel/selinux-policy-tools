@@ -25,6 +25,12 @@ The four parts that matter:
 Read it as one sentence: *notesd_t was denied write on a file of type
 var_lib_t*.
 
+**Let the extension read them:** **SELinux: Analyze Denials…** takes pasted
+records, a saved log, or runs `ausearch` for you in a terminal (sudo asks
+for your password there). It groups the denials by who, what and on what,
+and joins each one with the program and the full path from the same audit
+event.
+
 `permissive=1` means it was only logged (the domain or the system is in
 permissive mode). `name=` and `ino=` identify the object. With
 `find / -inum 5678` or `ausearch -i` you can get the full path, which you

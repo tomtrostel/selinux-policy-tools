@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+**New**
+
+* **Denial assistant** (*SELinux: Analyze Denials…*): paste audit records,
+  open a log, or read them from the host (`ausearch` with sudo in a
+  terminal). Denials are grouped and each group gets a verdict: wrong label
+  (fix: `restorecon`), allowed under a boolean that is off (fix:
+  `setsebool -P`), already allowed, generic label, or missing rule,
+  checked against the running policy (current boolean values), another
+  installed one, or the workspace's last build. Interface suggestions and
+  applying fixes to modules come next.
+
+**Tests**: `npm run test:denials` (in `npm test`), `npm run
+test:denials-e2e` (melody: installed policy, standalone module, CLIP tree).
+
 ## 0.9.0 (2026-10-11)
 
 **New**

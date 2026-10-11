@@ -21,7 +21,8 @@ without modules.conf (make conf defaults); not yet tried interactively.
 0.9.0 adds the service editor with booleans, port types and helper
 domains (step 6 below; e2e-tested, the form not yet tried interactively)
 and tutorials (step 7; the user checked the walkthroughs in VS Code and
-they look good).
+they look good). Unreleased (after 0.9.0): the denial assistant, phase 1
+(step 8).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -342,6 +343,45 @@ so far covered by the e2e tests only.
    "Code collects usage data" line under them is VS Code's telemetry
    notice (gone with telemetry.telemetryLevel off), not ours.
 
+8. **Denial assistant** (user picked it from suggested features; plan agreed
+   2026-10-11): from an AVC denial to the smallest correct fix.
+   Phases: 1 parse/group/verdicts (done, unreleased), 2 interface
+   suggestions, 3 apply + verify after build, 4 later (no transition into
+   the domain, two-interface covers, new interface in the owner module,
+   constraint/MLS explanations, a tutorial quick action).
+   Phase 1: `server/denials.js` (pure): `records()` (audit.log /
+   ausearch --raw, ausearch -i " : " stamps, kernel `type=1400 audit(...)`,
+   bare "avc: denied" lines; RHEL ENRICHED text after \x1d dropped),
+   `parseDenials()` joins AVC/USER_AVC (fields inside msg='...')/SELINUX_ERR
+   with SYSCALL (exe, comm), CWD and PATH (item whose basename = AVC name,
+   NORMAL/CREATE first) by event stamp; hex fields decoded (name, exe, comm,
+   cwd, path, proctitle). `groupDenials()` by source type|target type|class
+   (events counted once). `verdict(g, te, labels, policyName)`: error,
+   unknown type/class, label (expected ≠ target; create → dir label or type
+   transition; relabeled since → no fix), boolean (only when no perm is
+   missing; picks the setting covering all perms, fewest changes), allowed
+   (constraint/MLS hint), generic (GENERIC_TYPES, file classes only),
+   missing (`needed` raw rule, self when s = t). policy_query.py op `avc`
+   (per perm allowed / boolean with `cond_options` brute force over the
+   expression's booleans, rules on the type itself first / missing;
+   permissive domains; `self.conds`, `bool_defaults`). Server:
+   `denialPolicies()` (installed: `fc` null for the running one so
+   matchpathcon uses its defaults incl. .local; build: tree policyBin +
+   workDir/file_contexts or tmp/all_mods.fc, devel: linkedPolicy()),
+   `runningBooleans()` (/sys/fs/selinux/booleans), `denialLabels()`
+   (matchpathcon -m <mode> [-f fc], stat -c '%n\t%C'); requests
+   `selinux/denialPolicies`, `selinux/analyzeDenials` {text, against}
+   (default: running installed, else build). Client `showDenials`
+   (media/denials.js): ausearch runs as `sudo ausearch ... > f.part; mv f.part
+   f` in the "SELinux Denials" terminal, fs.watchFile picks it up; fixes go
+   to that terminal with sudo and no newline. Command
+   `selinux.analyzeDenials` (selection/document with audit records
+   prefills), Policy Explorer shield icon, linked from the denial
+   walkthrough. Tests: test/denials-test.js (npm test: parsing, grouping,
+   verdicts, webview), test/denials-e2e.js (melody: running targeted policy
+   verdicts, standalone build linked, CLIP tree build with its
+   all_mods.fc). Not yet tried interactively.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -501,6 +541,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/build.js`: toolchain detection, scratch-dir module build, tree
   build with scratch sync, parsers for checkmodule/m4/refpolicywarn/
   semodule_link output and the m4 `#line` expansion map.
+- `server/denials.js`: denial assistant (audit parsing, grouping, verdicts);
+  `media/denials.js` its webview.
 - `server/service.js`: service editor model (catalogs, render, recognize,
   minimal edits by unit diff); `media/service.js` its webview form.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
@@ -574,6 +616,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   the spec dir so modules.conf edits stay in the copy); standalone too.
 - `test/walkthrough-test.js` (in `npm test`) and `test/tutorial-e2e.js`
   (`npm run test:tutorial`, melody): the walkthroughs and the practice module.
+- `test/denials-test.js` (in `npm test`) and `test/denials-e2e.js`
+  (`npm run test:denials-e2e`, melody; optional tree arg, default CLIP).
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

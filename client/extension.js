@@ -407,6 +407,17 @@ function activate(context) {
       }
       showTransitionGraph(context, name, 'out');
     }),
+    vscode.commands.registerCommand('selinux.analyzeDenials', () => {
+      // Start from the active editor's selection, or the whole document when it holds audit records.
+      const ed = vscode.window.activeTextEditor;
+      let text = null;
+      if (ed) {
+        const sel = ed.document.getText(ed.selection);
+        const all = sel.trim() ? sel : ed.document.getText();
+        if (/avc:\s+denied|type=SELINUX_ERR/.test(all) && all.length < 20e6) text = all;
+      }
+      showDenials(context, text);
+    }),
     vscode.commands.registerCommand('selinux.newService', () => showServiceEditor(context, null)),
     vscode.commands.registerCommand('selinux.editService', async (arg) => {
       // From the Policy Explorer (module node), a module name, or a pick.
@@ -1391,6 +1402,132 @@ class PolicyExplorer {
     }
     return [];
   }
+}
+
+/* ---------------- denial assistant ---------------- */
+
+let denialPanel = null;
+
+/** A terminal for commands the assistant offers (shared, created on demand). */
+function denialTerminal() {
+  return vscode.window.terminals.find(t => t.name === 'SELinux Denials') || vscode.window.createTerminal('SELinux Denials');
+}
+
+function showDenials(context, text) {
+  if (denialPanel) {
+    denialPanel.reveal();
+    if (text) denialPanel.webview.postMessage({ cmd: 'log', text });
+    return;
+  }
+  const panel = vscode.window.createWebviewPanel('selinuxDenials', 'Denials', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  denialPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'denials.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  #input { padding: 10px 14px 0; }
+  textarea { width: 100%; box-sizing: border-box; height: 7.5em; resize: vertical; font-family: var(--vscode-editor-font-family); font-size: .9em;
+    background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); }
+  select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  #analyze { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 14px; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; font-family: var(--vscode-editor-font-family); }
+  button.link:hover { text-decoration: underline; }
+  #list { padding: 10px 14px 40px; }
+  .group { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-radius: 4px; margin: 0 0 10px; }
+  .group.label, .group.generic { border-left-color: var(--vscode-charts-yellow, #cca700); }
+  .group.boolean { border-left-color: var(--vscode-charts-blue, #3794ff); }
+  .group.missing { border-left-color: var(--vscode-charts-red, #f14c4c); }
+  .group.allowed, .group.unknown, .group.error { border-left-color: var(--vscode-charts-purple, #b180d7); }
+  .group > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .badge { font-size: .8em; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .vtitle { font-weight: 600; margin-left: auto; }
+  .body { padding: 2px 14px 10px; }
+  .detail { white-space: pre-wrap; margin: 4px 0 8px; }
+  .sub { font-weight: 600; margin: 10px 0 4px; }
+  .fix .cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0; }
+  .fix code { background: var(--vscode-textCodeBlock-background); padding: 2px 6px; }
+  pre.rules { margin: 0; padding: 6px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  code { font-family: var(--vscode-editor-font-family); }
+  .facts div { margin: 2px 0; }
+  .lbl { display: inline-block; min-width: 80px; opacity: .75; }
+  .notes { margin: 6px 0; padding-left: 20px; opacity: .9; }
+  .notes.top { color: var(--vscode-editorWarning-foreground); }
+  .summary { margin: 0 0 8px; }
+  .muted { opacity: .7; }
+</style></head><body>
+<div id="bar">
+  <span id="title">Denials</span>
+  <button id="host">Read from this host</button><select id="since"></select>
+  <button id="openFile">Open log file…</button>
+  <label>Check against <select id="against"></select></label>
+  <span id="status"></span>
+</div>
+<div id="input">
+  <textarea id="log" spellcheck="false" placeholder="Paste audit records (audit.log lines, ausearch output, or kernel/journal 'avc: denied' lines), then Analyze"></textarea>
+  <div><button id="analyze">Analyze</button></div>
+</div>
+<div id="list"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  let watcher = null;
+  const stopWatch = () => { if (watcher) { fs.unwatchFile(watcher); watcher = null; } };
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        const r = await client.sendRequest('selinux/denialPolicies');
+        panel.webview.postMessage({ cmd: 'policies', policies: r.policies });
+        if (text) panel.webview.postMessage({ cmd: 'log', text });
+      } else if (m.cmd === 'analyze') {
+        const result = await client.sendRequest('selinux/analyzeDenials', { text: m.text, against: m.against });
+        panel.webview.postMessage({ cmd: 'result', result });
+      } else if (m.cmd === 'ausearch') {
+        // The audit log needs root: run ausearch with sudo in a terminal (it asks for the password
+        // there); the shell, not sudo, writes the file, and renames it when done.
+        stopWatch();
+        const out = path.join(require('os').tmpdir(), `selinux-denials-${process.pid}-${Date.now()}.log`);
+        const since = /^[\w-]+$/.test(m.since || '') ? m.since : 'recent';
+        const t = denialTerminal();
+        t.show();
+        t.sendText(`sudo ausearch -m avc,user_avc,selinux_err -ts ${since} --raw > '${out}.part'; mv -f '${out}.part' '${out}'`);
+        panel.webview.postMessage({ cmd: 'status', text: 'Waiting for ausearch in the terminal (enter your sudo password there)…' });
+        watcher = out;
+        fs.watchFile(out, { interval: 700 }, (cur) => {
+          if (!cur.isFile()) return;
+          stopWatch();
+          let log = '';
+          try { log = fs.readFileSync(out, 'utf8'); fs.rmSync(out, { force: true }); } catch { /* gone */ }
+          if (!log.trim()) panel.webview.postMessage({ cmd: 'status', text: `No denials logged (${since}).` });
+          else panel.webview.postMessage({ cmd: 'log', text: log });
+        });
+      } else if (m.cmd === 'openFile') {
+        const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Analyze', title: 'Audit log to analyze', defaultUri: vscode.Uri.file(require('os').homedir()) });
+        if (!pick || !pick.length) return;
+        const data = await vscode.workspace.fs.readFile(pick[0]);
+        panel.webview.postMessage({ cmd: 'log', text: Buffer.from(data).toString('utf8') });
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c);
+      } else if (m.cmd === 'copy') {
+        await vscode.env.clipboard.writeText(m.text);
+        vscode.window.setStatusBarMessage('Copied', 2000);
+      } else if (m.cmd === 'run') {
+        // Not executed: the user reviews it and presses Enter.
+        const t = denialTerminal();
+        t.show();
+        t.sendText(m.command, false);
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { stopWatch(); denialPanel = null; }, undefined, context.subscriptions);
 }
 
 function deactivate() { return client ? client.stop() : undefined; }

@@ -242,6 +242,11 @@
       {
         "command": "selinux.createPracticeModule",
         "title": "SELinux: Create Practice Module…"
+      },
+      {
+        "command": "selinux.analyzeDenials",
+        "title": "SELinux: Analyze Denials…",
+        "icon": "$(shield)"
       }
     ],
     "menus": {
@@ -300,6 +305,11 @@
           "command": "selinux.openTutorials",
           "when": "view == selinuxPolicyExplorer",
           "group": "navigation@9"
+        },
+        {
+          "command": "selinux.analyzeDenials",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation@8"
         }
       ],
       "commandPalette": [
@@ -746,23 +756,24 @@
           {
             "id": "read",
             "title": "Read the denial",
-            "description": "Who (scontext), what (permission), on what (tclass and tcontext): one sentence.\n[Open a Terminal](command:workbench.action.terminal.new)",
+            "description": "Who (scontext), what (permission), on what (tclass and tcontext): one sentence. The denial assistant reads them for you and says whether a rule is really missing.\n[Analyze Denials…](command:selinux.analyzeDenials)\n[Open a Terminal](command:workbench.action.terminal.new)",
             "media": {
               "markdown": "media/walkthroughs/denial/read.md"
             },
             "completionEvents": [
+              "onCommand:selinux.analyzeDenials",
               "onCommand:workbench.action.terminal.new"
             ]
           },
           {
             "id": "diagnose",
             "title": "Is the policy wrong, or the label?",
-            "description": "Many denials are mislabeled files or harmless probes. Look the type up before adding rules.\n[Go to Type…](command:workbench.action.showAllSymbols)\n[Find in Compiled Policy](command:selinux.findInPolicy)",
+            "description": "Many denials are mislabeled files, booleans that are off, or harmless probes. The denial assistant checks those first.\n[Analyze Denials…](command:selinux.analyzeDenials)\n[Find in Compiled Policy](command:selinux.findInPolicy)",
             "media": {
               "markdown": "media/walkthroughs/denial/diagnose.md"
             },
             "completionEvents": [
-              "onCommand:workbench.action.showAllSymbols",
+              "onCommand:selinux.analyzeDenials",
               "onCommand:selinux.findInPolicy"
             ]
           },
@@ -876,7 +887,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
@@ -896,7 +907,9 @@
     "test:multi": "node test/multi-tree-e2e.js",
     "test:confdefaults": "node test/conf-defaults-e2e.js",
     "test:walkthrough": "node test/walkthrough-test.js",
-    "test:tutorial": "node test/tutorial-e2e.js"
+    "test:tutorial": "node test/tutorial-e2e.js",
+    "test:denials": "node test/denials-test.js",
+    "test:denials-e2e": "node test/denials-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",
