@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-04: **v0.7.0 released** (GitHub release `v0.7.0`;
+Status as of 2026-10-10: **v0.7.0 released** (GitHub release `v0.7.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -18,8 +18,9 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. Unreleased since 0.7.0: ifdef on names that aren't
 build flags is decided from the sources (see Key design decisions).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
-(Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
-reported. Next: items under 5 (hardening), or new ideas from the user.
+(Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
+reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
+so far covered by the e2e tests only.
 
 1. **Navigation and authoring help** (done): definition, references,
    hover docs, completion, signature help, outline, Policy Explorer sidebar,
@@ -29,7 +30,7 @@ reported. Next: items under 5 (hardening), or new ideas from the user.
    settings), compiler/link diagnostics, "Compiles to" hover, expanded
    view, Compiled Policy view (elements + rules per type, traced to
    source), "Changes since HEAD" (own setools diff + source tracing).
-3. **Lockdown workflows** (in progress). Planned order:
+3. **Lockdown workflows** (done):
    1. **Module on/off preview** (done): request `selinux/modulePreview`
       {module, to}. Flips the module's line in the effective modules.conf
       (the spec overlay if `selinux.build.tree.files` has one, else the

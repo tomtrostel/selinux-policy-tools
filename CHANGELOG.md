@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+**New**
+
+* **`ifdef` on names that aren't build flags is decided**: interface
+  names, `define()`d names and names nothing defines are decided from the
+  sources, in the order refpolicy feeds files to m4. Branches on names
+  nothing defines (`TODO`, `targeted_policy`, the misspelled `enabled_mls`
+  in RHEL's init.te) are dimmed; `ifdef(`some_interface', …)` counts as
+  compiled. Hovering the name in an `ifdef` shows which branch is
+  compiled and why. Dynamically defined names stay undecided (9 branches
+  on RHEL and CLIP, down from 85 and 12).
+
+**Tests**: `test/ifdef-names-test.js` (in `npm test`).
+
 ## 0.7.0 (2026-10-04)
 
 Several policy trees in one workspace.
