@@ -19,10 +19,13 @@ const { diagnose } = require('../server/diagnostics');
     if (!m4) { console.error('could not get the m4 flags from the Makefile'); process.exit(1); }
     idx.setM4Defines(m4);
     idx.rebuild();
-    let total = 0, off = 0;
-    for (const f of idx.files.values()) { total += (f.branches || []).length; off += idx.inactiveBranches(f).length; }
+    let total = 0, off = 0, undecided = 0;
+    for (const f of idx.files.values()) {
+      total += (f.branches || []).length; off += idx.inactiveBranches(f).length;
+      undecided += (f.branches || []).filter(b => idx.branchState(f, b).v === null).length;
+    }
     console.log(`m4 flags: ${m4.flags}`);
-    console.log(`ifdef/ifndef branches: ${total}, inactive in this configuration: ${off}; definitions only in inactive branches: ${idx.inactiveDefs.size}`);
+    console.log(`ifdef/ifndef branches: ${total}, inactive in this configuration: ${off}, undecided: ${undecided}; definitions only in inactive branches: ${idx.inactiveDefs.size}`);
   }
   const mo = process.argv.indexOf('--modules');
   if (mo > 0) {

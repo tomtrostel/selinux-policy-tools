@@ -127,6 +127,27 @@ const configure = async (tree) => {
   await sleep(300);
   const hd = await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(debFile) }, position: { line: debLine, character: deb[debLine].indexOf('distro_debian') + 1 } });
   check(hd && /build flag: \*\*not defined\*\*/.test(hd.contents.value), `hover on distro_debian (${path.basename(debFile)}): not defined`, hd && hd.contents.value);
+  // ifdef on names that aren't build flags: decided from where the sources define them.
+  const PKI = path.join(ws, 'policy/modules/contrib/pki.te');
+  const pki = fs.readFileSync(PKI, 'utf8').split('\n'), tpLine = pki.findIndex(l => l.includes('ifdef(`targeted_policy'));
+  if (tpLine >= 0) {
+    conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(PKI), languageId: 'selinux', version: 1, text: pki.join('\n') } });
+    await sleep(300);
+    const pr = await conn.sendRequest('selinux/inactiveRanges', { uri: uri(PKI) });
+    const dim = pr.find(x => x.range.start.line === tpLine);
+    check(dim && /nothing in the policy sources/.test(dim.reason), `pki.te: ifdef(\`targeted_policy') (defined nowhere) is dimmed`, pr.map(x => [x.range.start.line + 1, x.reason]));
+    const ph = await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(PKI) }, position: { line: tpLine, character: pki[tpLine].indexOf('targeted_policy') + 1 } });
+    check(ph && /\*\*not defined\*\* here/.test(ph.contents.value), 'hover on targeted_policy: not defined, with the reason', ph && ph.contents.value);
+  }
+  const OJ = path.join(ws, 'policy/modules/contrib/oddjob.te');
+  const oj = fs.readFileSync(OJ, 'utf8').split('\n'), ojLine = oj.findIndex(l => l.includes('ifdef(`ipa_helper_noatsecure'));
+  if (ojLine >= 0) {
+    conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(OJ), languageId: 'selinux', version: 1, text: oj.join('\n') } });
+    await sleep(300);
+    const oh = await conn.sendRequest('textDocument/hover', { textDocument: { uri: uri(OJ) }, position: { line: ojLine, character: oj[ojLine].indexOf('ipa_helper_noatsecure') + 1 } });
+    check(oh && /\*\*defined\*\* here: it is defined in ipa\.if:\d+/.test(oh.contents.value) && /interface ipa_helper_noatsecure|ipa_helper_noatsecure\(/.test(oh.contents.value),
+      'hover on ifdef(`ipa_helper_noatsecure\'): defined by the interface in ipa.if (+ its docs)', oh && oh.contents.value);
+  }
   r = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
   check(r.ok && r.validated, `full ${variant} build + validate (${(r.ms / 1000).toFixed(1)} s, ${r.packages} packages)`, { ...r, log: r.log && r.log.slice(-1500) });
   const work = r.outputDir;

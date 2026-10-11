@@ -38,7 +38,7 @@ dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-po
 | Feature | Needs (RHEL packages) |
 | --- | --- |
 | Navigation, completion, diagnostics | nothing |
-| Dimming of inactive build-flag `ifdef`s | `make` |
+| Dimming of inactive `ifdef` branches | `make` |
 | Standalone module builds | `make`, `m4`, `checkpolicy`, `selinux-policy-devel`, `gawk` |
 | Full source-tree builds | `make`, `m4`, `checkpolicy`, `policycoreutils`, `policycoreutils-devel`, `gawk`, `python3` |
 | Compiled Policy view, rules, Changes since HEAD | `python3-setools` (from `setools-console`) |
@@ -145,7 +145,20 @@ Open one of these as the workspace folder:
   get no diagnostics, and their declarations, definitions and file contexts
   leave the index, so e.g. go-to-definition skips a `type` that only exists
   on Debian. Hovering a flag shows whether it is defined. Needs `make`
-  (Linux) and a trusted workspace; other conditions are never decided.
+  (Linux) and a trusted workspace.
+* **`ifdef` on other names is decided too**, from where the sources define
+  them and the order refpolicy feeds files to m4 (support `.spt` files,
+  then all `.if` files, then one module's `.te`; `.fc` files see only the
+  `.spt` files). An interface name is defined in every `.te` and interface
+  body (``ifdef(`ipa_helper_noatsecure', …)`` in oddjob.te); a `define()`
+  in a `.te` counts from that line on, and only if its own branch is
+  compiled; a name nothing defines (`TODO`, `targeted_policy`, the
+  misspelled `enabled_mls` in RHEL's init.te) is never defined, so its
+  branch is dimmed; the ``ifndef(`x', `interface(`x', …)')`` guards around
+  interface definitions count as active. Hovering the name shows which
+  branch is compiled and why. Names defined dynamically (inside macros,
+  by `pushdef`/`undefine`, or matching a template-generated interface
+  name) and defines in another module's `.te` stay undecided.
 * Diagnostics as you type, with quick fixes where possible:
   * unknown interface/macro calls (suggests the closest names);
   * unknown object classes and invalid permissions for a class;
@@ -461,7 +474,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.useDevelHeaders` | `auto` | `auto` / `always` / `never` index the devel headers |
 | `selinux.develHeadersPath` | `/usr/share/selinux/devel/include` | Devel header location |
 | `selinux.diagnostics.unknownMacros` / `.classPerms` / `.genRequire` / `.users` | `true` | Toggle individual checks |
-| `selinux.ifdef.evaluate` | `true` | Decide `ifdef`/`ifndef` on m4 build flags from the Makefile (dim inactive branches, leave them out of the index) |
+| `selinux.ifdef.evaluate` | `true` | Decide `ifdef`/`ifndef` on m4 build flags from the Makefile and on other names from the sources (dim inactive branches, leave them out of the index) |
 | `selinux.build.enabled` | `true` | Build with the real toolchain |
 | `selinux.build.onSave` | `true` | Build when a policy file is saved |
 | `selinux.build.develMakefile` | `/usr/share/selinux/devel/Makefile` | Makefile for standalone modules |
@@ -640,10 +653,13 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Structural parsing, not m4 emulation. Names produced by deep m4 tricks
   (string building with `patsubst`, `changequote`) won't resolve. Template
   expansion follows nested templates up to five levels.
-* Only `ifdef`/`ifndef` on m4 build flags are decided, and only where
-  `make` can be asked (Linux, trusted workspace). `ifdef` on other names
-  (e.g. interface names), and everything on Windows/macOS without
-  Remote-SSH, are indexed as if all branches were active.
+* `ifdef`/`ifndef` are decided only where `make` can be asked (Linux,
+  trusted workspace); on Windows/macOS without Remote-SSH every branch is
+  indexed as active. Names defined dynamically (in macro bodies, by
+  `pushdef`/`undefine`, or matching a template-generated name), defines
+  in another `.te` (base modules are concatenated, so order matters) and
+  build flags at the top level of a `.if` file (all_interfaces.conf is
+  made without the flags) stay undecided: 9 branches on RHEL and CLIP.
 * `ifelse` appears only inside definitions in the policy trees (comparing
   their arguments). When a call is expanded, a 4-argument `ifelse` whose
   two sides become plain text is decided (e.g. ``ifelse(`$1',`unconfined', …)``

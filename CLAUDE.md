@@ -15,7 +15,8 @@ checks, booleans in the .te check, ifelse decisions, all build variants
 (and the `make conf` / exec-bit fixes); 0.7.0 adds several trees per
 workspace (the last item under 5, confirmed interactively). Roadmap steps
 1-5 are done; next: interactive use of the 0.5.0/0.6.0 features, or new
-ideas from the user.
+ideas from the user. Unreleased since 0.7.0: ifdef on names that aren't
+build flags is decided from the sources (see Key design decisions).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release: all worked, nothing
 reported. Next: items under 5 (hardening), or new ideas from the user.
@@ -297,14 +298,34 @@ is only visible to collaborators; making it public is the user's call.
   relationships (attributes, members, roles, domain transitions in/out) are
   derived client-side. Standalone-module mode shows the module linked with
   the installed policy (`linkWithInstalled`, model.linked).
-- **ifdef/ifndef on build flags only.** The parser records every
-  ifdef/ifndef branch as a range + condition (`f.branches`, also for .fc).
+- **ifdef/ifndef on build flags, and on names from the sources.** The
+  parser records every
+  ifdef/ifndef branch as a range + condition (`f.branches`, also for .fc;
+  `inDef` when inside a definition body).
   The server asks the Makefile for the real flags (`make --eval` printing
   `$(M4PARAM)` with the build makeArgs; ~0.1 s; trusted + Linux only) and
   the "universe" of decidable flags is the Makefile's `-D` symbols (plus
   any `distro_*` when it passes `distro_$(DISTRO)`), minus flags Rules.*
-  pass only for some steps, minus anything define()d in the sources.
-  Everything else stays all-active (quiet when unsure). Inactive branches:
+  pass only for some steps (`m4.stepOnly`, undecided), minus anything
+  define()d in the sources. Other names (after 0.7.0): `idx.branchState(f, b)`
+  → {v: defined? true/false/null, kind} from `symSites()` (parser
+  `f.symDefs`: define/pushdef/undefine/popdef/interface/template sites,
+  `inDef` = enclosing def name) and m4's read order (`m4Role`,
+  `siteRelevance`: .spt → all .if (all_interfaces.conf, made WITHOUT
+  M4PARAM, so flag branches at .if top level stay undecided) → one .te;
+  .fc sees only .spt; in a def body = expansion time: .if/.spt sites count,
+  .te sites unsure; same file: only sites before the branch; other .te/.fc
+  unsure since base modules are concatenated). A site counts only if its
+  own branches are active (`siteState`, recursive, cycle → null). Never
+  defined → false (TODO, targeted_policy, RHEL's misspelled enabled_mls,
+  CLIP's leftover hide_broken_symptoms); self-guard `ifndef(X,
+  interface(X))` → active; m4 builtins → true; `$N` pattern defines
+  (except interface()/template()'s own define(`$1')), undefine/popdef,
+  defines in macro bodies → null. `idx.branchReason` words it for
+  inactiveRanges, hover on the ifdef name (`ifdefConditionHover`) and
+  `inactive-macro`. RHEL: 85 → 9 undecided branches (+8 inactive),
+  CLIP 12 → 9 (+3); survey diagnostics unchanged (test/ifdef-names-test.js).
+  Undecided stays all-active (quiet when unsure). Inactive branches:
   dimmed (`selinux/inactiveRanges`), skipped by diagnostics, their defs
   move to `idx.inactiveDefs` (calls to them get INFO `inactive-macro`),
   their decls / fc entries / generative calls leave the index. RHEL
@@ -388,7 +409,10 @@ is only visible to collaborators; making it public is the user's call.
 - `test/build-tree-e2e.js` (`npm run test:tree`): full-tree build checks on
   a copy of a refpolicy tree (default: the CLIP RHEL 9 clone on melody, with
   CLIP's RPM make arguments built in); same conventions as build-e2e.
-- `test/diag-survey.js`: runs all diagnostics over a tree and summarizes;
+- `test/ifdef-names-test.js` (in `npm test`, any OS): ifdef decisions on
+  non-flag names over an in-memory index (guards, define order, inactive
+  defines, patterns, .fc, interface bodies, no flags).
+- `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 
 ## Testing
@@ -473,8 +497,9 @@ Package: `npx @vscode/vsce package`.
   policy.
 - `.te` require check only for modules known to be loadable (devel mode,
   or `module` in modules.conf / APPS_MODS); none without modules.conf.
-- ifdef on non-build-flag names is indexed as all-active; without make
-  (Windows local) nothing is decided. `ifelse` only occurs inside
+- ifdef on names defined dynamically (macro bodies, pushdef, generated
+  names) or in another .te stays all-active; without make (Windows local)
+  nothing is decided. `ifelse` only occurs inside
   definitions; the parser records enclosing 4-arg ifelse branches as
   `when: [{a, b, then}]` on declPatterns, requires and bodyCalls, and
   `idx.whenHolds(when, args)` decides them per call (plain-text sides

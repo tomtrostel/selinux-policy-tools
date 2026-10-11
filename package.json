@@ -486,7 +486,7 @@
         "selinux.ifdef.evaluate": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Decide `ifdef`/`ifndef` blocks on m4 build flags (`enable_mcs`, `enable_mls`, `distro_redhat`, …) the way the configured build would, asking the Makefile for its flags (Linux, trusted workspaces). Inactive branches are dimmed, ignored by diagnostics, and their definitions leave the index. Other conditions (e.g. `ifdef` on an interface name) are never decided."
+          "markdownDescription": "Decide `ifdef`/`ifndef` blocks on m4 build flags (`enable_mcs`, `enable_mls`, `distro_redhat`, …) the way the configured build would, asking the Makefile for its flags (Linux, trusted workspaces). Inactive branches are dimmed, ignored by diagnostics, and their definitions leave the index. `ifdef` on other names (interface names, `define()`d or undefined names) is decided from where the sources define them; dynamically defined names stay undecided."
         },
         "selinux.checks.file": {
           "type": "string",
@@ -510,7 +510,8 @@
     }
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js",
+    "test:ifdef": "node test/ifdef-names-test.js",
     "test:build": "node test/build-e2e.js",
     "test:tree": "node test/build-tree-e2e.js",
     "test:rhel": "node test/build-rhel-e2e.js",

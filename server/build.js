@@ -138,7 +138,7 @@ async function buildModule(tePath, readText, { develMakefile, pkg = false, timeo
 /**
  * The -D flags the build passes to m4, asked from the Makefile itself
  * (`make --eval` prints the expanded M4PARAM; no recipe runs).
- * Returns { defined: Set, universe: Set, patterns: [RegExp], flags: string }:
+ * Returns { defined: Set, universe: Set, patterns: [RegExp], flags: string, stepOnly: Set }:
  * `universe` are the symbols the Makefile can pass at all (so their absence
  * means "not defined"); flags it only passes for some steps (Rules.* add
  * self_contained_policy, users_extra) are left out, so they stay undecided.
@@ -158,7 +158,7 @@ function m4Defines({ cwd, makefile, makeArgs = [], timeoutMs = 20000 }) {
       for (const s of defined) if (!stepOnly.has(s)) universe.add(s);
       // `-D distro_$(DISTRO)`: any distro_* symbol is a build flag.
       const patterns = /-D\s*distro_\$\(DISTRO\)/.test(mk) ? [/^distro_\w+$/] : [];
-      resolve({ defined, universe, patterns, flags });
+      resolve({ defined, universe, patterns, flags, stepOnly });
     });
   });
 }

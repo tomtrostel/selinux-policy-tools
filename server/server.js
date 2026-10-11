@@ -615,6 +615,30 @@ function declMarkdown(name, list) {
 
 /* ---------------- hover ---------------- */
 
+/**
+ * Hover on the name tested by ifdef/ifndef: which branch this build
+ * configuration compiles, and why. Null when the word isn't such a name or
+ * nothing is decided (no build flags).
+ */
+function ifdefConditionHover(doc, position, name) {
+  const f = idx.files.get(toPath(doc.uri));
+  if (!f || !f.branches || !idx.m4) return null;
+  const off = doc.offsetAt(position);
+  const call = (f.calls || []).find(c => (c.name === 'ifdef' || c.name === 'ifndef') && c.args[0] === name &&
+    c.argRanges[0] && c.argRanges[0].s <= off && off <= c.argRanges[0].e);
+  if (!call) return null;
+  const after = f.branches.filter(b => b.sym === name && (b.s.l > call.l || (b.s.l === call.l && b.s.c > call.c)));
+  const b = after.sort((x, y) => x.s.l - y.s.l || x.s.c - y.s.c)[0];
+  if (!b) return null;
+  const st = idx.branchState(f, b);
+  if (st.v === null) return `\`${name}\`: can't be decided statically, so both branches count as compiled.`;
+  const reason = idx.branchReason(f, b).replace(/^needs `[^`]*` (not )?defined; /, '');
+  return (st.kind === 'flag' ? `\`${name}\` is an m4 build flag: **${st.v ? 'defined' : 'not defined'}** in this build configuration.\n\n`
+    : `\`${name}\` is **${st.v ? 'defined' : 'not defined'}** here: ${reason}\n\n`) +
+    `This build configuration compiles the ${st.v === (call.name === 'ifdef') ? 'first' : 'second (else)'} branch.` +
+    (st.kind === 'flag' ? `\n\nFlags from the Makefile: \`${idx.m4.flags}\`` : '');
+}
+
 connection.onHover(({ textDocument, position }) => {
   const doc = documents.get(textDocument.uri);
   if (!doc) return null;
@@ -623,6 +647,10 @@ connection.onHover(({ textDocument, position }) => {
   const name = w.word;
   const r = { start: { line: position.line, character: w.start }, end: { line: position.line, character: w.end } };
   const defs = idx.defs.get(name);
+  const cond = ifdefConditionHover(doc, position, name);
+  if (cond) {
+    return { range: r, contents: { kind: MarkupKind.Markdown, value: cond + (defs && defs.length ? '\n\n---\n\n' + defMarkdown(defs[0], defs.length) : '') } };
+  }
   if (defs && defs.length) {
     let value = defMarkdown(defs[0], defs.length);
     const p = toPath(textDocument.uri);
@@ -664,7 +692,7 @@ connection.onHover(({ textDocument, position }) => {
   if (inactive) {
     const b = inactive[0].inactive;
     return { range: r, contents: { kind: MarkupKind.Markdown, value:
-      defMarkdown(inactive[0], inactive.length) + `\n\n*Not part of this build configuration: defined only when \`${b.sym}\` is ${b.want ? '' : 'not '}defined.*` } };
+      defMarkdown(inactive[0], inactive.length) + `\n\n*Not part of this build configuration: its ifdef branch ${idx.branchReason(idx.files.get(inactive[0].path), b)}*` } };
   }
   return null;
 });
@@ -1047,7 +1075,7 @@ connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
   await indexing;
   const f = idx.files.get(toPath(uri));
   return idx.inactiveBranches(f).map(b => ({ range: { start: { line: b.s.l, character: b.s.c }, end: { line: b.e.l, character: b.e.c } },
-    reason: `Not compiled in this build configuration: needs ${b.sym} ${b.want ? 'defined' : 'not defined'}.` }));
+    reason: `Not compiled in this build configuration: ${idx.branchReason(f, b)}` }));
 });
 
 // Build settings derived from a Fedora/RHEL selinux-policy.spec, one entry per policy variant.

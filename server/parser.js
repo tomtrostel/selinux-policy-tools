@@ -25,6 +25,8 @@ const DECL_KEYWORDS = new Set(['type', 'attribute', 'attribute_role', 'typealias
 const TOKENIZED_CALLS = new Set(['gen_user']);
 // m4 conditionals whose branches are recorded (ifelse compares strings and is left alone).
 const CONDITIONALS = new Set(['ifdef', 'ifndef']);
+// Calls that make ifdef(`name') true or false from that point on.
+const SYMDEF_MACROS = new Set(['define', 'pushdef', 'undefine', 'popdef', 'interface', 'template']);
 // Arguments of these are human-readable messages, not code: `foo() is deprecated'.
 const MESSAGE_MACROS = new Set(['refpolicywarn', 'refpolicyerr']);
 
@@ -146,7 +148,8 @@ function parsePolicy(text) {
     avRules: [],
     refs: new Map(), // name -> [[line, col], ...]
     problems: [],
-    branches: [],    // ifdef/ifndef branches: { sym, want, s:{l,c}, e:{l,c} }
+    branches: [],    // ifdef/ifndef branches: { sym, want, s:{l,c}, e:{l,c}, inDef }
+    symDefs: [],     // m4 macro (re)definitions: { name, op, l, c, inDef: enclosing definition } (define, pushdef, undefine, popdef, interface, template)
   };
 
   const stack = [];
@@ -360,7 +363,9 @@ function parsePolicy(text) {
     const sym = cleanArg(text.slice(a0.s, a0.e === undefined ? a0.s : a0.e));
     if (/^\w+$/.test(sym)) {
       const want = frame.name === 'ifdef' ? frame.br.idx === 1 : frame.br.idx === 2;
-      out.branches.push({ sym, want, s: frame.br.s, e: { l: tk.l, c: tk.c } });
+      const b = { sym, want, s: frame.br.s, e: { l: tk.l, c: tk.c } };
+      if (frame.parentDef) b.inDef = true; // decided where the definition is expanded, not here
+      out.branches.push(b);
     }
     frame.br = null;
   }
@@ -387,6 +392,12 @@ function parsePolicy(text) {
 
   function finishCall(frame, closeTok) {
     const args = frame.args.map(a => cleanArg(text.slice(a.s, a.e === undefined ? a.s : a.e)));
+    // What ifdef(`name') sees: every place that (un)defines an m4 macro.
+    if (SYMDEF_MACROS.has(frame.name) && args[0] && /^[\w$]+$/.test(args[0])) {
+      const sd = { name: args[0], op: frame.name, l: frame.tok.l, c: frame.tok.c };
+      if (frame.parentDef) sd.inDef = frame.parentDef.name;
+      out.symDefs.push(sd);
+    }
     if (frame.def) {
       frame.def.bodyEnd = { l: closeTok.l, c: closeTok.c };
       const body = text.slice(frame.args[0].e === undefined ? frame.args[0].s : frame.args[0].e, closeTok.s);
@@ -436,7 +447,9 @@ function parsePolicy(text) {
 function parseFc(text) {
   const out = { kind: 'fc', entries: [], refs: new Map(), calls: [], decls: [], defs: [], avRules: [], requires: [], problems: [] };
   // .fc files are m4 too (ifdef(`distro_debian', ...)); reuse the policy parser for their branches.
-  out.branches = parsePolicy(text).branches;
+  const m4 = parsePolicy(text);
+  out.branches = m4.branches;
+  out.symDefs = m4.symDefs;
   const lines = text.split('\n');
   const ctxRe = /gen_context\(\s*([A-Za-z0-9_$]+):([A-Za-z0-9_$]+):([A-Za-z0-9_$]+)/g;
   lines.forEach((line, l) => {

@@ -35,7 +35,7 @@ function diagnose(idx, f, settings = {}) {
       if (off) {
         const b = off[0].inactive;
         out.push({ l: c.l, c: c.c, len: c.len, severity: INFO, code: 'inactive-macro',
-          msg: `'${c.name}' is only defined when ${b.sym} is ${b.want ? '' : 'not '}defined, which this build configuration ${b.want ? "doesn't do" : 'does'}.` });
+          msg: `'${c.name}' is only defined in an ifdef branch this build configuration doesn't compile: it ${idx.branchReason(idx.files.get(off[0].path), b)}` });
         continue;
       }
       if (c.inOptional) {
