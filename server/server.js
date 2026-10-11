@@ -339,8 +339,22 @@ function getToolchain() {
 
 const isTreeKey = (k) => !!treeRoot && k === treeRoot;
 
-/** What building `p` means: its module .te (module mode) or the tree root. */
+/**
+ * A module file next to the active tree but outside its policy/ directory: a
+ * standalone module (packaged on its own, e.g. as an RPM), built and checked
+ * with the devel headers instead of the tree.
+ */
+function isStandaloneModule(p) {
+  return !!treeRoot && !usingDevel && /\.(te|if|fc)$/.test(p) && !p.startsWith(path.join(treeRoot, 'policy') + path.sep)
+    && !inExcludedTree(p) && roots.some(r => p.startsWith(r + path.sep));
+}
+
+/** What building `p` means: its module .te (module mode, standalone modules) or the tree root. */
 function buildTarget(p) {
+  if (isStandaloneModule(p)) {
+    const te = p.replace(/\.(if|fc)$/, '.te');
+    return (documents.get(toUri(te)) || fs.existsSync(te)) ? te : null;
+  }
   if (treeRoot && !usingDevel) {
     return p === treeRoot || (p.startsWith(treeRoot + path.sep) && !p.startsWith(path.join(treeRoot, 'tmp') + path.sep)) ? treeRoot : null;
   }
@@ -410,7 +424,12 @@ function runBuild(key, pkg = false, trigger = null) {
 }
 
 async function moduleBuild(te, pkg) {
-  connection.sendNotification('selinux/build', { state: 'start', module: path.basename(te, '.te') });
+  const mod = path.basename(te, '.te');
+  if (!fs.existsSync(settings.build.develMakefile || '')) {
+    const log = `${mod} is a standalone module: it builds with ${settings.build.develMakefile}, which isn't there (dnf install selinux-policy-devel).`;
+    return { ok: false, module: mod, tePath: te, ms: 0, log, diagnostics: [{ severity: 'error', message: log, path: te, line: 0, col: 0 }], resolveFile: () => null };
+  }
+  connection.sendNotification('selinux/build', { state: 'start', module: mod });
   const snapshot = new Map();
   const res = await build.buildModule(te, (p) => { const t = readSource(p); if (t != null) snapshot.set(p, t); return t; },
     { develMakefile: settings.build.develMakefile, pkg });
@@ -1483,6 +1502,14 @@ connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
  * a webview and applies the planned texts as workspace edits.
  */
 const service = require('./service');
+const packaging = require('./packaging');
+
+/** "Name <email>" from git's configuration (for the spec's %changelog), or a placeholder. */
+function gitPackager(dir) {
+  const get = (k) => { try { return require('child_process').execFileSync('git', ['config', '--get', k], { cwd: fs.existsSync(dir) ? dir : (roots[0] || '.'), encoding: 'utf8', timeout: 3000 }).trim(); } catch { return ''; } };
+  const n = get('user.name'), e = get('user.email');
+  return n && e ? `${n} <${e}>` : 'Your Name <you@example.com>';
+}
 
 // Statements checkmodule refuses inside a conditional (if / tunable_policy): declarations,
 // attributes, roles, optional and nested conditional blocks. type_transition is fine.
@@ -1542,7 +1569,48 @@ function ownedPorts(mod) {
 }
 
 /** What the service model needs to know about this tree. */
-function serviceCtx() {
+let develIfCache = { key: null, value: null };
+/** Interfaces and templates of the devel headers (incl. distributed/): { names: name → layer, modules }, or null. */
+function develInterfaces() {
+  const inc = path.join(path.dirname(settings.build.develMakefile || '/nonexistent/Makefile'), 'include');
+  let key;
+  try { key = `${inc}:${fs.statSync(inc).mtimeMs}:${fs.statSync(path.join(inc, 'distributed')).mtimeMs}`; } catch { try { key = `${inc}:${fs.statSync(inc).mtimeMs}`; } catch { return null; } }
+  if (develIfCache.key === key) return develIfCache.value;
+  const names = new Map(), modules = new Set();
+  for (const layer of fs.readdirSync(inc, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)) {
+    for (const n of fs.readdirSync(path.join(inc, layer)).filter(x => x.endsWith('.if'))) {
+      modules.add(n.slice(0, -3));
+      let text = '';
+      try { text = fs.readFileSync(path.join(inc, layer, n), 'utf8'); } catch { continue; }
+      for (const m of text.matchAll(/^\s*(?:interface|template)\(\s*`(\w+)'/gm)) names.set(m[1], layer);
+    }
+  }
+  develIfCache = { key, value: { names, modules } };
+  return develIfCache.value;
+}
+
+/**
+ * The service editor's context. standalone: a module packaged on its own
+ * and built against the devel headers of the build host, so only their
+ * interfaces exist (also deciding the helper variants, e.g. files_pid_file
+ * vs files_runtime_file), calls outside the kernel/system layers are
+ * optional, and port types are declared in the module.
+ */
+function serviceCtx(standalone = false) {
+  const base = treeServiceCtx();
+  if (!standalone || usingDevel) return base;
+  const dev = develInterfaces();
+  if (!dev) return base;
+  return {
+    ...base, standalone: true, corenet: false, moduleArgs: 2,
+    has: (n) => dev.names.has(n),
+    optional: (n) => { const l = dev.names.get(n); return !!l && !['kernel', 'system'].includes(l); },
+    moduleExists: (n) => base.moduleExists(n) || dev.modules.has(n),
+    portRef: ['http', 'ssh', 'ntp'].find(n => dev.names.has(`corenet_tcp_bind_${n}_port`)) || null,
+  };
+}
+
+function treeServiceCtx() {
   const fileOf = (p) => idx.files.get(p);
   let moduleArgs = 2;
   let one = 0, two = 0;
@@ -1595,7 +1663,7 @@ function serviceBools(except) {
 function serviceModules() {
   const out = [];
   for (const m of idx.modules()) {
-    if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep))) continue;
+    if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te))) continue;
     const text = readSource(m.files.te);
     if (!text || !/init_daemon_domain\s*\(/.test(text)) continue;
     out.push({ module: m.module, layer: m.layer, files: m.files, domains: service.daemonDomains(text) });
@@ -1604,9 +1672,10 @@ function serviceModules() {
 }
 
 /** Where a new module's files go: a layer of the tree, or a folder (standalone modules). */
-function newServicePaths(name, where) {
+function newServicePaths(name, where, standalone = false) {
   let dir;
-  if (treeRoot && !usingDevel) dir = path.join(treeRoot, 'policy', 'modules', where && /^[\w-]+$/.test(where) ? where : 'services');
+  if (standalone && treeRoot && !usingDevel) dir = where && path.isAbsolute(where) ? where : path.join(roots[0] || treeRoot, `${name}-selinux`);
+  else if (treeRoot && !usingDevel) dir = path.join(treeRoot, 'policy', 'modules', where && /^[\w-]+$/.test(where) ? where : 'services');
   else dir = where && path.isAbsolute(where) ? where : path.join(roots[0] || '.', name);
   return { te: path.join(dir, `${name}.te`), if: path.join(dir, `${name}.if`), fc: path.join(dir, `${name}.fc`) };
 }
@@ -1652,20 +1721,31 @@ connection.onRequest('selinux/serviceList', async () => {
   return { modules: serviceModules().map(m => ({ module: m.module, layer: m.layer, domains: m.domains })) };
 });
 
-connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain } = {}) => {
+connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standalone } = {}) => {
   await indexing;
   if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree or a standalone module folder first.' };
-  const ctx = serviceCtx();
+  const existing = mod ? serviceModules().find(x => x.module === mod) : null;
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
+  // Standalone: a module packaged on its own (devel headers); in a tree workspace a choice for new modules.
+  const sa = usingDevel || (canStandalone && (existing ? isStandaloneModule(existing.files.te) : !!standalone));
+  const ctx = serviceCtx(sa);
+  const inTree = !!treeRoot && !usingDevel && !sa;
+  const dev = sa && !usingDevel ? develInterfaces() : null;
   const info = {
-    catalog: service.catalog(ctx), ports: servicePorts(), interfaces: serviceInterfaces(ctx.condSafe),
-    mode: treeRoot && !usingDevel ? 'tree' : 'module',
-    layers: treeRoot && !usingDevel ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
+    catalog: service.catalog(ctx),
+    ports: dev ? servicePorts().filter(p => dev.names.has(`corenet_tcp_bind_${p.name}_port`) || dev.names.has(`corenet_udp_bind_${p.name}_port`)) : servicePorts(),
+    interfaces: dev ? serviceInterfaces(ctx.condSafe).filter(x => dev.names.has(x.n)) : serviceInterfaces(ctx.condSafe),
+    mode: inTree ? 'tree' : 'module',
+    layers: inTree ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
     folder: roots[0] || null,
+    folderSuffix: sa && !usingDevel ? '-selinux' : '',
+    standalone: sa, canStandalone: canStandalone && !mod,
+    develMakefile: settings.build.develMakefile,
   };
   if (info.layers) info.defaultLayer = ['contrib', 'services'].find(l => info.layers.includes(l)) || info.layers[0];
   info.bools = serviceBools(mod);
   if (!mod) return { ...info, isNew: true, model: service.newModel() };
-  const m = serviceModules().find(x => x.module === mod);
+  const m = existing;
   if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
   const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod, ports: ownedPorts(mod) });
   if (rec.error) return { unavailable: rec.error };
@@ -1674,10 +1754,12 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain } = {})
   return { ...info, isNew: false, module: mod, layer: m.layer, files: m.files, model: rec.model, kept: rec.kept, provided: rec.provided, domains: rec.domains };
 });
 
-connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }) => {
+connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, standalone }) => {
   await indexing;
-  const ctx = serviceCtx();
   const isNew = !mod;
+  const existingMod = mod ? serviceModules().find(x => x.module === mod) : null;
+  const sa = usingDevel || (!!treeRoot && !!develInterfaces() && (existingMod ? isStandaloneModule(existingMod.files.te) : !!standalone));
+  const ctx = serviceCtx(sa);
   let paths, before, rec = null;
   if (!isNew) {
     const m = serviceModules().find(x => x.module === mod);
@@ -1690,7 +1772,7 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
   const problems = service.validate(model, ctx, { isNew, baseline: rec && !rec.error ? rec.model : null });
   if (isNew && problems.some(p => /name must|already exists/.test(p))) return { problems, files: [] };
   if (isNew) {
-    paths = newServicePaths(model.name, where);
+    paths = newServicePaths(model.name, where, sa);
     before = { te: null, if: null, fc: null };
   } else {
     // Removing a file type that the .if or other modules still use would break the build.
@@ -1723,7 +1805,7 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
       }
     }
   }
-  const cp = corenetPath();
+  const cp = sa ? null : corenetPath();
   const corenet = cp ? { text: readSource(cp) || '', ports: isNew ? [] : ownedPorts(mod) } : null;
   const out = service.plan(model, ctx, isNew ? null : before, corenet);
   if (out.error) return { problems: [out.error], files: [] };
@@ -1734,8 +1816,27 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
   }
   // New or changed port types: corenetwork.te.in.
   if (corenet && out.net != null && out.net !== corenet.text) files.push({ path: cp, kind: 'net', exists: true, text: out.net, changed: true, diff: service.lineDiff(corenet.text, out.net) });
+  // A standalone module gets RPM packaging (written once; edit it freely afterwards).
+  if (sa && model.name) {
+    const dir = path.dirname(paths.te);
+    const version = (/policy_module\(\s*\w+\s*,\s*([^)\s]+)\s*\)/.exec(out.te) || [])[1] || '1.0.0';
+    const ports = [];
+    for (const p of model.ports || []) {
+      const type = `${p.name || model.name}_port_t`;
+      for (const x of p.nums || []) if (x.port) ports.push({ type, proto: x.proto, port: x.port });
+    }
+    const spec = path.join(dir, `${model.name}-selinux.spec`), mk = path.join(dir, 'Makefile');
+    if (readSource(spec) == null) {
+      const text = packaging.specText({ name: model.name, version, summary: model.summary, ports, packager: gitPackager(dir) });
+      files.push({ path: spec, kind: 'spec', exists: false, text, changed: true, diff: service.lineDiff('', text) });
+    }
+    if (readSource(mk) == null) {
+      const text = packaging.makefileText(model.name);
+      files.push({ path: mk, kind: 'make', exists: false, text, changed: true, diff: service.lineDiff('', text) });
+    }
+  }
   // A new module in a tree is built only when modules.conf lists it.
-  if (isNew && treeRoot && !usingDevel) {
+  if (isNew && treeRoot && !usingDevel && !sa) {
     const { conf, states } = moduleStates(treeRoot);
     if (conf && !states.has(model.name)) {
       const part = conf.parts[conf.parts.length - 1];
@@ -2365,7 +2466,7 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
 
 /** The workspace .te that declares a domain (the active tree's, or a standalone module's), or null. */
 function domainModuleFile(domain) {
-  const inWs = (p) => roots.some(r => p.startsWith(r + path.sep)) && !inExcludedTree(p) && (!treeRoot || p.startsWith(treeRoot + path.sep));
+  const inWs = (p) => roots.some(r => p.startsWith(r + path.sep)) && !inExcludedTree(p) && (!treeRoot || p.startsWith(treeRoot + path.sep) || isStandaloneModule(p));
   const d = (idx.decls.get(domain) || []).find(x => x.kind === 'type' && /\.te$/.test(x.path) && inWs(x.path));
   return d ? d.path : null;
 }
@@ -2387,7 +2488,7 @@ connection.onRequest('selinux/denialFix', async ({ domain, call, rule }) => {
     if (old == null) return { unavailable: `Can't read ${rel(te)}.` };
     const ifMod = name ? ((idx.files.get(((idx.defs.get(name) || [])[0] || {}).path) || {}).module || null) : null;
     const domMod = (idx.files.get(te) || {}).module || path.basename(te, '.te');
-    const optional = !!(name && ifMod !== domMod && serviceCtx().optional(name));
+    const optional = !!(name && ifMod !== domMod && serviceCtx(isStandaloneModule(te)).optional(name));
     const r = denials.insertFix(old, { domain, call, rule, optional, module: ifMod });
     if (r.already) return { already: true, path: te, message: `${rel(te)} already has ${call || rule}; the denial should go away once the module is rebuilt and loaded.` };
     return { path: te, exists: true, module: domMod, text: r.text, line: r.line, inserted: r.inserted, optional, diff: service.lineDiff(old, r.text) };

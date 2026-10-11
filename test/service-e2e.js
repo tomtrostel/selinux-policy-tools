@@ -264,7 +264,7 @@ async function standalone() {
   model.helpers = [{ name: '', exec: ['/usr/libexec/develsvc-helper'], signal: false, files: [{ type: `develsvc${info.catalog.fileKinds.find(k => k.id === 'state').suffix}`, access: 'manage' }], self: [], caps: [], net: { listen: [], connect: [] }, access: ['syslog'], extra: [], _new: true }];
   const plan = await c2.sendRequest('selinux/servicePlan', { model, module: null, where: null });
   check((plan.problems || []).some(p => /^Note: .*semanage port -a -t develsvc_port_t -p tcp 47125/.test(p)) && /^type develsvc_port_t;$/m.test(plan.files[0].text), 'standalone: the port type is declared in the module, numbers as a semanage note', plan.problems);
-  check(plan.files.length === 3 && plan.files.every(f => path.dirname(f.path) === path.join(dir, 'develsvc')), `files go to ${path.join(path.basename(dir), 'develsvc')}/`, plan.files.map(f => f.path));
+  check(plan.files.map(f => f.kind).join() === 'te,if,fc,spec,make' && plan.files.every(f => path.dirname(f.path) === path.join(dir, 'develsvc')), `files go to ${path.join(path.basename(dir), 'develsvc')}/, with the RPM spec and Makefile`, plan.files.map(f => f.path));
   fs.mkdirSync(path.join(dir, 'develsvc'));
   for (const f of plan.files) fs.writeFileSync(f.path, f.text);
   ready = new Promise(r => (done = r));

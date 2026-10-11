@@ -4,6 +4,15 @@
 
 **New**
 
+* **Standalone service modules, packaged as RPMs**: in a tree workspace,
+  *SELinux: New Service…* can make a **Standalone module (packaged as an
+  RPM)** instead of a tree module: built against the host's
+  `selinux-policy-devel` headers (their interfaces and helper variants),
+  port types declared in the module, nothing added to the tree. It comes
+  with `<name>-selinux.spec` (an independent package following Fedora's
+  SELinux packaging guidelines: install/uninstall/relabel macros, port
+  labels) and a Makefile; **SELinux: Build RPM** builds the package. Module
+  folders next to a tree now build with the devel Makefile.
 * **Denial assistant** (*SELinux: Analyze Denials…*): paste audit records,
   open a log, or read them from the host (`ausearch` with sudo in a
   terminal). Denials are grouped and each group gets a verdict: wrong label
@@ -25,7 +34,8 @@
 **Tests**: `npm run test:denials` (in `npm test`), `npm run
 test:denials-e2e` (melody: installed policy, standalone module, CLIP tree),
 `npm run test:denials-bench` (melody: suggestions for 735 denials made
-from RHEL 9 modules' own interface calls).
+from RHEL 9 modules' own interface calls), `npm run test:package` (melody:
+a standalone service from a CLIP workspace, built and packaged as an RPM).
 
 ## 0.9.0 (2026-10-11)
 

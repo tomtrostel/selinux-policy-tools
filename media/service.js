@@ -32,7 +32,7 @@
   function changed() {
     dirty = true;
     clearTimeout(planTimer);
-    planTimer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, where }), 250);
+    planTimer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone }), 250);
   }
 
   /* ---------- sections ---------- */
@@ -40,6 +40,8 @@
   const NAME_TIP = 'The module’s name: names its files (NAME.te, .if, .fc) and, by default, its types (NAME_t, NAME_exec_t, …)';
   const LAYER_TIP = 'The directory under policy/modules/ the module goes in; it is also added to modules.conf as a loadable module';
   const FOLDER_TIP = 'Where to write the module’s files (a new folder named after the module by default)';
+  const KIND_TIP = 'In the policy tree: the module becomes part of this tree’s policy (policy/modules/<layer>, modules.conf). Standalone: a module of its own, built against this host’s selinux-policy-devel headers, with an RPM spec so it can be packaged (NAME-selinux) and installed next to the service';
+  const SA_NOTE = 'Built against the devel headers of this host; only their interfaces are offered. Adds NAME-selinux.spec and a Makefile (make rpm builds the RPM).';
   const DESC_TIP = 'One line saying what the service does; becomes the summary at the top of the .if';
   const PROG_TIP = 'The daemon’s executable(s), one per line. They are labeled NAME_exec_t, and when systemd (init) runs them the process enters the service’s domain';
   const PERM_TIP = 'Adds permissive NAME_t: the service is not blocked, but everything it would be denied is logged. Use it to find missing rules (ausearch -m avc), then turn it off';
@@ -61,6 +63,11 @@
   function serviceSection() {
     const rows = [];
     if (info.isNew) {
+      if (info.canStandalone) {
+        const radio = (val, label) => h('label', { class: 'check', title: KIND_TIP }, h('input', { type: 'radio', name: 'kind', checked: !!info.standalone === val,
+          onchange: () => { if (!!info.standalone !== val) vscode.postMessage({ cmd: 'standalone', on: val }); } }), h('span', {}, label));
+        rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl', title: KIND_TIP }, 'Module'), radio(false, 'In the policy tree'), radio(true, 'Standalone module (packaged as an RPM)')));
+      }
       rows.push(h('div', { class: 'row' }, h('label', { class: 'lbl', for: 'name', title: NAME_TIP }, 'Module name'),
         h('input', { id: 'name', type: 'text', value: model.name, placeholder: 'e.g. mydaemon', spellcheck: 'false', size: 24, title: NAME_TIP,
           oninput: (e) => { model.name = e.target.value.trim(); refreshTypes(); changed(); } }),
@@ -71,7 +78,8 @@
           h('span', { class: 'muted' }, ' policy/modules/<layer>/; added to modules.conf as a loadable module')));
       } else {
         rows.push(h('div', { class: 'row' }, h('label', { class: 'lbl', title: FOLDER_TIP }, 'Folder'),
-          h('input', { type: 'text', title: FOLDER_TIP, value: where || '', placeholder: `${info.folder || ''}/<name>`, size: 40, spellcheck: 'false', oninput: (e) => { where = e.target.value.trim() || null; changed(); } })));
+          h('input', { type: 'text', title: FOLDER_TIP, value: where || '', placeholder: `${info.folder || ''}/<name>${info.folderSuffix || ''}`, size: 40, spellcheck: 'false', oninput: (e) => { where = e.target.value.trim() || null; changed(); } })));
+        if (info.standalone && info.canStandalone) rows.push(h('div', { class: 'muted small', ...tipOf(SA_NOTE) }, sub(SA_NOTE)));
       }
     } else {
       rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('b', {}, model.name), h('span', { class: 'muted' }, ` (${info.layer})`),
@@ -441,14 +449,14 @@
     const m = e.data;
     if (m.cmd === 'init') {
       info = m.info;
-      model = JSON.parse(JSON.stringify(info.model));
+      if (!(m.keep && model)) model = JSON.parse(JSON.stringify(info.model));
       model.provides = model.provides || [];
       where = info.isNew ? (info.defaultLayer || null) : null;
       plan = null; dirty = false;
       $('form').textContent = '';
       render();
       $('stale').hidden = true;
-      vscode.postMessage({ cmd: 'plan', model, where });
+      vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone });
     } else if (m.cmd === 'plan') {
       plan = m.plan;
       renderPreview();
@@ -463,7 +471,7 @@
       $('status').textContent = m.text;
     }
   });
-  $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where }));
+  $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where, standalone: !!info.standalone }));
   $('reload').addEventListener('click', () => vscode.postMessage({ cmd: 'reload' }));
   vscode.postMessage({ cmd: 'ready' });
 })();

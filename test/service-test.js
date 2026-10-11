@@ -468,6 +468,18 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(byId.apply.disabled && /1 problem/.test(byId.status.textContent), 'a problem disables apply');
   byId.apply.disabled = false; byId.apply.fire('click');
   check(last('apply') && last('apply').model.name === 'webby', 'apply posts the model');
+  // In a tree workspace: in the tree or a standalone module (RPM); switching keeps the form.
+  send({ cmd: 'init', info: { ...info, canStandalone: true, standalone: false }, keep: true });
+  const radios = find(e => e.tag === 'input' && e.attrs.type === 'radio');
+  check(radios.length === 2 && radios[0].checked && !radios[1].checked && radios.every(r => r.parent && r.parent.attrs.title), 'kind: in the tree / standalone, with hover help');
+  radios[1].fire('change');
+  check(last('standalone') && last('standalone').on === true, 'choosing standalone asks for the devel-header catalog');
+  send({ cmd: 'init', info: { ...info, mode: 'module', layers: null, folder: '/ws', folderSuffix: '-selinux', canStandalone: true, standalone: true }, keep: true });
+  check(find(e => e.attrs.id === 'name')[0].value === 'webby' && last('plan').standalone === true && /\/ws\/<name>-selinux/.test(JSON.stringify(find(e => e.tag === 'input' && e.attrs.placeholder && e.attrs.placeholder.includes('<name>')).map(e => e.attrs.placeholder))),
+    'standalone: the form keeps its contents, plans say standalone, folder defaults to NAME-selinux');
+  check(/make rpm/.test(form.textContent), 'standalone: says what the packaging files are');
+  byId.apply.disabled = false; byId.apply.fire('click');
+  check(last('apply').standalone === true, 'apply says standalone');
   // Existing module: kept statements, existing interfaces disabled.
   const r2 = svc.recognize(legacy, ctx, {});
   send({ cmd: 'init', info: { ...info, isNew: false, module: 'legacyd', layer: 'contrib', files: { te: '/t/legacyd.te' }, model: { ...r2.model, provides: [] }, kept: r2.kept, provided: ['legacyd_domtrans'], domains: r2.domains } });

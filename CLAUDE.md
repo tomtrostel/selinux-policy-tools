@@ -22,7 +22,7 @@ without modules.conf (make conf defaults); not yet tried interactively.
 domains (step 6 below; e2e-tested, the form not yet tried interactively)
 and tutorials (step 7; the user checked the walkthroughs in VS Code and
 they look good). Unreleased (after 0.9.0): the denial assistant, phases 1-3
-(step 8).
+(step 8); standalone service modules packaged as RPMs (step 6).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -314,6 +314,35 @@ so far covered by the e2e tests only.
    `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
    module name on hover); service-test checks every catalog item has help
    and every button/field/checkbox in the form has a title.
+   Standalone modules as RPMs (done, unreleased; user: "make them a stand
+   alone module … package the service and the policy in an RPM"; target =
+   the build host's devel headers): `isStandaloneModule(p)` = module file in
+   a workspace root, outside the active tree's policy/ (and excluded trees);
+   `buildTarget` → its .te → `moduleBuild` (devel Makefile; error result if
+   missing). `develInterfaces()` parses include/<layer>/*.if (+ distributed/)
+   for interface/template names → layer, cached by dir mtimes.
+   `serviceCtx(standalone)` wraps `treeServiceCtx()`: has = devel names,
+   optional = layer not kernel/system, corenet false, moduleArgs 2,
+   moduleExists also devel modules, portRef from devel. serviceInfo
+   {standalone} (new) / location (existing): catalog, ports and interfaces
+   filtered to the devel headers, `canStandalone`, `folderSuffix` '-selinux';
+   servicePlan {standalone}: `newServicePaths(name, where, true)` =
+   <roots[0]>/<name>-selinux, no corenetwork/modules.conf, and once
+   (absent files only) `server/packaging.js` specText (independent
+   <name>-selinux package: %selinux_requires, selinux_modules_install /
+   uninstall, relabel_pre/post, .pp.bz2 in /usr/share/selinux/packages/
+   targeted, .if in devel/include/distributed, %ghost active/modules/200,
+   semanage port add/delete for the module's port numbers, version from
+   policy_module, packager from git config) + makefileText (make / make rpm
+   with _sourcedir/_topdir). serviceModules includes standalone modules;
+   denialFix targets them (optional per the devel ctx). Webview: Module
+   radio (in the tree / standalone) when canStandalone; switching re-inits
+   with keep (model kept); plan/apply carry standalone. Client command
+   `selinux.buildRpm` (spec of the active editor's folder or a pick → `make
+   -C dir rpm` in the "SELinux RPM" terminal). test/package-e2e.js (melody,
+   CLIP copy inside a workspace folder): RHEL helper variants, tree-only
+   interface refused, build, make rpm, rpm -qpl/--scripts/-qpR, magic of the
+   packaged .pp, read back, edit touches only the .te, tree untouched.
    Ideas not done: file access under a
    boolean, gen_bool.
 
@@ -597,6 +626,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   semodule_link output and the m4 `#line` expansion map.
 - `server/denials.js`: denial assistant (audit parsing, grouping, verdicts);
   `media/denials.js` its webview.
+- `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/service.js`: service editor model (catalogs, render, recognize,
   minimal edits by unit diff); `media/service.js` its webview form.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
@@ -668,6 +698,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/service-e2e.js` (`npm run test:service-e2e`, melody): new + edited
   service built with the tree; args `[tree [spec [variant]]]` (RHEL: copies
   the spec dir so modules.conf edits stay in the copy); standalone too.
+- `test/package-e2e.js` (`npm run test:package`, melody): standalone service
+  modules from a tree workspace, built and packaged as RPMs.
 - `test/walkthrough-test.js` (in `npm test`) and `test/tutorial-e2e.js`
   (`npm run test:tutorial`, melody): the walkthroughs and the practice module.
 - `test/denials-test.js` (in `npm test`) and `test/denials-e2e.js`

@@ -420,6 +420,31 @@ function activate(context) {
       }
       showDenials(context, text);
     }),
+    vscode.commands.registerCommand('selinux.buildRpm', async () => {
+      // The standalone module of the active editor, or one picked from the workspace's *-selinux.spec files.
+      const specs = (await vscode.workspace.findFiles('**/*-selinux.spec', '**/{rpmbuild,node_modules,tmp}/**', 100)).map(u => u.fsPath);
+      const ed = vscode.window.activeTextEditor;
+      let spec = ed && ed.document.uri.scheme === 'file' ? specs.find(p => path.dirname(p) === path.dirname(ed.document.uri.fsPath)) : null;
+      if (!spec && specs.length === 1) spec = specs[0];
+      if (!spec && specs.length > 1) {
+        const pick = await vscode.window.showQuickPick(specs.map(p => ({ label: path.basename(p), description: vscode.workspace.asRelativePath(path.dirname(p)), p })), { placeHolder: 'Policy module to package' });
+        spec = pick && pick.p;
+      }
+      if (!spec) {
+        if (!specs.length) vscode.window.showInformationMessage('No *-selinux.spec in this workspace. Create a service with SELinux: New Service… and choose "Standalone module (packaged as an RPM)".');
+        return;
+      }
+      // Save the module's files first, so the RPM matches what is on screen.
+      for (const d of vscode.workspace.textDocuments) if (d.isDirty && path.dirname(d.uri.fsPath) === path.dirname(spec)) await d.save();
+      const dir = path.dirname(spec);
+      const q = (x) => `'${x.replace(/'/g, `'\\''`)}'`;
+      const cmd = fs.existsSync(path.join(dir, 'Makefile'))
+        ? `make -C ${q(dir)} rpm`
+        : `rpmbuild -bb --define "_sourcedir ${dir}" --define "_topdir ${dir}/rpmbuild" ${q(spec)}`;
+      const t = vscode.window.terminals.find(x => x.name === 'SELinux RPM') || vscode.window.createTerminal('SELinux RPM');
+      t.show();
+      t.sendText(cmd);
+    }),
     vscode.commands.registerCommand('selinux.newService', () => showServiceEditor(context, null)),
     vscode.commands.registerCommand('selinux.editService', async (arg) => {
       // From the Policy Explorer (module node), a module name, or a pick.
@@ -692,7 +717,7 @@ function showServiceEditor(context, mod) {
   const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
   servicePanels.set(key, panel);
-  let current = { module: mod || null, domain: null, files: null };
+  let current = { module: mod || null, domain: null, files: null, standalone: false };
   const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
   const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'service.js'));
   panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
@@ -773,13 +798,13 @@ function showServiceEditor(context, mod) {
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
   const post = (m) => panel.webview.postMessage(m);
-  const load = async () => {
-    const info = await client.sendRequest('selinux/serviceInfo', { module: current.module, domain: current.domain });
+  const load = async (keep = false) => {
+    const info = await client.sendRequest('selinux/serviceInfo', { module: current.module, domain: current.domain, standalone: current.standalone });
     if (info.unavailable) { post({ cmd: 'error', msg: info.unavailable }); return; }
     current.files = info.files || null;
     current.domain = info.model.domain || null;
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
-    post({ cmd: 'init', info });
+    post({ cmd: 'init', info, keep });
   };
   // Edits to the module's files elsewhere make the form stale.
   let ownWrite = false;
@@ -791,10 +816,11 @@ function showServiceEditor(context, mod) {
     try {
       if (m.cmd === 'ready' || m.cmd === 'reload') await load();
       else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
-      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where }) });
+      else if (m.cmd === 'standalone') { current.standalone = !!m.on; await load(true); }
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
       else if (m.cmd === 'apply') {
-        const plan = await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where });
+        const plan = await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone });
         const blocking = (plan.problems || []).filter(p => !p.startsWith('Note:'));
         if (blocking.length) { post({ cmd: 'plan', plan }); return; }
         post({ cmd: 'busy', text: 'Writing files…' });
@@ -806,7 +832,7 @@ function showServiceEditor(context, mod) {
           servicePanels.delete('');
           current.module = m.model.name;
           servicePanels.set(current.module, panel);
-          vscode.window.showInformationMessage(`Created the ${m.model.name} module (${n} file${n > 1 ? 's' : ''}). Saving builds it; check the Problems panel.`);
+          vscode.window.showInformationMessage(`Created the ${m.model.name} module (${n} file${n > 1 ? 's' : ''}). Saving builds it; check the Problems panel.${plan.files.some(x => x.kind === 'spec') ? ` Package it with SELinux: Build RPM (${m.model.name}-selinux).` : ''}`);
         } else {
           vscode.window.showInformationMessage(`Updated ${current.module} (${n} file${n > 1 ? 's' : ''}).`);
         }

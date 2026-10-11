@@ -320,6 +320,40 @@ module goes into the layer you pick; in a standalone workspace, into a new
 folder. *Create module* writes and saves the files as one undoable edit,
 and saving builds them.
 
+**Standalone modules packaged as RPMs.** In a tree workspace, a new service
+can also be a **Standalone module (packaged as an RPM)**, to ship with the
+service instead of in the policy: the form then works from this host's
+`selinux-policy-devel` headers (`/usr/share/selinux/devel`, including
+`distributed/`), not the tree. Only their interfaces are offered (one the
+tree has but the headers don't is refused), the declaration helpers follow
+them (on RHEL 9 runtime files use `files_pid_file` and `_var_run_t`, even
+in a CLIP tree that has `files_runtime_file`), calls outside the kernel and
+system layers go in `optional_policy`, new port types are declared in the
+module, and nothing is added to `modules.conf` or `corenetwork.te.in`. The
+module goes in `<workspace>/<name>-selinux/` (or the folder you give) with:
+
+* `<name>-selinux.spec`: an independent `<name>-selinux` package (Fedora's
+  SELinux packaging guidelines): `BuildRequires: selinux-policy-devel`,
+  builds the `.pp` with the devel Makefile, installs it compressed under
+  `/usr/share/selinux/packages/targeted/` and the `.if` under
+  `/usr/share/selinux/devel/include/distributed/`, loads and unloads it with
+  `%selinux_modules_install` / `%selinux_modules_uninstall`, relabels with
+  `%selinux_relabel_pre` / `%selinux_relabel_post`, and labels the module's
+  port numbers with `semanage port` in `%post` (removed on erase). Version
+  from `policy_module()`, packager from git's `user.name` / `user.email`;
+  the License line is GPL-2.0-or-later, change it to yours.
+* `Makefile`: `make` builds the module, `make rpm` the RPM under
+  `./rpmbuild`.
+
+Both are written once and then left alone, so edit them freely. New
+services in a standalone workspace (a module folder, no tree) get them too. **SELinux:
+Build RPM** runs `make rpm` for the module of the active editor (or one you
+pick) in a terminal. Standalone modules next to a tree (any module folder
+outside the tree's `policy/`) build with the devel Makefile, open in the
+service editor again, can be installed with *SELinux: Install Module*, and
+take fixes from the denial assistant. The service's own package can then
+require `<name>-selinux`.
+
 **Editing an existing service** opens any module with an
 `init_daemon_domain()` (several daemon domains: pick one). The editor reads
 the module back into the same form and changes only the lines of the
@@ -717,6 +751,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Standalone service modules as RPMs (`npm run test:package`, melody): in a
+  workspace holding a copy of the CLIP tree, a new standalone service with
+  runtime and log files, syslog and a port type of its own gets RHEL 9's
+  `files_pid_file` / `_var_run_t` (the tree has `files_runtime_file`), its
+  port type declared in the module, a spec and a Makefile, and no change to
+  `modules.conf` or `corenetwork.te.in`; an interface only the tree has is
+  refused. The module builds with the devel Makefile, `make rpm` builds
+  `pkgsvc-selinux-1.0.0-1.el9.noarch.rpm` in ~2 s with the compressed policy
+  package and its `.if`, scripts that load and unload it (`semodule`) and
+  add and delete the port label, and `Requires: selinux-policy-targeted`; it
+  reads back into the form as standalone, an edit changes only the `.te`,
+  and the tree still builds as a tree.
 * Denial assistant: audit records in raw, `ausearch -i`, kernel/journal and
   USER_AVC form, joined events, hex names and grouping (unit tests); on
   Rocky 9 against the running targeted policy: a file under `/var/www`
@@ -933,6 +979,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Service editor**
 
+* Standalone modules in a tree workspace target the devel headers of the
+  build host (RHEL 9 on melody when tested); to package for another release,
+  build on a host with that release's `selinux-policy-devel`. Port number
+  conflicts are checked against the tree, not the target policy. The
+  property checks and the Compiled Policy view still show the tree.
 * Services only: a domain started by init with `init_daemon_domain()`.
   User applications and CGI scripts are edited in the `.te` as before.
 * Helpers: started by the service only (not by init or by users), with

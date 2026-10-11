@@ -6,6 +6,13 @@ preview is updated as you type, and any problems are listed above it.
 
 **Service** section:
 
+* **Module** (in a tree workspace): **In the policy tree** makes the module
+  part of the tree's policy. **Standalone module (packaged as an RPM)** makes
+  a module of its own, to ship next to the service: it is built against this
+  host's `selinux-policy-devel` headers (only their interfaces are offered),
+  and comes with `NAME-selinux.spec` and a `Makefile`; **SELinux: Build
+  RPM** builds the `NAME-selinux` package, which the service's own package
+  can require.
 * **Module name**: lowercase letters, digits and `_`. It names the files
   (`mydaemon.te`, `.if`, `.fc`) and, by default, the types: `mydaemon_t` for
   the process, `mydaemon_exec_t` for its program.
