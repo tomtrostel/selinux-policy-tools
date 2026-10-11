@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const vscode = require('vscode');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
@@ -334,6 +335,12 @@ function activate(context) {
       }
       showTransitionGraph(context, name, 'out');
     }),
+    vscode.commands.registerCommand('selinux.newService', () => showServiceEditor(context, null)),
+    vscode.commands.registerCommand('selinux.editService', async (arg) => {
+      // From the Policy Explorer (module node), a module name, or a pick.
+      const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
+      if (name) showServiceEditor(context, name);
+    }),
     vscode.commands.registerCommand('selinux.previewModule', async (arg) => {
       const st = await client.sendRequest('selinux/moduleStates');
       if (st.unavailable) { vscode.window.showWarningMessage(st.unavailable); return; }
@@ -552,6 +559,183 @@ function showTransitionGraph(context, root, dir = 'out') {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { transitionPanel = null; }, undefined, context.subscriptions);
+}
+
+/* ---------------- service editor ---------------- */
+
+const servicePanels = new Map(); // module name ('' = new service) -> panel
+
+/** Pick a service module to edit: the active editor's module first. */
+async function pickService() {
+  const r = await client.sendRequest('selinux/serviceList');
+  const ed = vscode.window.activeTextEditor;
+  const edMod = ed && /\.(te|if|fc)$/.test(ed.document.fileName) ? path.basename(ed.document.fileName).replace(/\.(te|if|fc)$/, '') : null;
+  if (!r.modules.length) { vscode.window.showInformationMessage('No service modules (with init_daemon_domain) in this workspace. Use SELinux: New Service… to create one.'); return null; }
+  const items = r.modules.map(m => ({ label: m.module, description: `${m.layer} · ${m.domains.map(d => d.domain).join(', ')}` }));
+  items.sort((a, b) => (b.label === edMod) - (a.label === edMod));
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Service module to edit', matchOnDescription: true });
+  return pick ? pick.label : null;
+}
+
+/** Write a plan's files as one workspace edit (undoable), save them, open the .te. */
+async function applyServicePlan(plan) {
+  const edit = new vscode.WorkspaceEdit();
+  const uris = [];
+  for (const f of plan.files.filter(x => x.changed)) {
+    const uri = vscode.Uri.file(f.path);
+    if (!fs.existsSync(f.path)) {
+      fs.mkdirSync(path.dirname(f.path), { recursive: true });
+      edit.createFile(uri, { ignoreIfExists: true });
+      edit.insert(uri, new vscode.Position(0, 0), f.text);
+    } else {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      edit.replace(uri, doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0)), f.text);
+    }
+    uris.push(uri);
+  }
+  if (!(await vscode.workspace.applyEdit(edit))) throw new Error('VS Code refused the edit.');
+  for (const uri of uris) { const d = await vscode.workspace.openTextDocument(uri); await d.save(); }
+  const te = plan.files.find(f => f.kind === 'te' && f.changed) || plan.files.find(f => f.kind === 'te');
+  if (te) await vscode.window.showTextDocument(vscode.Uri.file(te.path), { viewColumn: vscode.ViewColumn.One, preview: false });
+  return uris.length;
+}
+
+function showServiceEditor(context, mod) {
+  const key = mod || '';
+  const existing = servicePanels.get(key);
+  if (existing) { existing.reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  servicePanels.set(key, panel);
+  let current = { module: mod || null, domain: null, files: null };
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'service.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 14px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  #stale { color: var(--vscode-editorWarning-foreground); }
+  #main { display: grid; grid-template-columns: minmax(440px, 1fr) minmax(340px, 44%); height: calc(100vh - 42px); }
+  @media (max-width: 980px) { #main { grid-template-columns: 1fr; height: auto; } #form, #preview { height: auto !important; } }
+  #form { overflow: auto; padding: 10px 14px 40px; }
+  #preview { overflow: auto; border-left: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background, transparent); }
+  .card { border: 1px solid var(--vscode-panel-border); border-radius: 4px; margin: 0 0 10px; background: var(--vscode-editor-background); }
+  .card > summary { cursor: pointer; padding: 7px 10px; display: flex; gap: 10px; align-items: baseline; }
+  .card > summary .title { font-weight: 600; }
+  .card > summary .hint { opacity: .7; font-size: .92em; }
+  .card .body { padding: 2px 12px 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .row.top { align-items: flex-start; }
+  .lbl { min-width: 92px; opacity: .85; }
+  .sub { font-weight: 600; margin: 10px 0 4px; }
+  .muted { opacity: .7; } .small { font-size: .9em; } .pad { padding: 14px; }
+  .warn { color: var(--vscode-editorWarning-foreground); }
+  code, .code { font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  .code { opacity: .6; margin-left: 6px; }
+  input[type=text], textarea, select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 3px 6px; font-family: inherit; font-size: inherit; }
+  textarea { font-family: var(--vscode-editor-font-family); resize: vertical; width: 100%; box-sizing: border-box; }
+  select { padding: 2px 4px; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button:disabled { opacity: .5; cursor: default; }
+  #apply { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 5px 14px; }
+  #apply:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+  button.icon { border: none; background: transparent; opacity: .7; padding: 2px 6px; }
+  button.icon:hover { opacity: 1; color: var(--vscode-errorForeground); }
+  button.chip { border-radius: 10px; padding: 2px 10px; margin: 2px; font-size: .92em; }
+  .check { display: flex; gap: 6px; align-items: flex-start; margin: 3px 0; }
+  .check input { margin-top: 3px; }
+  .check.risky > span { color: var(--vscode-editorWarning-foreground); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 0 18px; }
+  .group { margin-bottom: 4px; }
+  .files { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(150px, 1.3fr) minmax(170px, 2fr) minmax(120px, 1.2fr) 28px; gap: 6px; align-items: start; }
+  .frow { display: contents; }
+  .frow.head span { font-size: .85em; opacity: .7; }
+  .adds { margin-top: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+  .chip.on { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--vscode-panel-border); border-radius: 10px; padding: 1px 2px 1px 8px; max-width: 100%; }
+  .results { max-height: 260px; overflow: auto; margin-top: 4px; }
+  .hit { padding: 3px 6px; cursor: pointer; border-radius: 3px; }
+  .hit:hover { background: var(--vscode-list-hoverBackground); }
+  .kept { max-height: 300px; overflow: auto; }
+  .keptline { cursor: pointer; padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .keptline:hover { background: var(--vscode-list-hoverBackground); }
+  .ln { display: inline-block; min-width: 40px; opacity: .55; font-family: var(--vscode-editor-font-family); }
+  .problems { padding: 8px 12px; }
+  .problems .error { color: var(--vscode-errorForeground); margin: 2px 0; }
+  .problems .note { opacity: .8; margin: 2px 0; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; position: sticky; top: 0; background: inherit; }
+  .tab { border: none; border-bottom: 2px solid transparent; background: transparent; }
+  .tab.sel { border-bottom-color: var(--vscode-focusBorder); font-weight: 600; }
+  .dot { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
+  pre.diff { margin: 0; padding: 8px 12px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; }
+  .add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(80,160,80,.2)); }
+  .del { background: var(--vscode-diffEditor-removedLineBackground, rgba(200,80,80,.2)); text-decoration: line-through; opacity: .85; }
+  .gap { opacity: .5; }
+</style></head><body>
+<div id="bar">
+  <span id="title"></span>
+  <button id="apply" disabled>Apply</button>
+  <span id="status"></span>
+  <span id="stale" hidden>The module's files changed. <button id="reload">Reload</button> (discards the edits here)</span>
+</div>
+<div id="main"><div id="form"></div><div id="preview"></div></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  const post = (m) => panel.webview.postMessage(m);
+  const load = async () => {
+    const info = await client.sendRequest('selinux/serviceInfo', { module: current.module, domain: current.domain });
+    if (info.unavailable) { post({ cmd: 'error', msg: info.unavailable }); return; }
+    current.files = info.files || null;
+    current.domain = info.model.domain || null;
+    panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
+    post({ cmd: 'init', info });
+  };
+  // Edits to the module's files elsewhere make the form stale.
+  let ownWrite = false;
+  const watch = vscode.workspace.onDidSaveTextDocument((doc) => {
+    if (ownWrite || !current.files) return;
+    if (Object.values(current.files).some(p => p === doc.uri.fsPath)) post({ cmd: 'stale' });
+  });
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready' || m.cmd === 'reload') await load();
+      else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where }) });
+      else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
+      else if (m.cmd === 'apply') {
+        const plan = await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where });
+        const blocking = (plan.problems || []).filter(p => !p.startsWith('Note:'));
+        if (blocking.length) { post({ cmd: 'plan', plan }); return; }
+        post({ cmd: 'busy', text: 'Writing files…' });
+        ownWrite = true;
+        let n;
+        try { n = await applyServicePlan(plan); } finally { ownWrite = false; }
+        if (!current.module) {
+          // A new module: from now on this panel edits it.
+          servicePanels.delete('');
+          current.module = m.model.name;
+          servicePanels.set(current.module, panel);
+          vscode.window.showInformationMessage(`Created the ${m.model.name} module (${n} file${n > 1 ? 's' : ''}). Saving builds it; check the Problems panel.`);
+        } else {
+          vscode.window.showInformationMessage(`Updated ${current.module} (${n} file${n > 1 ? 's' : ''}).`);
+        }
+        // The server indexes the saved files after a short debounce.
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 250));
+          const l = await client.sendRequest('selinux/serviceList');
+          if (l.modules.some(x => x.module === current.module)) break;
+        }
+        await load();
+      }
+    } catch (e) {
+      vscode.window.showErrorMessage(`Service editor: ${e.message}`);
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { watch.dispose(); for (const [k, p] of servicePanels) if (p === panel) servicePanels.delete(k); }, undefined, context.subscriptions);
 }
 
 /* ---------------- expanded policy (read-only m4 output) ---------------- */

@@ -208,6 +208,62 @@ Open one of these as the workspace folder:
   interfaces that aren't in the tree are information only or ignored, since
   the build skips them.
 
+**Service editor** (*SELinux: New Service…*, *SELinux: Edit Service…*, or
+**+** / *Edit Service* in the Policy Explorer)
+
+A form for writing the policy of a system service (a daemon started by
+systemd) without writing m4 by hand, with a live preview of the files it
+writes. It offers what the existing service modules use (taken from the
+327 daemon modules in the Fedora tree):
+
+* **Service:** module name and description, the program path(s) that start
+  in the new domain, permissive mode while testing.
+* **Files** the service owns, each a type with paths and an access level:
+  runtime files (`/run`), state data (`/var/lib`), logs (create and append
+  only, or full), configuration (read only by default), cache, spool,
+  temporary files, shared memory, lock files, any other files, and the
+  systemd unit file / init script labels. A path ending in `/` covers the
+  directory and everything in it. Files the service creates in `/run`,
+  `/tmp`, `/var/lib`, … get their type automatically (file type
+  transitions).
+* **Network:** ports it listens on and ports it connects to (TCP/UDP, any
+  port type in the tree, shown with its port numbers, or any port).
+* **System access** in plain words: syslog, user/group/host lookups, DNS,
+  `/proc` and `/sys`, random devices, locale data, certificates, running
+  programs or shell scripts, D-Bus, sending mail, NoNewPrivileges starts, ….
+* **Process and capabilities:** pipes, signals, Unix sockets, scheduling,
+  System V IPC, and each Linux capability with what it allows; the risky
+  ones (`dac_override`, `sys_admin`, `net_admin`, `sys_ptrace`, …) are
+  marked.
+* **Other interfaces:** any interface that takes just the domain, found by
+  name or by words in its summary.
+* **Interfaces for other modules:** the usual ones in the `.if` (`_domtrans`,
+  `_exec`, read config/logs/state, manage state, `_stream_connect`,
+  `_admin`).
+
+The editor uses the tree's own interfaces and conventions (`files_pid_file`
+and `_var_run_t` on RHEL, `files_runtime_file` and `_runtime_t` upstream and
+in CLIP; `policy_module` with or without a version), wraps calls into
+modules that can be turned off in `optional_policy`, and writes the `.te`,
+`.if` and `.fc` (plus a `name = module` line in the `modules.conf` the
+build uses, e.g. RHEL's `modules-targeted-contrib.conf`). In a tree the
+module goes into the layer you pick; in a standalone workspace, into a new
+folder. *Create module* writes and saves the files as one undoable edit,
+and saving builds them.
+
+**Editing an existing service** opens any module with an
+`init_daemon_domain()` (several daemon domains: pick one). The editor reads
+the module back into the same form and changes only the lines of the
+settings you change: turning a capability off rewrites just that
+`allow … self:capability` line (comments kept), removing a file type
+removes its declaration, its rules and its file contexts, a new file type
+goes next to the other declarations, a call left alone in an
+`optional_policy` block takes the block with it. Everything the form
+doesn't model (conditional rules, rules with other modules' types,
+`tunable_policy` blocks, …) stays exactly as it is and is listed under
+*Kept as is*, each line clickable. Removing a file type that the `.if` or
+another module still uses is refused, with the place that uses it.
+
 **Building** (Linux)
 
 * **Build on save.** Saving a policy file compiles it in a private scratch
@@ -511,6 +567,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Service editor: every daemon module of the Fedora tree (326) reads back
+  into the form, and saving it unchanged leaves all files byte-identical;
+  15 kinds of edits on each (capabilities, file types added, removed or
+  with another access level, paths, ports, system access, interfaces,
+  permissive, program paths) read back as the edited form and repeat as a
+  no-op. On CLIP, RHEL 9 and RHEL 10 a new service using every kind of
+  setting builds and links with the full tree, and so does an edited
+  existing service (`ntp`); a standalone service builds against the devel
+  headers. The form itself is tested with a fake DOM; it hasn't had
+  interactive use yet.
 * Source diagnostics over the full upstream Fedora tree, the RHEL 9 source
   (selinux-policy 38.1.75, from the Rocky 9.8 source RPM) and CLIP for RHEL 9
   (sealingtech/CLIP, branch `RHEL9`). The remaining findings were checked by
@@ -651,6 +717,19 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   above but haven't had interactive use yet.
 
 ## Limitations
+
+**Service editor**
+
+* Services only: a domain started by init with `init_daemon_domain()`.
+  User applications, CGI scripts and helper domains of a service are edited
+  in the `.te` as before (helpers show up under *Kept as is*).
+* Ports: only port types the tree already has. A new port number needs a
+  `network_port()` line in `corenetwork.te.in` (or `semanage port -a`).
+* No booleans/tunables yet: everything selected is granted unconditionally;
+  conditional rules in an existing module are kept but not editable in the
+  form.
+* Editing an existing module's description, or removing interfaces from
+  its `.if`, is done in the files (other modules may call them).
 
 **Source analysis**
 
@@ -806,6 +885,8 @@ npm run test:mono      # monolithic build of upstream refpolicy (Linux; ~/sepol-
 npm run test:ifelse    # ifelse decisions in template expansion (any OS; also part of npm test)
 npm run test:multi     # several trees in one workspace: CLIP + RHEL 10 (Linux)
 npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
+npm run test:service   # service editor: model, edits, webview (any OS; part of npm test; add a policy dir for every daemon module in it)
+npm run test:service-e2e  # service editor with real builds (Linux; CLIP by default; args: tree [spec [variant]])
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```
@@ -819,5 +900,6 @@ Layout: `server/parser.js` (tokenizer and structural parser),
 `server/indexer.js` (workspace index and template expansion),
 `server/diagnostics.js`, `server/build.js` (real-toolchain builds and output
 parsing), `server/policy_model.py` (setools export of a compiled policy),
+`server/service.js` (service editor model: render, read back, minimal edits),
 `server/server.js` (LSP features), `client/extension.js` (VS Code client,
-Policy Explorer and Compiled Policy views).
+Policy Explorer and Compiled Policy views), `media/` (webview scripts).

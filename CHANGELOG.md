@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**New**
+
+* **Service editor** (*SELinux: New Service…*, *SELinux: Edit Service…*,
+  **+** and *Edit Service* in the Policy Explorer): a form for a system
+  service's policy (the daemon's program, the files it owns with paths and
+  access levels, ports it listens on and connects to, system access in
+  plain words, capabilities, other interfaces, the interfaces its `.if`
+  offers) with a live preview, writing the `.te`, `.if`, `.fc` and the
+  `modules.conf` line in the tree's own conventions. Existing service
+  modules open in the same form; only the lines of changed settings are
+  edited, everything else is kept and listed.
+
+**Tests**: `npm run test:service` (in `npm test`; with a policy dir, every
+daemon module in it), `npm run test:service-e2e` (real builds on CLIP,
+RHEL 9/10 and a standalone module).
+
 ## 0.8.0 (2026-10-10)
 
 ifdef decisions on names that aren't build flags; the .te require check in

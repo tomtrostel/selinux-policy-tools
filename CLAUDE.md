@@ -18,6 +18,8 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
+Unreleased (after 0.8.0): the service editor (step 6 below); e2e-tested,
+not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -202,6 +204,45 @@ so far covered by the e2e tests only.
    `build.trees[key]`. Test: test/multi-tree-e2e.js. Confirmed working
    interactively by the user (VS Code over Remote-SSH).
 
+6. **Service editor** (done, unreleased; user request: "set up new
+   services … a nice interface … restrict its rights properly … edit /
+   modify existing services"). `server/service.js` (pure): a model
+   {name, summary, domain, execType, exec[], files[{kind, type, paths,
+   access}], self[], caps[], net{listen, connect: [{proto, port}]},
+   access[], extra[], permissive, provides[]}; catalogs FILE_KINDS (decl
+   helper + suffix alternatives, first that exists: files_runtime_file /
+   _runtime_t upstream+CLIP vs files_pid_file / _var_run_t RHEL,
+   init_unit_file vs systemd_unit_file), ACCESS_GROUPS, SELF, CAPS,
+   PROVIDES, chosen from a survey of the 327 Fedora daemon modules.
+   `unitsOf(model, ctx)` = unit key → {sig, stmts}; a new module is
+   rendered whole (`renderTe/If/Fc`); an existing one is edited by unit
+   diff (`editTe`): units whose sig changed delete their old statements
+   (plus `own` = rules on the type that recognition attributed to the unit)
+   unless the new model still generates them, and insert missing new ones
+   (decls after the last declaration, local after the domain's last
+   top-level rule, optional blocks after the last one; self perms edit the
+   class's line in place). Only statements at top level or directly in one
+   optional_policy are editable (`scanTe`); everything else mentioning the
+   domain is `kept`. `recognize()` reads a module back (file types by decl
+   helper, access by key pattern, net from corenet_*_port calls, catalog
+   items when all calls present, remaining single-argument calls → extra;
+   generic corenet calls never extras). fc edits only for types whose
+   paths changed; paths shown as `/dir/` = `/dir(/.*)?`. CRLF preserved.
+   Server: requests `selinux/serviceList`, `selinux/serviceInfo` {module?,
+   domain?} (catalog, port types from network_port calls, 1-arg
+   interfaces, layers, recognized model, kept, provided),
+   `selinux/servicePlan` {model, module|null, where} (texts + line diffs +
+   modules.conf line for a new tree module in the effective conf's last
+   part; refuses removing a file type referenced elsewhere). `serviceCtx()`:
+   optional = defining module not base (moduleKinds) or layer not
+   kernel/system; moduleArgs from the tree's policy_module majority.
+   Client: `showServiceEditor` webview (`media/service.js`, form + preview
+   + Create/Apply as one WorkspaceEdit, saved; stale banner when the files
+   are saved elsewhere). Tests: test/service-test.js (+ every daemon module
+   of a tree as argument: 326/326 no-op identical, 4890/4890 edits), test/
+   service-e2e.js (CLIP, RHEL 9, RHEL 10 builds + standalone). Ideas not
+   done: booleans/tunables in the form, new port types, helper domains.
+
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
 is only visible to collaborators; making it public is the user's call.
@@ -219,7 +260,8 @@ is only visible to collaborators; making it public is the user's call.
   ~/sepol-test/mymodule (standalone module).
 - Run on melody: `node test/build-e2e.js`, `test/build-tree-e2e.js`,
   `test/build-rhel-e2e.js`, `test/diff-e2e.js`, `test/preview-e2e.js`,
-  `test/checks-e2e.js`, `test/module-checks-e2e.js`, `test/scratch-e2e.js`;
+  `test/checks-e2e.js`, `test/module-checks-e2e.js`, `test/scratch-e2e.js`,
+  `test/service-e2e.js` (+ rhel9/rhel10 with their specs);
   survey with `--make`.
 - Writing edit scripts: the Bash tool's heredocs collapse `\\` to `\`, which
   breaks regexes in generated JS; write scripts with the Write tool into the
@@ -361,6 +403,8 @@ is only visible to collaborators; making it public is the user's call.
 - `server/build.js`: toolchain detection, scratch-dir module build, tree
   build with scratch sync, parsers for checkmodule/m4/refpolicywarn/
   semodule_link output and the m4 `#line` expansion map.
+- `server/service.js`: service editor model (catalogs, render, recognize,
+  minimal edits by unit diff); `media/service.js` its webview form.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
   variant from a Fedora/RHEL selinux-policy.spec (request
   `selinux/specBuildConfig`, command "Configure Build from Spec File…").
@@ -424,6 +468,12 @@ is only visible to collaborators; making it public is the user's call.
   refpolicy copy without modules.conf over LSP: ssh.te (loadable by
   default) gets missing-te-require, terminal.te (required → base) doesn't,
   MONOLITHIC=y gets none.
+- `test/service-test.js` (in `npm test`, any OS; `npm run test:service
+  -- ../selinux-policy/policy` adds every daemon module): service editor
+  model, minimal edits, webview with a fake DOM.
+- `test/service-e2e.js` (`npm run test:service-e2e`, melody): new + edited
+  service built with the tree; args `[tree [spec [variant]]]` (RHEL: copies
+  the spec dir so modules.conf edits stay in the copy); standalone too.
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

@@ -1477,6 +1477,167 @@ connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
 /* ---------------- property checks (selinux.checks) ---------------- */
 
 /*
+ * Service editor (server/service.js): create a service module from a simple
+ * model, or edit an existing one (a module with init_daemon_domain), changing
+ * only the lines of settings the user changed. The client shows the model in
+ * a webview and applies the planned texts as workspace edits.
+ */
+const service = require('./service');
+
+/** What the service model needs to know about this tree. */
+function serviceCtx() {
+  const fileOf = (p) => idx.files.get(p);
+  let moduleArgs = 2;
+  let one = 0, two = 0;
+  for (const f of idx.files.values()) {
+    if (!/\.te$/.test(f.path) || !f.calls) continue;
+    const pm = f.calls.find(c => c.name === 'policy_module');
+    if (pm) { if (pm.args.length === 1) one++; else two++; }
+  }
+  if (one > two) moduleArgs = 1;
+  const mods = new Set(idx.modules().map(m => m.module));
+  return {
+    has: (n) => idx.defs.has(n),
+    // Calls into modules that may be turned off belong in optional_policy.
+    optional: (n) => {
+      const d = (idx.defs.get(n) || [])[0];
+      const f = d && fileOf(d.path);
+      if (!f) return false;
+      if (idx.moduleKinds && idx.moduleKinds.has(f.module)) return idx.moduleKinds.get(f.module) !== 'base';
+      return !['kernel', 'system'].includes(f.layer);
+    },
+    moduleArgs,
+    moduleExists: (n) => mods.has(n),
+    typeExists: (t) => idx.decls.has(t),
+  };
+}
+
+/** The workspace's modules that the editor can open: a .te with init_daemon_domain. */
+function serviceModules() {
+  const out = [];
+  for (const m of idx.modules()) {
+    if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep))) continue;
+    const text = readSource(m.files.te);
+    if (!text || !/init_daemon_domain\s*\(/.test(text)) continue;
+    out.push({ module: m.module, layer: m.layer, files: m.files, domains: service.daemonDomains(text) });
+  }
+  return out;
+}
+
+/** Where a new module's files go: a layer of the tree, or a folder (standalone modules). */
+function newServicePaths(name, where) {
+  let dir;
+  if (treeRoot && !usingDevel) dir = path.join(treeRoot, 'policy', 'modules', where && /^[\w-]+$/.test(where) ? where : 'services');
+  else dir = where && path.isAbsolute(where) ? where : path.join(roots[0] || '.', name);
+  return { te: path.join(dir, `${name}.te`), if: path.join(dir, `${name}.if`), fc: path.join(dir, `${name}.fc`) };
+}
+
+/** Port types from corenetwork's network_port() calls: name -> 'tcp 80,443; udp 80'. */
+function servicePorts() {
+  const ports = new Map();
+  for (const f of idx.files.values()) {
+    for (const c of f.calls || []) {
+      if (c.inDef || !/^network_port$/.test(c.name) || !c.args[0] || !idx.isActive(f, c.l, c.c)) continue;
+      const by = {};
+      for (let i = 1; i + 1 < c.args.length; i += 3) { const p = c.args[i]; if (/^(tcp|udp|sctp|dccp)$/.test(p)) (by[p] = by[p] || []).push(c.args[i + 1]); }
+      ports.set(c.args[0], Object.entries(by).map(([p, n]) => `${p} ${n.join(',')}`).join('; '));
+    }
+  }
+  // Port types without numbers (network_port(name) or generic ones) still have interfaces.
+  for (const n of idx.defs.keys()) { const m = /^corenet_tcp_bind_(\w+)_port$/.exec(n); if (m && !ports.has(m[1])) ports.set(m[1], ''); }
+  return [...ports.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, nums]) => ({ name, nums }));
+}
+
+/** Interfaces taking just a domain, for the "other interfaces" picker. */
+function serviceInterfaces() {
+  const out = [];
+  for (const [n, list] of idx.defs) {
+    const d = list[0];
+    if (d.generated || d.kind !== 'interface' || !/\.if(\.in)?$/.test(d.path)) continue;
+    const ps = d.doc && d.doc.params;
+    if (!(ps ? ps.length === 1 : d.maxArg === 1)) continue;
+    const f = idx.files.get(d.path);
+    out.push({ n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '' });
+  }
+  return out.sort((a, b) => a.n.localeCompare(b.n));
+}
+
+function serviceTexts(files) {
+  return { te: readSource(files.te) || '', if: (files.if && readSource(files.if)) || '', fc: (files.fc && readSource(files.fc)) || '' };
+}
+
+connection.onRequest('selinux/serviceList', async () => {
+  await indexing;
+  return { modules: serviceModules().map(m => ({ module: m.module, layer: m.layer, domains: m.domains })) };
+});
+
+connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain } = {}) => {
+  await indexing;
+  if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree or a standalone module folder first.' };
+  const ctx = serviceCtx();
+  const info = {
+    catalog: service.catalog(ctx), ports: servicePorts(), interfaces: serviceInterfaces(),
+    mode: treeRoot && !usingDevel ? 'tree' : 'module',
+    layers: treeRoot && !usingDevel ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
+    folder: roots[0] || null,
+  };
+  if (info.layers) info.defaultLayer = ['contrib', 'services'].find(l => info.layers.includes(l)) || info.layers[0];
+  if (!mod) return { ...info, isNew: true, model: service.newModel() };
+  const m = serviceModules().find(x => x.module === mod);
+  if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
+  const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod });
+  if (rec.error) return { unavailable: rec.error };
+  const prov = new Set(rec.provided);
+  rec.model.provides = service.PROVIDES.map(p => p[0]).filter(id => prov.has(service.PROVIDES.find(p => p[0] === id)[1].replace(/%/g, mod)));
+  return { ...info, isNew: false, module: mod, layer: m.layer, files: m.files, model: rec.model, kept: rec.kept, provided: rec.provided, domains: rec.domains };
+});
+
+connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }) => {
+  await indexing;
+  const ctx = serviceCtx();
+  const isNew = !mod;
+  const problems = service.validate(model, ctx, { isNew });
+  if (isNew && problems.some(p => /name must|already exists/.test(p))) return { problems, files: [] };
+  let paths, before;
+  if (isNew) {
+    paths = newServicePaths(model.name, where);
+    before = { te: null, if: null, fc: null };
+  } else {
+    const m = serviceModules().find(x => x.module === mod);
+    if (!m) return { problems: [`${mod} is no longer a service module.`], files: [] };
+    paths = { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc') };
+    before = serviceTexts(m.files);
+    // Removing a file type that the .if or other modules still use would break the build.
+    const rec = service.recognize(before, ctx, { domain: model.domain });
+    if (!rec.error) {
+      const keep = new Set((model.files || []).map(r => service.fileType(model, r, ctx)));
+      for (const r of rec.model.files) {
+        if (keep.has(r.type)) continue;
+        const uses = idx.referencesOf(r.type).filter(u => u.path !== paths.te && u.path !== paths.fc);
+        if (uses.length) problems.push(`${r.type} is still used in ${rel(uses[0].path)}:${uses[0].l + 1}${uses.length > 1 ? ` and ${uses.length - 1} more place${uses.length > 2 ? 's' : ''}` : ''}; remove those uses first, or keep the type.`);
+      }
+    }
+  }
+  const out = service.plan(model, ctx, isNew ? null : before);
+  if (out.error) return { problems: [out.error], files: [] };
+  const files = [];
+  for (const k of ['te', 'if', 'fc']) {
+    const old = before[k] || '';
+    files.push({ path: paths[k], kind: k, exists: !isNew && fs.existsSync(paths[k]), text: out[k], changed: out[k] !== old, diff: service.lineDiff(old, out[k]) });
+  }
+  // A new module in a tree is built only when modules.conf lists it.
+  if (isNew && treeRoot && !usingDevel) {
+    const { conf, states } = moduleStates(treeRoot);
+    if (conf && !states.has(model.name)) {
+      const part = conf.parts[conf.parts.length - 1];
+      const text = part.text.replace(/\s*$/, '\n') + `\n# ${model.summary || model.name}\n${model.name} = module\n`;
+      files.push({ path: part.path, kind: 'conf', exists: true, text, changed: true, diff: service.lineDiff(part.text, text) });
+    }
+  }
+  return { problems, files };
+});
+
+/*
  * Assertions about the compiled policy, kept in a file in the tree and
  * evaluated by policy_query.py after every successful build and whenever the
  * file is saved or edited. Failures become diagnostics on the checks file,

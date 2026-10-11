@@ -201,6 +201,16 @@
         "title": "SELinux: Apply Module Preview to modules.conf"
       },
       {
+        "command": "selinux.newService",
+        "title": "SELinux: New Service…",
+        "icon": "$(add)"
+      },
+      {
+        "command": "selinux.editService",
+        "title": "SELinux: Edit Service…",
+        "icon": "$(edit)"
+      },
+      {
         "command": "selinux.transitionGraph",
         "title": "SELinux: Show Domain Transition Graph",
         "icon": "$(type-hierarchy)"
@@ -227,6 +237,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "selinux.newService",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation@0"
+        },
         {
           "command": "selinux.reindex",
           "when": "view == selinuxPolicyExplorer",
@@ -315,6 +330,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "selinux.editService",
+          "when": "view == selinuxPolicyExplorer && viewItem == module",
+          "group": "navigation@0"
+        },
         {
           "command": "selinux.previewModule",
           "when": "view == selinuxPolicyExplorer && viewItem == module",
@@ -510,7 +530,9 @@
     }
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js",
+    "test:service": "node test/service-test.js",
+    "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
     "test:build": "node test/build-e2e.js",
     "test:tree": "node test/build-tree-e2e.js",
