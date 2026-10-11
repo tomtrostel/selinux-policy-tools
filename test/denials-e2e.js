@@ -51,6 +51,7 @@ const check = (cond, what, extra) => {
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + JSON.stringify(extra, null, 1).slice(0, 3000).replace(/\n/g, '\n     ')); }
 };
 
+const top = (g) => (g && g.suggest && g.suggest.list && g.suggest.list[0] ? g.suggest.list[0].name : null);
 let ev = 100;
 const avc = (perms, s, t, cls, extra = '') => `type=AVC msg=audit(1728650000.${ev}:${ev++}): avc:  denied  { ${perms} } for  pid=1234 comm="x" ${extra} scontext=system_u:system_r:${s}:s0 tcontext=system_u:object_r:${t}:s0 tclass=${cls} permissive=0`;
 const LOG = [
@@ -89,6 +90,10 @@ const LOG = [
   check(gen.v.verdict === 'generic', `default_t: ${gen.v.title}`, gen);
   const miss = by('chronyd_t', 'etc_t');
   check(miss.v.verdict === 'missing' && miss.v.needed === 'allow chronyd_t etc_t:file { write };', `chronyd_t write etc_t: ${miss.v.title}`, miss);
+  // Suggestions with the devel headers (no module built yet: a scratch dir of its own).
+  check(top(miss) === 'files_rw_etc_files' && miss.suggest.list[0].covers && miss.suggest.list[0].owner && miss.suggest.list.some(x => x.name === 'files_manage_etc_files'),
+    `chronyd_t write etc_t: suggested ${miss.suggest && miss.suggest.list ? miss.suggest.list.map(x => `${x.name} (${x.extra})`).join(', ') : JSON.stringify(miss.suggest)}`, r.notes);
+  check(!by('httpd_t', 'httpd_sys_content_t').suggest, 'no suggestions for an allowed access');
   check(by('nope_t', 'etc_t').v.verdict === 'unknown', 'nope_t: not in this policy');
   check(by('demo_t', 'demo_data_t').v.verdict === 'unknown', 'the module\'s types are unknown to the installed policy');
   check(r.groups.find(g => g.kind === 'error').v.verdict === 'error', 'SELINUX_ERR: error verdict');
@@ -108,6 +113,12 @@ const LOG = [
     const own = by('demo_t', 'demo_data_t');
     check(r.policy.id === 'build' && own.v.verdict === 'allowed', `against the build: demo_t reads demo_data_t: ${own.v.title}`, { policy: r.policy, v: own.v, notes: r.notes });
     check(by('chronyd_t', 'etc_t').v.verdict === 'missing', 'against the build: the installed policy\'s types are there too');
+    // The module's build dir for the probe; a template-generated interface; own types get a plain rule.
+    r = await conn.sendRequest('selinux/analyzeDenials', { text: [avc('name_connect', 'demo_t', 'http_port_t', 'tcp_socket'), avc('write', 'demo_t', 'demo_data_t', 'file'), avc('read', 'demo_t', 'shadow_t', 'file')].join('\n'), against: 'build' });
+    check(top(by('demo_t', 'http_port_t')) === 'corenet_tcp_connect_http_port', `demo_t connect http_port_t: ${top(by('demo_t', 'http_port_t'))}`, by('demo_t', 'http_port_t').suggest);
+    const ownS = by('demo_t', 'demo_data_t').suggest;
+    check(ownS && ownS.own && ownS.module === 'demo' && ownS.rule === 'allow demo_t demo_data_t:file { write };', 'own types: a plain rule in the module', ownS);
+    check(top(by('demo_t', 'shadow_t')) === 'auth_read_shadow' && by('demo_t', 'shadow_t').suggest.list[0].attrs.includes('can_read_shadow_passwords'), `demo_t read shadow_t: ${top(by('demo_t', 'shadow_t'))} (adds can_read_shadow_passwords)`, by('demo_t', 'shadow_t').suggest);
   } else console.log(`SKIP build part: ${tc.reason}`);
   proc.kill();
 
@@ -136,6 +147,10 @@ const LOG = [
     const h2 = by('httpd_t', 'user_home_t');
     check(h2 && h2.v.verdict === 'label' && h2.labels.some(l => l.expected === 'httpd_sys_content_t'), `tree build: /var/www/html labeled by the tree's file contexts: ${h2 && h2.v.title}`, h2 && h2.labels);
     check(by('demo_t', 'demo_data_t').v.verdict === 'unknown', 'tree build: the standalone module\'s types are not in it');
+    // Suggestions from the tree's own m4 output and interfaces.
+    r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('write', 'httpd_t', 'etc_t', 'file'), against: 'build' });
+    const hw = by('httpd_t', 'etc_t');
+    check(hw && hw.v.verdict === 'missing' && top(hw) === 'files_rw_etc_files' && hw.suggest.list[0].loc.p.startsWith(tree), `tree build: httpd_t write etc_t: ${top(hw)} from ${hw && hw.suggest && hw.suggest.list && hw.suggest.list[0] ? path.relative(tree, hw.suggest.list[0].loc.p) : '?'}`, hw && { v: hw.v, s: hw.suggest, notes: r.notes });
     p2.kill();
   } else console.log('SKIP tree part: no refpolicy tree or toolchain');
 

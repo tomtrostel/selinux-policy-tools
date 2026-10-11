@@ -100,6 +100,55 @@ check(v.notes.length === 2, 'permissive mode and permissive domain noted');
 v = d.verdict({ ...g({}), kind: 'error', ops: ['security_compute_sid'], target: 'myd_exec_t', tclass: 'process' }, null, null, P);
 check(v.verdict === 'error', 'SELinux error verdict');
 
+/* ---------- interface suggestions ---------- */
+
+const PROBE = `policy_module(zzprobe, 1.0.0)
+##### begin files_rw_etc_files(myd_t) depth: 1
+	require { type etc_t; class file { read write }; }
+	allow myd_t etc_t:file { open { getattr read write append ioctl lock } };
+##### begin files_search_etc(myd_t) depth: 2
+	allow myd_t etc_t:dir { getattr search open };
+##### end files_search_etc(myd_t) depth: 1
+##### end files_rw_etc_files(myd_t) depth: 0
+##### begin files_manage_etc_files(myd_t) depth: 1
+	allow myd_t etc_t:dir { getattr search open read write add_name remove_name };
+	allow myd_t etc_t:file { create open getattr setattr read write append rename link unlink ioctl lock };
+##### end files_manage_etc_files(myd_t) depth: 0
+##### begin files_manage_config_files(myd_t) depth: 1
+	allow myd_t configfile:file { create open getattr setattr read write append rename link unlink ioctl lock };
+##### end files_manage_config_files(myd_t) depth: 0
+##### begin files_dontaudit_write_etc_files(myd_t) depth: 1
+	dontaudit myd_t etc_t:file write;
+##### end files_dontaudit_write_etc_files(myd_t) depth: 0
+##### begin etc_writer(myd_t) depth: 1
+	typeattribute myd_t etc_writer_domain;
+##### end etc_writer(myd_t) depth: 0
+##### begin files_read_etc_files(myd_t) depth: 1
+	allow myd_t etc_t:file { open getattr read };
+	if (allow_etc_write) {
+	allow myd_t etc_t:file write;
+	}
+##### end files_read_etc_files(myd_t) depth: 0
+`;
+const st = d.probeStatements(PROBE);
+check(st.size === 6 && st.get('files_rw_etc_files(myd_t)').length === 2, `probe: one statement list per top-level call: ${[...st.keys()].join(', ')}`);
+check(st.get('files_rw_etc_files(myd_t)')[1].nested && !st.get('files_rw_etc_files(myd_t)')[0].nested, 'probe: statements of called interfaces marked nested');
+check(st.get('files_rw_etc_files(myd_t)')[0].perms.join(' ') === 'open getattr read write append ioctl lock', 'probe: nested permission sets flattened');
+check(st.get('files_read_etc_files(myd_t)')[1].cond, 'probe: rules in if blocks are conditional');
+const cand = (name, extra = {}) => ({ name, call: `${name}(myd_t)`, module: 'files', owner: true, off: false, summary: '', loc: null, ...extra });
+const types = { etc_t: { attr: false, size: 1, attrs: ['configfile', 'file_type'] }, configfile: { attr: true, size: 300 } };
+const ranked = d.rankInterfaces({ domain: 'myd_t', target: 'etc_t', tclass: 'file', perms: ['write'] },
+  ['files_rw_etc_files', 'files_manage_etc_files', 'files_manage_config_files', 'files_dontaudit_write_etc_files', 'etc_writer', 'files_read_etc_files'].map(n => cand(n, n === 'etc_writer' ? { module: 'other', owner: false } : {})),
+  st, types, { etc_writer_domain: [{ rt: 'allow', s: 'etc_writer_domain', t: 'etc_t', c: 'file', perms: ['write', 'append'], cond: '' }] });
+check(ranked.map(x => x.name).join(' ') === 'etc_writer files_rw_etc_files files_manage_etc_files files_manage_config_files',
+  `ranked narrowest first; dontaudit and conditional-only interfaces left out: ${ranked.map(x => `${x.name}(${x.extra})`).join(' ')}`);
+check(ranked[0].attrs.join() === 'etc_writer_domain', 'rights through an added attribute count (its rules in the policy)');
+check(ranked.find(x => x.name === 'files_manage_config_files').broad && !ranked.find(x => x.name === 'files_rw_etc_files').broad, 'interfaces far broader than the best are flagged');
+check(/configfile \(300 types\) file: /.test(ranked.find(x => x.name === 'files_manage_config_files').grants[0]), `grants summary names the attribute and its size: ${ranked.find(x => x.name === 'files_manage_config_files').grants[0]}`);
+check(ranked.find(x => x.name === 'files_manage_etc_files').extra > ranked.find(x => x.name === 'files_rw_etc_files').extra, 'create/unlink weigh more than reads');
+const part = d.rankInterfaces({ domain: 'myd_t', target: 'etc_t', tclass: 'file', perms: ['write', 'execute'] }, [cand('files_rw_etc_files')], st, types);
+check(part.length === 1 && !part[0].covers && part[0].missing.join() === 'execute', 'partial cover reported with what it lacks');
+
 /* ---------- webview ---------- */
 
 class El {
@@ -145,15 +194,21 @@ const result = {
     { key: 'b', kind: 'deny', source: 'httpd_t', target: 'http_cache_port_t', tclass: 'tcp_socket', perms: ['name_connect'], count: 1, comms: ['httpd'], exes: [], paths: [], labels: [], permissive: true,
       v: { verdict: 'boolean', title: 'Allowed under a boolean that is off', detail: '…', fixes: [{ text: 'Set it', command: 'setsebool -P httpd_can_network_relay on' }], rules: [{ rt: 'allow', s: 'httpd_t', t: 'http_cache_port_t', c: 'tcp_socket', perms: ['name_connect'], cond: 'httpd_can_network_relay:true' }], notes: ['Logged in permissive mode.'] } },
     { key: 'c', kind: 'deny', source: 'myd_t', target: 'etc_t', tclass: 'file', perms: ['write'], count: 1, comms: [], exes: [], paths: [], labels: [],
-      v: { verdict: 'missing', title: 'Missing rule', detail: '…', fixes: [], needed: 'allow myd_t etc_t:file { write };', notes: [] } },
+      v: { verdict: 'missing', title: 'Missing rule', detail: '…', fixes: [], needed: 'allow myd_t etc_t:file { write };', notes: [] },
+      suggest: { list: [
+        { name: 'files_rw_etc_files', module: 'files', owner: true, covers: true, missing: [], extra: 16, grants: ['etc_t dir: search getattr open'], attrs: [], summary: 'Read and write generic files in /etc.', loc: { p: '/t/files.if', l: 9, c: 0 } },
+        { name: 'files_manage_config_files', module: 'files', owner: true, covers: true, missing: [], extra: 6579, broad: true, grants: ['configfile (300 types) file: create unlink write'], attrs: [], summary: '', loc: { p: '/t/files.if', l: 99, c: 0 } }] } },
+    { key: 'd', kind: 'deny', source: 'myd_t', target: 'myd_data_t', tclass: 'file', perms: ['write'], count: 1, comms: [], exes: [], paths: [], labels: [],
+      v: { verdict: 'missing', title: 'Missing rule', detail: '…', fixes: [], needed: 'allow myd_t myd_data_t:file { write };', notes: [] },
+      suggest: { own: true, module: 'myd', rule: 'allow myd_t myd_data_t:file { write };' } },
   ],
 };
 send({ cmd: 'result', result });
 const cards = find(e => (e.attrs.class || '').split(' ').includes('group'));
-check(cards.length === 3, `one card per group: ${cards.length}`);
+check(cards.length === 4, `one card per group: ${cards.length}`);
 check(/Wrong label/.test(cards[0].textContent) && /httpd_t/.test(cards[0].textContent) && /2×/.test(cards[0].textContent), 'card header: verdict, types, count');
 check(/1 line could not be read/.test(byId.list.textContent), 'notes shown');
-check(/3 denials in 3 groups/.test(byId.status.textContent), `status: ${byId.status.textContent}`);
+check(/3 denials in 4 groups/.test(byId.status.textContent), `status: ${byId.status.textContent}`);
 const btn = (card, t) => card.all(e => e.tag === 'button' && e.textContent === t)[0];
 btn(cards[0], 'Send to terminal').fire('click');
 check(last('run') && last('run').command === 'sudo restorecon -v /var/www/html/index.html', 'fix sent to the terminal with sudo');
@@ -161,6 +216,13 @@ btn(cards[1], 'Copy').fire('click');
 check(last('copy') && last('copy').text === 'setsebool -P httpd_can_network_relay on', 'fix copied');
 check(/when httpd_can_network_relay]/.test(cards[1].textContent) && /permissive/.test(cards[1].textContent), 'allowing rule with its condition, notes');
 check(/allow myd_t etc_t:file \{ write \};/.test(cards[2].textContent), 'missing rule: needed access shown');
+const ifaces = cards[2].all(e => e.attrs.class === 'iface');
+check(ifaces.length === 2 && /narrowest/.test(ifaces[0].textContent) && /owner/.test(ifaces[0].textContent) && /broad/.test(ifaces[1].textContent) && /configfile \(300 types\)/.test(ifaces[1].textContent), 'suggested interfaces: narrowest, owner, broad, what else they grant');
+btn(ifaces[0], 'files_rw_etc_files(myd_t)').fire('click');
+check(last('open') && last('open').loc.p === '/t/files.if', 'interface opens its definition');
+btn(ifaces[0], 'Copy').fire('click');
+check(last('copy').text === 'files_rw_etc_files(myd_t)', 'interface call copied');
+check(/a rule in module myd/.test(cards[3].textContent) && /allow myd_t myd_data_t:file/.test(cards[3].textContent), "own types: a rule in the domain's module");
 btn(cards[0], 'httpd_t').fire('click');
 check(last('open') && last('open').loc.p === '/t/apache.te', 'type links open the declaration');
 check(!btn(cards[0], 'user_home_t'), 'no link for a type without a source location');

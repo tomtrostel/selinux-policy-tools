@@ -10,11 +10,17 @@
   (fix: `restorecon`), allowed under a boolean that is off (fix:
   `setsebool -P`), already allowed, generic label, or missing rule,
   checked against the running policy (current boolean values), another
-  installed one, or the workspace's last build. Interface suggestions and
-  applying fixes to modules come next.
+  installed one, or the workspace's last build.
+* **Interface suggestions** for a missing rule: the interfaces that grant
+  it, narrowest first, each with what else it grants, worked out from what
+  each one really expands to (m4 with the policy's own Makefile) and the
+  compiled policy. A plain rule is suggested when both types are the
+  domain's own. Writing the fix into the module comes next.
 
 **Tests**: `npm run test:denials` (in `npm test`), `npm run
-test:denials-e2e` (melody: installed policy, standalone module, CLIP tree).
+test:denials-e2e` (melody: installed policy, standalone module, CLIP tree),
+`npm run test:denials-bench` (melody: suggestions for 735 denials made
+from RHEL 9 modules' own interface calls).
 
 ## 0.9.0 (2026-10-11)
 

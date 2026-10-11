@@ -9,7 +9,7 @@ const {
 const { TextDocument } = require('vscode-languageserver-textdocument');
 const { URI } = require('vscode-uri');
 const { PolicyIndex } = require('./indexer');
-const { diagnose, globalRequirements } = require('./diagnostics');
+const { diagnose, globalRequirements, callRequires } = require('./diagnostics');
 const build = require('./build');
 
 const connection = createConnection(ProposedFeatures.all);
@@ -2231,6 +2231,138 @@ async function denialLabels(groups, fc) {
   return out;
 }
 
+/*
+ * Interface suggestions for denials with a missing rule. Candidates are found
+ * by name (interfaces of one argument whose requirements, followed through the
+ * interfaces they call, include the target type or one of its attributes);
+ * what each one really grants comes from m4: one probe module calls them all
+ * with the denied domain (build.expandCalls), and denials.rankInterfaces
+ * keeps those that cover the denied permissions, fewest other rights first.
+ */
+const PROBE_ARG = 'zzprobe_domain_t';
+let ifaceReqCache = { defs: null, byName: null };
+
+/** name → [interface defs] whose requirements include it (cached per index). */
+function interfacesRequiring() {
+  if (ifaceReqCache.defs === idx.defs) return ifaceReqCache.byName;
+  const byName = new Map();
+  for (const [name, list] of idx.defs) {
+    const d = list[0];
+    if (!d || d.kind !== 'interface' || /\.spt$/.test(d.path || '')) continue;
+    if (!d.generated && d.maxArg !== 1) continue;
+    for (const n of callRequires(idx, name, [PROBE_ARG]).names) {
+      if (n === PROBE_ARG) continue;
+      if (!byName.has(n)) byName.set(n, []);
+      byName.get(n).push(d);
+    }
+  }
+  ifaceReqCache = { defs: idx.defs, byName };
+  return byName;
+}
+
+/** Where to run the probe: the tree build's scratch copy, or a module build dir with the devel Makefile. */
+function probeConfig() {
+  if (usingDevel) {
+    if (!fs.existsSync(settings.build.develMakefile || '')) return { unavailable: `Interface suggestions need ${settings.build.develMakefile} (selinux-policy-devel).` };
+    const res = lastModule && lastBuild.get(lastModule);
+    const work = res && res.workDir && fs.existsSync(res.workDir) ? res.workDir : build.scratchDir('probe', roots[0] || 'devel');
+    workDirs.add(work);
+    return { work, develMakefile: settings.build.develMakefile };
+  }
+  if (!treeRoot) return { unavailable: 'Interface suggestions need a policy tree or module in the workspace.' };
+  const res = lastBuild.get(treeRoot);
+  if (!res || !res.workDir || !fs.existsSync(path.join(res.workDir, 'tmp', 'all_interfaces.conf'))) return { unavailable: 'Build the tree (SELinux: Build) to get interface suggestions: they are worked out with its m4 output.', needsBuild: true };
+  return { work: res.workDir, makeArgs: treeCfg().makeArgs || [] };
+}
+
+/** Adds `suggest` to groups with a missing rule: { own } (a rule in the domain's own module) or { list, note }. */
+async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max = 25, limit = 5) {
+  const want = groups.filter(g => g.kind === 'deny' && verdicts.includes(g.v.verdict)).slice(0, max);
+  if (!want.length) return;
+  const loc = new Map();
+  const locOf = (n) => { if (!loc.has(n)) loc.set(n, sourceLocation(n, ['type', 'attribute'])); return loc.get(n); };
+  const needProbe = [];
+  for (const g of want) {
+    const s = locOf(g.source), t = locOf(g.target);
+    if (g.source === g.target || (s && t && s.m && s.m === t.m)) {
+      g.suggest = { own: true, module: s ? s.m : null, rule: g.v.needed };
+      continue;
+    }
+    needProbe.push(g);
+  }
+  if (!needProbe.length || !bin) return;
+  const cfg = probeConfig();
+  if (cfg.unavailable) { notes.push(cfg.unavailable); return; }
+  const t0 = Date.now();
+  // The targets' attributes (from the policy) widen the search to interfaces written for them.
+  let ti = await policyQuery.request({ op: 'typeinfo', bin, names: [...new Set(needProbe.map(g => g.target))], sourceRules: [] });
+  if (ti.error) { notes.push(`Policy query failed: ${ti.error}`); return; }
+  const info = ti.info || {};
+  const byName = interfacesRequiring();
+  const attrSize = new Map();
+  const attrQuery = [...new Set(needProbe.flatMap(g => (info[g.target] && info[g.target].attrs) || []))];
+  if (attrQuery.length) {
+    const r = await policyQuery.request({ op: 'typeinfo', bin, names: attrQuery, sourceRules: [] });
+    for (const [n, x] of Object.entries(r.info || {})) attrSize.set(n, x.size);
+  }
+  const offModules = idx.moduleKinds ? new Set([...idx.moduleKinds].filter(([, k]) => k === 'off').map(([m]) => m)) : new Set();
+  const perGroup = new Map();
+  const calls = new Set();
+  for (const g of needProbe) {
+    // Interfaces that require the type themselves (not through a call) first, the type's own module's first among them.
+    const ownReq = (d) => (d.requires || []).some(r => r.name === g.target) || (d.generated && (idx.generatedAt(d.path, d.l, d.c) || []).includes(g.target));
+    // The module that owns the type: where it is declared, else (devel headers: no declarations) the module
+    // whose interfaces most often require it themselves.
+    let tMod = (locOf(g.target) || {}).m || null;
+    if (!tMod) {
+      const votes = new Map();
+      for (const d of byName.get(g.target) || []) if (ownReq(d)) { const m = (idx.files.get(d.path) || {}).module; if (m) votes.set(m, (votes.get(m) || 0) + 1); }
+      tMod = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    }
+    const direct = (byName.get(g.target) || []).map(d => ({ d, k: (ownReq(d) ? 0 : 2) + ((idx.files.get(d.path) || {}).module === tMod ? 0 : 1) })).sort((a, b) => a.k - b.k).map(x => x.d);
+    // Attribute interfaces (e.g. files_read_all_files) only for smaller attributes: they are rarely the right answer.
+    const viaAttr = ((info[g.target] && info[g.target].attrs) || []).filter(a => (attrSize.get(a) || 0) <= 300)
+      .sort((a, b) => (attrSize.get(a) || 0) - (attrSize.get(b) || 0)).flatMap(a => byName.get(a) || []).slice(0, 80);
+    const seen = new Set();
+    const cands = [];
+    for (const d of [...direct.slice(0, 600), ...viaAttr]) {
+      if (seen.has(d.name)) continue;
+      seen.add(d.name);
+      const f = idx.files.get(d.path);
+      const m = f ? f.module : null;
+      const call = `${d.name}(${g.source})`;
+      calls.add(call);
+      cands.push({ name: d.name, call, module: m, owner: !!(m && m === tMod), off: !!(m && offModules.has(m)),
+        summary: (d.doc && d.doc.summary) || '', loc: { p: d.path, l: d.l, c: d.c } });
+    }
+    perGroup.set(g, cands);
+  }
+  if (!calls.size) { for (const g of needProbe) g.suggest = { list: [], note: `No interface mentions ${g.target}.` }; return; }
+  const ex = await build.expandCalls([...calls].sort(), cfg);
+  if (!ex.ok) { notes.push(`Interface suggestions: m4 failed (${ex.log.trim().split('\n').slice(-2).join(' ')}).`); return; }
+  const stmts = denials.probeStatements(ex.text);
+  // Sizes of every type/attribute the candidates grant on, and the rules on attributes they add.
+  const names = new Set(), added = new Set();
+  for (const list of stmts.values()) for (const s of list) {
+    if (s.rt === 'typeattribute') s.attrs.forEach(a => added.add(a));
+    else if (s.t) s.t.forEach(n => names.add(n));
+  }
+  ti = await policyQuery.request({ op: 'typeinfo', bin, names: [...names, ...needProbe.map(g => g.target)], sourceRules: [...added] });
+  if (ti.error) { notes.push(`Policy query failed: ${ti.error}`); return; }
+  const types = ti.info || {};
+  const more = new Set();
+  for (const rules of Object.values(ti.rules || {})) for (const r of rules) if (!(r.t in types)) more.add(r.t);
+  if (more.size) { const r2 = await policyQuery.request({ op: 'typeinfo', bin, names: [...more], sourceRules: [] }); Object.assign(types, r2.info || {}); }
+  for (const g of needProbe) {
+    const ranked = denials.rankInterfaces({ domain: g.source, target: g.target, tclass: g.tclass, perms: g.perms }, perGroup.get(g) || [], stmts, types, ti.rules || {});
+    const full = ranked.filter(x => x.covers);
+    const list = (full.length ? full : ranked).slice(0, full.length ? limit : 3);
+    g.suggest = { list, partial: !full.length && list.length > 0,
+      note: !ranked.length ? `None of the ${(perGroup.get(g) || []).length} interfaces that mention ${g.target} grants this.` : null };
+  }
+  log(`denial suggestions: ${calls.size} interface calls probed in ${ex.ms} ms, ${Date.now() - t0} ms total`);
+}
+
 connection.onRequest('selinux/denialPolicies', async () => {
   await indexing;
   const list = denialPolicies();
@@ -2242,7 +2374,7 @@ connection.onRequest('selinux/denialPolicies', async () => {
  * `against` (a denialPolicies id; default: the running installed policy, else
  * the workspace build).
  */
-connection.onRequest('selinux/analyzeDenials', async ({ text, against } = {}) => {
+connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest } = {}) => {
   await indexing;
   const parsed = denials.parseDenials(text || '');
   const groups = denials.groupDenials(parsed);
@@ -2251,7 +2383,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against } = {}) =>
   const notes = [];
   const unparsed = (text || '').split('\n').filter(l => /avc:\s+denied/.test(l)).length - parsed.filter(d => d.kind !== 'error').length;
   if (unparsed > 0) notes.push(`${unparsed} line${unparsed > 1 ? 's' : ''} mentioning "avc: denied" could not be read (no scontext/tcontext?).`);
-  let te = new Map(), labels = new Map(), policyName = pol ? pol.label : 'the policy';
+  let te = new Map(), labels = new Map(), policyName = pol ? pol.label : 'the policy', usedBin = null;
   if (!pol) notes.push(process.platform === 'win32' ? 'Checking denials against a policy needs a Linux host (use Remote-SSH).' : 'No policy to check against: no installed policy under /etc/selinux, and no workspace build.');
   else if (groups.length) {
     let bin = pol.bin;
@@ -2260,6 +2392,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against } = {}) =>
       if (l.unavailable) notes.push(l.unavailable); else bin = l.policy;
     }
     if (bin) {
+      usedBin = bin;
       const bools = pol.active ? runningBooleans() : {};
       if (pol.active && Object.keys(bools).length) policyName = `the running ${pol.name} policy`;
       const checks = groups.filter(g => g.kind === 'deny').map(g => ({ id: g.key, s: g.source, t: g.target, c: g.tclass, perms: g.perms }));
@@ -2276,6 +2409,8 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against } = {}) =>
     return { ...g, labels: lab, v: denials.verdict(g, te.get(g.key) || null, lab, policyName),
       srcLoc: sourceLocation(g.source, ['type']), tgtLoc: sourceLocation(g.target, ['type']) };
   });
+  // suggest: false = none; { verdicts, max } widens it (the benchmark asks for allowed accesses too).
+  if (suggest !== false) await suggestInterfaces(out, usedBin, notes, (suggest && suggest.verdicts) || ['missing'], (suggest && suggest.max) || 25, (suggest && suggest.limit) || 5);
   return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
 });
 

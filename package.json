@@ -909,7 +909,8 @@
     "test:walkthrough": "node test/walkthrough-test.js",
     "test:tutorial": "node test/tutorial-e2e.js",
     "test:denials": "node test/denials-test.js",
-    "test:denials-e2e": "node test/denials-e2e.js"
+    "test:denials-e2e": "node test/denials-e2e.js",
+    "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

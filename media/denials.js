@@ -49,6 +49,39 @@
   const ruleText = (r) => `${r.rt} ${r.s} ${r.t}:${r.c} { ${r.perms.join(' ')} };${r.cond ? `   [when ${r.cond.replace(/:true$/, '').replace(/^(.*):false$/, 'not ($1)')}]` : ''}`;
   const typeLink = (name, loc) => (loc ? h('button', { class: 'link', title: `Open the declaration of ${name}${loc.m ? ` (module ${loc.m})` : ''}`, onclick: () => vscode.postMessage({ cmd: 'open', loc }) }, name) : h('code', {}, name));
 
+  const copyBtn = (text, what) => h('button', { title: `Copy ${what}`, onclick: () => vscode.postMessage({ cmd: 'copy', text }) }, 'Copy');
+
+  /** The interfaces that grant a missing access, narrowest first (or the rule for the domain's own module). */
+  function suggestions(g) {
+    const s = g.suggest;
+    if (!s) return null;
+    if (s.own) {
+      return [h('div', { class: 'sub', title: 'Both types belong to the same module, so a plain rule in that module is the normal way to allow it' }, `Fix: a rule in ${s.module ? `module ${s.module}` : 'the domain’s own module'}`),
+        h('div', { class: 'cmd' }, h('code', {}, s.rule), copyBtn(s.rule, 'the rule'))];
+    }
+    const rows = (s.list || []).map((x, k) => {
+      const call = `${x.name}(${g.source})`;
+      const tags = [
+        k === 0 && x.covers ? h('span', { class: 'tag best', title: 'Covers every denied permission with the fewest other rights' }, 'narrowest') : null,
+        x.owner ? h('span', { class: 'tag', title: `Defined by the module that owns ${g.target}` }, 'owner') : null,
+        x.broad ? h('span', { class: 'tag warn', title: 'Grants far more than the narrowest suggestion; use it only if the service needs all of it' }, 'broad') : null,
+        x.off ? h('span', { class: 'tag warn', title: `Module ${x.module} is off in modules.conf: calling it needs optional_policy or turning the module on` }, 'module off') : null,
+        !x.covers ? h('span', { class: 'tag warn', title: 'Grants only part of what was denied' }, `lacks ${x.missing.join(' ')}`) : null,
+        x.cond ? h('span', { class: 'tag', title: 'Some of its rules are under a boolean (not counted here)' }, 'has boolean rules') : null,
+      ];
+      return h('div', { class: 'iface' },
+        h('div', { class: 'cmd' },
+          h('button', { class: 'link', title: `Open the definition of ${x.name}${x.module ? ` (module ${x.module})` : ''}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, call),
+          copyBtn(call, 'the call'), tags),
+        x.summary ? h('div', { class: 'muted' }, x.summary) : null,
+        x.grants && x.grants.length ? h('div', { class: 'grants', title: 'What the interface grants besides the denied access (largest first); attributes count all their member types' },
+          h('span', { class: 'muted' }, 'also grants: '), x.grants.join('; ')) : h('div', { class: 'grants muted' }, 'grants nothing else'),
+        x.attrs && x.attrs.length ? h('div', { class: 'grants muted', title: 'Attributes the interface gives the domain; their rules count as granted too' }, `adds attributes: ${x.attrs.join(', ')}`) : null);
+    });
+    return [h('div', { class: 'sub', title: 'Interfaces that grant this access, worked out from what each one really expands to; the narrowest first' }, s.partial ? 'Interfaces that grant part of it' : 'Suggested interfaces'),
+      rows.length ? rows : null, s.note ? h('div', { class: 'muted' }, s.note) : null];
+  }
+
   function card(g, i) {
     const v = g.v;
     const head = h('summary', {},
@@ -65,6 +98,7 @@
       h('div', { class: 'detail' }, v.detail),
       fixes.length ? h('div', { class: 'sub' }, 'Fix') : null, fixes,
       v.rules && v.rules.length ? [h('div', { class: 'sub' }, 'Allowed by'), h('pre', { class: 'rules' }, v.rules.map(ruleText).join('\n'))] : null,
+      suggestions(g),
       v.needed ? [h('div', { class: 'sub', title: 'What the denial asks for, written as one raw rule. Prefer an interface of the module that owns the target type' }, 'Access needed'), h('pre', { class: 'rules' }, v.needed)] : null,
       (v.notes || []).length ? h('ul', { class: 'notes' }, v.notes.map(n => h('li', {}, n))) : null,
       h('div', { class: 'sub' }, 'Evidence'),

@@ -18,6 +18,12 @@ dev_read_urand(notesd_t)
 
 **Finding the interface:**
 
+* **SELinux: Analyze Denials…** suggests them: for a missing rule it lists
+  the interfaces that grant the access, narrowest first, each with what
+  else it grants (worked out from what the interface really expands to,
+  not from its name). For the example it puts `dev_read_urand` first. When
+  both types belong to the domain's own module it says a plain rule there
+  is the fix.
 * Type the beginning in a `.te` (`dev_read`, `files_read`, `logging_`):
   completion lists interfaces with their summaries and inserts them with
   named parameters.

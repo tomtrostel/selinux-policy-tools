@@ -21,7 +21,7 @@ without modules.conf (make conf defaults); not yet tried interactively.
 0.9.0 adds the service editor with booleans, port types and helper
 domains (step 6 below; e2e-tested, the form not yet tried interactively)
 and tutorials (step 7; the user checked the walkthroughs in VS Code and
-they look good). Unreleased (after 0.9.0): the denial assistant, phase 1
+they look good). Unreleased (after 0.9.0): the denial assistant, phases 1-2
 (step 8).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -346,7 +346,7 @@ so far covered by the e2e tests only.
 8. **Denial assistant** (user picked it from suggested features; plan agreed
    2026-10-11): from an AVC denial to the smallest correct fix.
    Phases: 1 parse/group/verdicts (done, unreleased), 2 interface
-   suggestions, 3 apply + verify after build, 4 later (no transition into
+   suggestions (done, unreleased), 3 apply + verify after build, 4 later (no transition into
    the domain, two-interface covers, new interface in the owner module,
    constraint/MLS explanations, a tutorial quick action).
    Phase 1: `server/denials.js` (pure): `records()` (audit.log /
@@ -381,6 +381,39 @@ so far covered by the e2e tests only.
    verdicts, webview), test/denials-e2e.js (melody: running targeted policy
    verdicts, standalone build linked, CLIP tree build with its
    all_mods.fc). Not yet tried interactively.
+   Phase 2: server `suggestInterfaces()` for groups with verdict missing
+   (max 25; `suggest: { verdicts, max, limit }` param widens it for the
+   benchmark): own types (s = t, or same module per sourceLocation) →
+   `{ own, module, rule }`; else candidates = `interfacesRequiring()`
+   (name → interface defs, kind interface, maxArg 1 or generated, whose
+   `callRequires(..., ['zzprobe_domain_t'])` include it; cached per
+   idx.defs) for the target (own-require first, then the owner module's,
+   cap 600) + its attributes of ≤ 300 members (from typeinfo, 80 max).
+   Owner module: declaring module, else (devel headers) the module whose
+   interfaces most often require the type themselves. `build.expandCalls()`
+   runs the policy's Makefile with `--eval 'zzprobe_m4: ; $(M4) $(M4PARAM)
+   -s $(m4support) [generated_definitions.conf] all_interfaces.conf
+   tmp/zzprobe.te > tmp/zzprobe.out'` in the tree build's workDir (needs a
+   build) or the module build dir / a scratch dir (devel Makefile, rule
+   depends on tmp/all_interfaces.conf); ~0.2 s for 500 calls.
+   `denials.probeStatements()` splits by `##### begin X depth: 1` / `end
+   depth: 0` markers, statements of deeper calls marked `nested`;
+   `parseStatements()` (allow-like rules with flattened/nested sets, ~ and *
+   → '*', exclusions dropped; typeattribute; require skipped; if/else blocks
+   → cond). policy_query op `typeinfo` {names, sourceRules} → sizes,
+   a type's attrs, allow rules of added attributes. `rankInterfaces()`:
+   covers = unconditional rules (domain or added attributes as source) on
+   the target or its attributes for the class; extra = Σ per type|class
+   (deduped) size × permWeight (reads 1, WRITE_PERMS 3, EXEC_PERMS 5), the
+   denied perms on the type itself free; owner ×0.8, module off last;
+   `grants` top 4 per type; `broad` > 50×best+300. Webview: "Suggested
+   interfaces" rows (call link → definition, Copy, tags narrowest / owner /
+   broad / module off / lacks / has boolean rules, also grants, adds
+   attributes). test/denials-bench.js (melody, `npm run
+   test:denials-bench` = 1500 calls, ≥ 90% first / 80% top 3): top-level
+   `iface(domain_t)` calls of other modules in RHEL 9 contrib .te, the
+   interface's own (non-nested) rule with the most non-read perms → a denial;
+   98% original-or-narrower first (57% exactly), 90% top 3, 98% top 5.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
@@ -617,7 +650,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/walkthrough-test.js` (in `npm test`) and `test/tutorial-e2e.js`
   (`npm run test:tutorial`, melody): the walkthroughs and the practice module.
 - `test/denials-test.js` (in `npm test`) and `test/denials-e2e.js`
-  (`npm run test:denials-e2e`, melody; optional tree arg, default CLIP).
+  (`npm run test:denials-e2e`, melody; optional tree arg, default CLIP);
+  `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

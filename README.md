@@ -363,7 +363,7 @@ gets a verdict, checked in this order:
 | Boolean | the policy allows it once a boolean is changed (settings from rules on the type itself first; the one that covers every permission) | `setsebool -P <boolean> on` |
 | Already allowed | the policy allows it now (an older denial, or a constraint / MLS rule) | none; the allowing rules are shown |
 | Generic label | the target is a catch-all type (`default_t`, `var_t`, `var_lib_t`, `usr_t`, …) | give the files a type of their own |
-| Missing rule | none of the above | the access needed, as one raw rule; grant it with an interface |
+| Missing rule | none of the above | the interfaces that grant it, narrowest first (below) |
 
 Types the policy doesn't have ("from a different policy") and
 `SELINUX_ERR` records are reported as such; permissive mode and
@@ -373,6 +373,28 @@ running on this host (with its current boolean values and
 build (a tree's `policy.bin` and file contexts; a standalone module linked
 with the installed policy). Each fix can be copied or put into a terminal
 with `sudo` (not run: you press Enter); types link to their declarations.
+
+**Interface suggestions.** For a missing rule the card lists the
+interfaces that grant the access, narrowest first. Candidates are the
+one-argument interfaces whose requirements (followed through the
+interfaces they call) include the target type, or a smaller attribute of
+it; what each really grants comes from m4, not from its name: one probe
+module calls them all with the denied domain and is expanded by the
+policy's own Makefile (a tree's last build, or the devel headers). An
+interface counts when its rules (plus the rules of attributes it gives the
+domain, from the compiled policy) cover every denied permission; the
+others it grants are counted per type (attributes by their member count),
+writes weighing three times and executes or transitions five times as much
+as reads. Each suggestion shows what else it grants (`user_home_type (85
+types) dir, file: read …` against `user_home_t file: create unlink write
+…`), and is tagged *owner* (the target type's module), *broad* (far more
+than the best one), *module off*, or what it lacks if nothing covers it
+all. When both types belong to the domain's module, the fix is a plain rule
+there. Examples on Rocky 9: `chronyd_t` writing `etc_t` →
+`files_rw_etc_files`; connecting to `http_port_t` →
+`corenet_tcp_connect_http_port` (a template-generated interface); reading
+`shadow_t` → `auth_read_shadow`; reading `/dev/urandom` →
+`dev_read_urand`. Click a call to open its definition, or copy it.
 
 **Building** (Linux)
 
@@ -686,7 +708,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   read is *Already allowed*, `default_t` a generic label, `chronyd_t`
   writing `etc_t` a missing rule; against a standalone module linked with
   the installed policy its own types are known, and against a CLIP tree
-  build labels come from the tree's file contexts.
+  build labels come from the tree's file contexts. Interface suggestions:
+  a benchmark (`npm run test:denials-bench`) takes 1,500 top-level calls
+  of other modules' interfaces in RHEL 9's daemon modules, turns the main
+  rule each one grants into a denial (735 distinct) and asks for
+  suggestions: the interface the module uses, or one granting no more, is
+  first for 98% (exactly the original for 57%: often several grant the
+  same), in the top 3 for 90%, top 5 for 98%. The e2e test checks
+  suggestions with the devel headers, a linked module build and a CLIP
+  tree build.
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
   26 kinds of edits on each (capabilities, file types added, removed or
@@ -852,8 +882,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Denial assistant**
 
-* It says what is wrong, but doesn't yet suggest the interface that grants a
-  missing access, nor write the fix into a module (planned).
+* Fixes aren't written into modules yet (planned): copy the suggested call.
+* Suggestions consider interfaces with one argument (the domain); patterns
+  that take a second type (file type transitions, `*_pattern` macros) and
+  combinations of two interfaces aren't suggested. In a tree they need a
+  build (its m4 output).
 * Labels are checked only for denials whose full path is known (a `path=`
   field, or PATH records of the same event, which need syscall auditing);
   with only `name=` the label check is skipped. Commands are meant for the

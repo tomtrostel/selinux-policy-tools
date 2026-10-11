@@ -438,6 +438,21 @@ class Index:
             out.append(res)
         return out
 
+    def typeinfo(self, names, source_rules):
+        """For ranking interfaces: what each name is ({attr, size, attrs}), and the allow
+        rules written for attributes an interface would add to a domain."""
+        info = {}
+        for n in names:
+            n2 = self.aliases.get(n, n)
+            if n2 in self.members or (n2 not in self.attrs and n2 in self.by_src):
+                info[n] = {"attr": True, "size": len(self.members.get(n2, []))}
+            elif n2 in self.attrs:
+                info[n] = {"attr": False, "size": 1, "attrs": self.attrs[n2]}
+        rules = {}
+        for a in source_rules:
+            rules[a] = [self.rules[i] for i in self.by_src.get(a, ()) if self.rules[i]["rt"] == "allow"][:400]
+        return {"info": info, "rules": rules}
+
     def query(self, name, direction, kinds):
         # A type matches rules written for it or for any attribute it has.
         names = [name] + self.attrs.get(name, [])
@@ -470,6 +485,8 @@ def main():
                 resp.update(rules=rules, via=via, count=len(rules))
             elif req.get("op") == "transitions":
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
+            elif req.get("op") == "typeinfo":
+                resp.update(idx.typeinfo(req.get("names", []), req.get("sourceRules", [])))
             elif req.get("op") == "avc":
                 resp.update(results=idx.avc(req.get("checks", []), req.get("bools") or {}))
             elif req.get("op") == "check":

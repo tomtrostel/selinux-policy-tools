@@ -133,6 +133,38 @@ async function buildModule(tePath, readText, { develMakefile, pkg = false, timeo
   };
 }
 
+/* ---------- interface probe (denial assistant) ---------- */
+
+/**
+ * m4-expand a list of interface calls exactly as a module's .te would be:
+ * the policy's own Makefile runs m4 with its M4PARAM and support files over
+ * `<work>/tmp/zzprobe.te` and the policy's all_interfaces.conf. No checkmodule:
+ * only the text matters (refpolicy's `##### begin/end name(args) depth: N`
+ * markers split it per call).
+ *   tree: { work, makeArgs } of a tree build (tmp/all_interfaces.conf and
+ *         generated_definitions.conf exist after it);
+ *   devel: { work, develMakefile }: a module build dir (its own .if files are
+ *         in all_interfaces.conf) or an empty one (headers only).
+ * Returns { ok, text, log, ms }.
+ */
+async function expandCalls(calls, { work, makeArgs = [], develMakefile = null, timeoutMs = 120000 }) {
+  const t0 = Date.now();
+  fs.mkdirSync(path.join(work, 'tmp'), { recursive: true });
+  const te = path.join(work, 'tmp', 'zzprobe.te');
+  const out = path.join(work, 'tmp', 'zzprobe.out');
+  fs.writeFileSync(te, `policy_module(zzprobe, 1.0.0)\n${calls.join('\n')}\n`);
+  fs.rmSync(out, { force: true });
+  // A rule of our own in the policy's Makefile, so M4, M4PARAM and m4support are its own.
+  const rule = develMakefile
+    ? `zzprobe_m4: tmp/all_interfaces.conf ; $(M4) $(M4PARAM) -s $(m4support) tmp/all_interfaces.conf ${te} > ${out}`
+    : `zzprobe_m4: ; $(M4) $(M4PARAM) -s $(m4support) $(tmpdir)/generated_definitions.conf $(tmpdir)/all_interfaces.conf ${te} > ${out}`;
+  const args = [...(develMakefile ? ['-f', develMakefile] : []), ...makeArgs, '--eval', rule, 'zzprobe_m4'];
+  const r = await run(args, work, timeoutMs);
+  let text = null;
+  try { text = fs.readFileSync(out, 'utf8'); } catch { /* m4 failed */ }
+  return { ok: !!text, text, log: r.out, ms: Date.now() - t0 };
+}
+
 /* ---------- m4 build flags (for deciding ifdef/ifndef branches) ---------- */
 
 /**
@@ -894,4 +926,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { detectToolchain, findTrees, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { detectToolchain, expandCalls, findTrees, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

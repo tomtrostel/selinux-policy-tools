@@ -238,6 +238,170 @@ function verdict(g, te, labels, policyName) {
     fixes: [], needed: allow, notes };
 }
 
+/* ---------- interface suggestions ---------- */
+
+/**
+ * Statements of each top-level call in an m4-expanded probe module
+ * (build.expandCalls): Map "name(args)" → [{ rt, s: [names], t: [names],
+ * c: [names], perms: [names] ('*' = all), cond }] for allow-like rules, and
+ * { rt: 'typeattribute', s: [type], attrs: [names] }. require blocks are
+ * skipped; rules inside `if (…) { }` (tunable_policy) are marked cond.
+ */
+function probeStatements(text) {
+  const out = new Map();
+  let cur = null, own = [], nested = [], depth = 0;
+  const flush = () => {
+    if (cur) out.set(cur, [...parseStatements(own.join('\n')), ...parseStatements(nested.join('\n')).map(s => ({ ...s, nested: true }))]);
+    cur = null; own = []; nested = [];
+  };
+  for (const line of text.split('\n')) {
+    const b = /^#####\s+begin\s+(.+?)\s+depth:\s*(\d+)\s*$/.exec(line);
+    if (b) { if (b[2] === '1') { flush(); cur = b[1]; } depth = +b[2]; continue; }
+    const e = /^#####\s+end\s+.+?\s+depth:\s*(\d+)\s*$/.exec(line);
+    if (e) { depth = +e[1]; if (depth === 0) flush(); continue; }
+    // Statements of the interface itself (depth 1) vs of the interfaces it calls (marked nested).
+    if (cur && !line.startsWith('#')) (depth > 1 ? nested : own).push(line.replace(/#.*$/, ''));
+  }
+  flush();
+  return out;
+}
+
+function parseStatements(text) {
+  const toks = text.match(/[A-Za-z0-9_$.*~-]+|[{}():;,]/g) || [];
+  const out = [];
+  let i = 0;
+  const blocks = []; // 'cond' | 'opt' | 'other'
+  const set = () => {
+    // name | { names, nested } | ~set | *
+    const names = [];
+    let comp = false;
+    if (toks[i] === '~') { comp = true; i++; }
+    if (toks[i] === '{') {
+      let depth = 0;
+      do {
+        const t = toks[i++];
+        if (t === '{') depth++;
+        else if (t === '}') depth--;
+        else if (t !== undefined) names.push(t);
+      } while (depth > 0 && i < toks.length);
+    } else if (toks[i] !== undefined) {
+      let t = toks[i++];
+      if (t.startsWith('~')) { comp = true; t = t.slice(1); }
+      names.push(t);
+    }
+    return comp || names.includes('*') ? ['*'] : names.filter(n => !n.startsWith('-'));
+  };
+  const skipTo = (tok) => { while (i < toks.length && toks[i] !== tok) i++; i++; };
+  const skipBlock = () => { let d = 0; do { if (toks[i] === '{') d++; else if (toks[i] === '}') d--; i++; } while (d > 0 && i < toks.length); };
+  while (i < toks.length) {
+    const k = toks[i];
+    if (k === '}') { blocks.pop(); i++; continue; }
+    if (k === 'require') { i++; skipBlock(); continue; }
+    if (k === 'if') { i++; let d = 0; do { if (toks[i] === '(') d++; else if (toks[i] === ')') d--; i++; } while (d > 0 && i < toks.length); if (toks[i] === '{') { i++; blocks.push('cond'); } continue; }
+    if (k === 'else' || k === 'optional') { i++; if (toks[i] === '{') { i++; blocks.push(k === 'else' ? 'cond' : 'opt'); } continue; }
+    if (k === '{') { i++; blocks.push('other'); continue; }
+    if (k === 'allow' || k === 'auditallow' || k === 'dontaudit' || k === 'neverallow') {
+      i++;
+      const s = set(), t = set();
+      if (toks[i] !== ':') { skipTo(';'); continue; }
+      i++;
+      const c = set(), perms = set();
+      skipTo(';');
+      out.push({ rt: k, s, t, c, perms, cond: blocks.includes('cond') });
+      continue;
+    }
+    if (k === 'typeattribute') {
+      i++;
+      const s = [toks[i++]];
+      const attrs = [];
+      while (i < toks.length && toks[i] !== ';') { if (toks[i] !== ',') attrs.push(toks[i]); i++; }
+      i++;
+      out.push({ rt: 'typeattribute', s, attrs, cond: blocks.includes('cond') });
+      continue;
+    }
+    skipTo(';');
+  }
+  return out;
+}
+
+/**
+ * Rank candidate interfaces for one denial group.
+ *   need:   { domain, target, tclass, perms }
+ *   cands:  [{ name, call ("name(args)"), owner (defined in the target's module), off, summary, loc }]
+ *   stmts:  probeStatements() result
+ *   types:  typeinfo info { name: { attr, size, attrs } } (target's attrs; attribute sizes)
+ *   attrRules: { attr: [compiled allow rules with that attribute as source] }
+ * → [{ ...cand, covers (all perms), missing: [perms], extra (other rights:
+ *   types × classes × perms beyond the need), cond (rules under a boolean), attrs (added to the domain) }],
+ * full covers first, fewest extra rights first.
+ */
+function rankInterfaces(need, cands, stmts, types, attrRules = {}) {
+  const tAttrs = new Set([need.target, ...((types[need.target] && types[need.target].attrs) || [])]);
+  const size = (n) => (n === 'self' ? 1 : types[n] ? Math.max(types[n].size, 1) : 1);
+  const out = [];
+  for (const c of cands) {
+    const list = stmts.get(c.call);
+    if (!list) continue;
+    const added = new Set(list.filter(s => s.rt === 'typeattribute' && s.s[0] === need.domain && !s.cond).flatMap(s => s.attrs));
+    const mine = (src) => src.some(n => n === need.domain || added.has(n));
+    const rules = [];
+    let cond = 0;
+    for (const s of list) {
+      if (s.rt !== 'allow' || !mine(s.s)) continue;
+      if (s.cond) { cond++; continue; }
+      rules.push({ t: s.t, c: s.c, perms: s.perms });
+    }
+    // Rights that come with the attributes the call adds (rules written for the attribute elsewhere).
+    for (const a of added) for (const r of attrRules[a] || []) if (!r.cond) rules.push({ t: [r.t], c: [r.c], perms: r.perms });
+    const got = new Set();
+    const granted = new Map(); // "type|class" → Set(perms): rights counted once however often repeated
+    for (const r of rules) {
+      for (const t of r.t) for (const cl of r.c) {
+        const k = `${t}|${cl}`;
+        if (!granted.has(k)) granted.set(k, new Set());
+        for (const p of r.perms) granted.get(k).add(p);
+        const hitsTarget = tAttrs.has(t) || (t === 'self' && need.domain === need.target) || t === '*';
+        if (hitsTarget && (cl === need.tclass || cl === '*')) for (const p of need.perms) if (r.perms.includes(p) || r.perms.includes('*')) got.add(p);
+      }
+    }
+    // Extra rights: per type (attributes count their members) and permission, writes and
+    // executes weighing more than reads; the denied permissions themselves don't count.
+    let total = 0;
+    const byType = new Map(); // type → { classes: Set, perms: Set, weight }
+    for (const [k, perms] of granted) {
+      const t = k.slice(0, k.indexOf('|')), cl = k.slice(k.indexOf('|') + 1);
+      const n = t === '*' ? 5000 : size(t);
+      const isNeed = (tAttrs.has(t) || (t === 'self' && need.domain === need.target)) && cl === need.tclass;
+      let w = 0;
+      for (const p of perms) if (!(isNeed && need.perms.includes(p) && n === 1)) w += permWeight(p);
+      if (perms.has('*')) w += 60;
+      total += n * w;
+      if (!w) continue;
+      const e = byType.get(t) || { classes: new Set(), perms: new Set(), weight: 0, size: n };
+      e.classes.add(cl);
+      for (const p of perms) e.perms.add(p);
+      e.weight += n * w;
+      byType.set(t, e);
+    }
+    const missing = need.perms.filter(p => !got.has(p));
+    if (missing.length === need.perms.length) continue;
+    const grants = [...byType].sort((a, b) => b[1].weight - a[1].weight).slice(0, 4).map(([t, e]) =>
+      `${t}${types[t] && types[t].attr ? ` (${e.size} types)` : ''} ${[...e.classes].join(', ')}: ${[...e.perms].sort((a, b) => permWeight(b) - permWeight(a)).slice(0, 8).join(' ')}${e.perms.size > 8 ? ' …' : ''}`);
+    out.push({ ...c, covers: !missing.length, missing, extra: total, grants, cond, attrs: [...added] });
+  }
+  const score = (x) => x.extra * (x.owner ? 0.8 : 1) + (x.off ? 1e7 : 0);
+  out.sort((a, b) => (b.covers - a.covers) || (a.missing.length - b.missing.length) || (score(a) - score(b)) || a.name.length - b.name.length || a.name.localeCompare(b.name));
+  // Far broader than the best: shown, but flagged.
+  const best = out.length ? out[0].extra : 0;
+  for (const x of out) x.broad = x.extra > 50 * best + 300;
+  return out;
+}
+
+const WRITE_PERMS = new Set(['write', 'append', 'create', 'unlink', 'rename', 'link', 'setattr', 'add_name', 'remove_name', 'rmdir', 'reparent', 'relabelfrom', 'relabelto', 'mounton', 'quotaon', 'swapon', 'setfscreate', 'audit_access', 'sendto', 'connectto', 'name_bind', 'node_bind', 'kill', 'sigkill', 'ptrace', 'setsched', 'setrlimit']);
+const EXEC_PERMS = new Set(['execute', 'execute_no_trans', 'entrypoint', 'transition', 'dyntransition', 'setexec', 'setcurrent', 'execmod', 'execmem', 'execstack', 'execheap', 'relabelto', 'mmap_zero']);
+/** How much a granted permission weighs in the "extra rights" count: reads 1, writes 3, executes/transitions 5. */
+const permWeight = (p) => (EXEC_PERMS.has(p) ? 5 : WRITE_PERMS.has(p) ? 3 : 1);
+
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-module.exports = { parseDenials, groupDenials, verdict, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };
+module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };

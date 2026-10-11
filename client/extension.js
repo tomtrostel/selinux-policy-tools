@@ -1452,8 +1452,14 @@ function showDenials(context, text) {
   .body { padding: 2px 14px 10px; }
   .detail { white-space: pre-wrap; margin: 4px 0 8px; }
   .sub { font-weight: 600; margin: 10px 0 4px; }
-  .fix .cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0; }
-  .fix code { background: var(--vscode-textCodeBlock-background); padding: 2px 6px; }
+  .cmd { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0; }
+  .cmd > code { background: var(--vscode-textCodeBlock-background); padding: 2px 6px; }
+  .iface { border-top: 1px solid var(--vscode-panel-border); padding: 4px 0 6px; }
+  .iface:first-of-type { border-top: none; }
+  .grants { font-size: .92em; font-family: var(--vscode-editor-font-family); margin-top: 2px; }
+  .tag { font-size: .8em; padding: 0 6px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); }
+  .tag.best { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border: none; }
+  .tag.warn { color: var(--vscode-editorWarning-foreground); }
   pre.rules { margin: 0; padding: 6px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: .92em; }
   code { font-family: var(--vscode-editor-font-family); }
   .facts div { margin: 2px 0; }
