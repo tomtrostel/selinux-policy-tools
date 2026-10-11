@@ -1724,7 +1724,7 @@ connection.onRequest('selinux/serviceList', async () => {
   return { modules: serviceModules().map(m => ({ module: m.module, layer: m.layer, domains: m.domains })) };
 });
 
-connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standalone } = {}) => {
+connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standalone, prefill } = {}) => {
   await indexing;
   if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree or a standalone module folder first.' };
   const existing = mod ? serviceModules().find(x => x.module === mod) : null;
@@ -1749,7 +1749,16 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
   };
   if (info.layers) info.defaultLayer = ['contrib', 'services'].find(l => info.layers.includes(l)) || info.layers[0];
   info.bools = serviceBools(mod);
-  if (!mod) return { ...info, isNew: true, model: service.newModel() };
+  if (!mod) {
+    const model = service.newModel();
+    // From the denial assistant: a program that has no policy yet.
+    if (prefill && typeof prefill.exec === 'string' && prefill.exec.startsWith('/')) {
+      model.exec = [prefill.exec];
+      const base = path.basename(prefill.exec).toLowerCase().replace(/\.(sh|py|pl|bin)$/, '').replace(/[^a-z0-9_]+/g, '_').replace(/^[^a-z]+/, '').replace(/_+$/, '');
+      if (base && !serviceCtx(sa).moduleExists(base)) model.name = base;
+    }
+    return { ...info, isNew: true, model };
+  }
   const m = existing;
   if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
   const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod, ports: ownedPorts(mod) });
@@ -2448,7 +2457,7 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
     }
     perGroup.set(g, cands);
   }
-  if (!calls.size) { for (const g of needProbe) g.suggest = { list: [], note: `No interface mentions ${g.target}.` }; return; }
+  if (!calls.size) { for (const g of needProbe) { g.suggest = { list: [], note: `No interface mentions ${g.target}.` }; proposeInterface(g); } return; }
   const ex = await build.expandCalls([...calls].sort(), cfg);
   if (!ex.ok) { notes.push(`Interface suggestions: m4 failed (${ex.log.trim().split('\n').slice(-2).join(' ')}).`); return; }
   const stmts = denials.probeStatements(ex.text);
@@ -2468,10 +2477,34 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
     const ranked = denials.rankInterfaces({ domain: g.source, target: g.target, tclass: g.tclass, perms: g.perms }, perGroup.get(g) || [], stmts, types, ti.rules || {});
     const full = ranked.filter(x => x.covers);
     const list = (full.length ? full : ranked).slice(0, full.length ? limit : 3);
-    g.suggest = { list, partial: !full.length && list.length > 0,
+    const combos = full.length ? [] : (ranked.combos || []);
+    g.suggest = { list, partial: !full.length && list.length > 0, combos,
       note: !ranked.length ? `None of the ${(perGroup.get(g) || []).length} interfaces that mention ${g.target} grants this.` : null };
+    if (!full.length && !combos.length) proposeInterface(g);
   }
   log(`denial suggestions: ${calls.size} interface calls probed in ${ex.ms} ms, ${Date.now() - t0} ms total`);
+}
+
+/** Whether calls into a module belong in optional_policy (it can be off): not base, or outside kernel/system. */
+function moduleOptional(mod, file) {
+  if (idx.moduleKinds && idx.moduleKinds.has(mod)) return idx.moduleKinds.get(mod) !== 'base';
+  const f = idx.files.get(file);
+  return !(f && ['kernel', 'system'].includes(f.layer));
+}
+
+/**
+ * No interface grants the access: if the module that owns the target type is
+ * in the workspace, propose a new interface for it (sets g.suggest.newIface).
+ */
+function proposeInterface(g) {
+  const ownerTe = domainModuleFile(g.target);
+  if (!ownerTe) return;
+  const ownerMod = (idx.files.get(ownerTe) || {}).module || path.basename(ownerTe, '.te');
+  const domTe = domainModuleFile(g.source);
+  if (domTe && ((idx.files.get(domTe) || {}).module || path.basename(domTe, '.te')) === ownerMod) return; // own types: a plain rule
+  const gen = denials.newInterfaceText({ module: ownerMod, target: g.target, tclass: g.tclass, perms: g.perms }, (n) => idx.defs.has(n));
+  g.suggest.newIface = { module: ownerMod, name: gen.name, summary: gen.summary, call: `${gen.name}(${g.source})`, ifPath: ownerTe.replace(/\.te$/, '.if'),
+    rule: `allow ${g.source} ${g.target}:${g.tclass} { ${g.perms.join(' ')} };` };
 }
 
 /** The workspace .te that declares a domain (the active tree's, or a standalone module's), or null. */
@@ -2488,21 +2521,59 @@ function domainModuleFile(domain) {
  * in the installed policy (standalone workspace), a new local module.
  * → { path, exists, text, line, inserted, diff, optional } | { already } | { unavailable }.
  */
-connection.onRequest('selinux/denialFix', async ({ domain, call, rule }) => {
+connection.onRequest('selinux/denialFix', async ({ domain, call, calls, rule, newInterface }) => {
   await indexing;
-  if (!/^[A-Za-z_]\w*$/.test(domain || '') || (!call && !rule)) return { unavailable: 'Nothing to add.' };
-  const name = call ? call.slice(0, call.indexOf('(')) : null;
+  let list = (calls && calls.length ? calls : call ? [call] : []).filter(c => /^\w+\(\w+\)$/.test(c));
+  if (!/^[A-Za-z_]\w*$/.test(domain || '') || (!list.length && !rule && !newInterface)) return { unavailable: 'Nothing to add.' };
+  // A new interface in the module that owns the target type, then a call to it.
+  const also = [];
+  let newMod = null;
+  if (newInterface) {
+    const { target, tclass, perms } = newInterface;
+    const ownerTe = domainModuleFile(target);
+    if (!ownerTe) return { unavailable: `${target} isn't declared in this workspace, so there is no module to add an interface to.` };
+    newMod = { mod: (idx.files.get(ownerTe) || {}).module || path.basename(ownerTe, '.te'), te: ownerTe };
+    const ifPath = ownerTe.replace(/\.te$/, '.if');
+    const oldIf = readSource(ifPath);
+    const gen = denials.newInterfaceText({ module: newMod.mod, target, tclass, perms }, (n) => idx.defs.has(n));
+    const base = oldIf != null ? oldIf.replace(/\s*$/, '\n') : `## <summary>${newMod.mod}</summary>\n`;
+    const ifText = base + gen.text;
+    also.push({ path: ifPath, exists: oldIf != null, text: ifText, line: base.split('\n').length, inserted: gen.text.trim().split('\n'), diff: service.lineDiff(oldIf || '', ifText), what: `new interface ${gen.name}` });
+    list = [`${gen.name}(${domain})`];
+  }
+  const ifaceModule = (c) => {
+    const n = c.slice(0, c.indexOf('('));
+    if (newMod && list.length === 1) return { mod: newMod.mod, optional: moduleOptional(newMod.mod, newMod.te) };
+    const d = (idx.defs.get(n) || [])[0];
+    return { mod: d ? (idx.files.get(d.path) || {}).module || null : null, n };
+  };
   const te = domainModuleFile(domain);
   if (te) {
     const old = readSource(te);
     if (old == null) return { unavailable: `Can't read ${rel(te)}.` };
-    const ifMod = name ? ((idx.files.get(((idx.defs.get(name) || [])[0] || {}).path) || {}).module || null) : null;
     const domMod = (idx.files.get(te) || {}).module || path.basename(te, '.te');
-    const optional = !!(name && ifMod !== domMod && serviceCtx(isStandaloneModule(te)).optional(name));
-    const r = denials.insertFix(old, { domain, call, rule, optional, module: ifMod });
-    if (r.already) return { already: true, path: te, message: `${rel(te)} already has ${call || rule}; the denial should go away once the module is rebuilt and loaded.` };
-    return { path: te, exists: true, module: domMod, text: r.text, line: r.line, inserted: r.inserted, optional, diff: service.lineDiff(old, r.text) };
+    let text = old, first = null, optional = false;
+    const inserted = [];
+    if (rule && !list.length) {
+      const r = denials.insertFix(text, { domain, rule });
+      if (r.already) return { already: true, path: te, message: `${rel(te)} already has ${rule}; the denial should go away once the module is rebuilt and loaded.` };
+      return { path: te, exists: true, module: domMod, text: r.text, line: r.line, inserted: r.inserted, optional: false, diff: service.lineDiff(old, r.text), also };
+    }
+    for (const c of list) {
+      const m = ifaceModule(c);
+      const opt = m.mod !== domMod && (m.optional !== undefined ? m.optional : serviceCtx(isStandaloneModule(te)).optional(m.n));
+      const r = denials.insertFix(text, { domain, call: c, optional: opt, module: m.mod });
+      if (r.already) continue;
+      text = r.text;
+      if (first == null || r.line < first) first = r.line;
+      inserted.push(...r.inserted);
+      optional = optional || opt;
+    }
+    if (!inserted.length) return { already: true, path: te, message: `${rel(te)} already has ${list.join(' and ')}; the denial should go away once the module is rebuilt and loaded.` };
+    return { path: te, exists: true, module: domMod, text, line: first, inserted, optional, diff: service.lineDiff(old, text), also };
   }
+  const call0 = list[0];
+  call = call0;
   if (!usingDevel) return { unavailable: `${domain} isn't declared in ${treeRoot ? path.basename(treeRoot) : 'this workspace'}, so there is no module to add the fix to.` };
   if (!call) return { unavailable: `${domain} isn't declared in this workspace; a plain rule on another module's type isn't offered (use an interface).` };
   // A local module for a domain of the installed policy: local_<name>/local_<name>.te in the workspace.
@@ -2511,14 +2582,67 @@ connection.onRequest('selinux/denialFix', async ({ domain, call, rule }) => {
   const p = path.join(roots[0], base, `${base}.te`);
   const old = readSource(p);
   if (old != null) {
-    const r = denials.insertFix(old, { domain, call, optional: false });
-    if (r.already) return { already: true, path: p, message: `${rel(p)} already has ${call}.` };
-    return { path: p, exists: true, module: base, text: r.text, line: r.line, inserted: r.inserted, optional: false, diff: service.lineDiff(old, r.text) };
+    let text = old;
+    const inserted = [];
+    for (const c of list) { const r = denials.insertFix(text, { domain, call: c, optional: false }); if (!r.already) { text = r.text; inserted.push(...r.inserted); } }
+    if (!inserted.length) return { already: true, path: p, message: `${rel(p)} already has ${list.join(' and ')}.` };
+    return { path: p, exists: true, module: base, text, line: Math.max(0, text.split('\n').indexOf(inserted[0])), inserted, optional: false, diff: service.lineDiff(old, text), also };
   }
-  const text = denials.localModuleText(base, domain, call);
-  return { path: p, exists: false, module: base, text, line: text.split('\n').length - 2, inserted: [call], optional: false, diff: service.lineDiff('', text),
+  let text = denials.localModuleText(base, domain, call);
+  for (const c of list.slice(1)) text = denials.insertFix(text, { domain, call: c, optional: false }).text || text;
+  return { path: p, exists: false, module: base, text, line: text.split('\n').indexOf(call), inserted: list, optional: false, diff: service.lineDiff('', text), also,
     note: `${domain} belongs to the installed policy, so this creates a small module of its own (${base}) that adds the call. Install it with SELinux: Install Module.` };
 });
+
+/**
+ * Denials from domains a program lands in when it didn't get a domain of its
+ * own (unconfined_service_t, init_t, unconfined_t, …): what the program's
+ * file is labeled (now, and by the file contexts) and which domains that
+ * label is the entry point of. Map group key → { exe, expected, current, domains, generic }.
+ */
+const UNCONFINED_SOURCES = new Set(['unconfined_service_t', 'init_t', 'initrc_t', 'unconfined_t', 'kernel_t']);
+const GENERIC_ENTRY = new Set(['unconfined_service_t', 'initrc_t', 'unconfined_t']);
+async function denialTransitions(groups, fc, bin) {
+  const out = new Map();
+  const want = groups.filter(g => g.kind === 'deny' && UNCONFINED_SOURCES.has(g.source) && (g.exes || []).some(e => e.startsWith('/')));
+  if (!want.length || process.platform === 'win32') return out;
+  const exes = [...new Set(want.map(g => g.exes.find(e => e.startsWith('/'))))];
+  const labels = new Map();
+  const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', 'file', ...exes]);
+  for (const line of r.stdout.split('\n')) { const m = /^(.*)\t(\S+)$/.exec(line); if (m) labels.set(m[1], { expected: (denials.parseContext(m[2]) || {}).type || null, current: null }); }
+  const st = await execFileP('stat', ['-c', '%n\t%C', '--', ...exes]);
+  for (const line of st.stdout.split('\n')) { const m = /^(.*)\t(\S+)$/.exec(line); if (m) { const e = labels.get(m[1]) || { expected: null }; e.current = (denials.parseContext(m[2]) || {}).type || null; labels.set(m[1], e); } }
+  const types = [...new Set([...labels.values()].flatMap(e => [e.expected, e.current]).filter(Boolean))];
+  const ep = types.length ? await policyQuery.request({ op: 'entrypoints', bin, types }) : { domains: {} };
+  for (const g of want) {
+    const exe = g.exes.find(e => e.startsWith('/'));
+    const l = labels.get(exe) || {};
+    const of = (t) => ((ep.domains || {})[t] || []);
+    const typeFor = l.expected || l.current;
+    const all = of(typeFor);
+    // A program label that unconfined domains enter (bin_t, usr_t) has no domain of its own.
+    const generic = !all.length || all.some(d => GENERIC_ENTRY.has(d));
+    const stem = (typeFor || '').replace(/_exec_t$/, '');
+    const domains = generic ? [] : all.filter(d => !UNCONFINED_SOURCES.has(d)).sort((a, b) => ((b === `${stem}_t`) - (a === `${stem}_t`)) || (b.startsWith(stem) - a.startsWith(stem)) || a.localeCompare(b));
+    out.set(g.key, { exe, expected: l.expected || null, current: l.current || null, domains, generic });
+  }
+  return out;
+}
+
+/** For a standalone module build: the running policy's file contexts plus the module's own (they win), in one file for matchpathcon. */
+function moduleFileContexts() {
+  const res = lastModule && lastBuild.get(lastModule);
+  if (!res || !res.workDir) return null;
+  const own = path.join(res.workDir, 'tmp', `${res.module}.mod.fc`);
+  const active = build.installedPolicies().find(p => p.active);
+  if (!active || !fs.existsSync(own)) return null;
+  const dir = path.join('/etc/selinux', active.name, 'contexts', 'files');
+  const parts = ['file_contexts', 'file_contexts.homedirs', 'file_contexts.local'].map(n => path.join(dir, n)).filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8'));
+  const out = path.join(res.workDir, 'denial_file_contexts');
+  // m4's leftovers (blank lines, #line markers) are harmless comments to matchpathcon.
+  fs.writeFileSync(out, [...parts, fs.readFileSync(own, 'utf8')].join('\n'));
+  return out;
+}
 
 connection.onRequest('selinux/denialPolicies', async () => {
   await indexing;
@@ -2540,7 +2664,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
   const notes = [];
   const unparsed = (text || '').split('\n').filter(l => /avc:\s+denied/.test(l)).length - parsed.filter(d => d.kind !== 'error').length;
   if (unparsed > 0) notes.push(`${unparsed} line${unparsed > 1 ? 's' : ''} mentioning "avc: denied" could not be read (no scontext/tcontext?).`);
-  let te = new Map(), labels = new Map(), policyName = pol ? pol.label : 'the policy', usedBin = null;
+  let te = new Map(), labels = new Map(), transitions = new Map(), policyName = pol ? pol.label : 'the policy', usedBin = null, fcFile = pol ? pol.fc : null;
   if (!pol) notes.push(process.platform === 'win32' ? 'Checking denials against a policy needs a Linux host (use Remote-SSH).' : 'No policy to check against: no installed policy under /etc/selinux, and no workspace build.');
   else if (groups.length) {
     let bin = pol.bin;
@@ -2550,6 +2674,8 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
     }
     if (bin) {
       usedBin = bin;
+      // A standalone module's own file contexts count too (they label the files it is about).
+      if (pol.build && usingDevel) fcFile = moduleFileContexts();
       const bools = pol.active ? runningBooleans() : {};
       if (pol.active && Object.keys(bools).length) policyName = `the running ${pol.name} policy`;
       const checks = groups.filter(g => g.kind === 'deny').map(g => ({ id: g.key, s: g.source, t: g.target, c: g.tclass, perms: g.perms }));
@@ -2558,17 +2684,27 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
         if (r.error) notes.push(`Policy query failed: ${r.error}`);
         else for (const x of r.results) te.set(x.id, x);
       }
-      labels = await denialLabels(groups, pol.fc);
+      labels = await denialLabels(groups, fcFile);
+      // Accesses type enforcement allows: a constraint (MCS/MLS, UBAC) may be what denied them.
+      for (const g of groups) {
+        const x = te.get(g.key);
+        if (!x || !x.perms || !g.perms.every(p => x.perms[p] && x.perms[p].status === 'allowed')) continue;
+        const r = await policyQuery.request({ op: 'constraints', bin, s: g.scontext, t: g.tcontext, c: g.tclass, perms: g.perms });
+        if (!r.error && r.failing && r.failing.length) x.constraints = r.failing;
+      }
+      transitions = await denialTransitions(groups, fcFile, bin);
     }
   }
   const out = groups.map(g => {
     const lab = g.paths.filter(p => labels.has(p)).map(p => ({ path: p, ...labels.get(p) }));
-    return { ...g, labels: lab, v: denials.verdict(g, te.get(g.key) || null, lab, policyName),
+    const x = te.get(g.key);
+    if (x && transitions.has(g.key)) x.transition = transitions.get(g.key);
+    return { ...g, labels: lab, v: denials.verdict(g, x || null, lab, policyName),
       srcLoc: sourceLocation(g.source, ['type']), tgtLoc: sourceLocation(g.target, ['type']) };
   });
   // suggest: false = none; { verdicts, max } widens it (the benchmark asks for allowed accesses too).
   if (suggest !== false) await suggestInterfaces(out, usedBin, notes, (suggest && suggest.verdicts) || ['missing'], (suggest && suggest.max) || 25, (suggest && suggest.limit) || 5);
-  return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
+  return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: fcFile || pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
 });
 
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */

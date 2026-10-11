@@ -45,6 +45,25 @@ panel shows the rule responsible.
 Add a cache directory, a port, or a helper program, and watch the preview
 change only the lines that need to.
 
+## 6. Fix denials
+
+`sample-denials.log` holds four denials as notesd could log them. With the
+module built (save `notesd.te`), run **SELinux: Analyze Denials…**, paste
+the file (or use *Analyze the Practice Denials* in the *Fix a denial*
+tutorial), and choose **Check against: This host's policy + notesd (last
+build)**. Each needs a different fix:
+
+* `notes.db` is labeled `var_lib_t`, but `notesd.fc` says
+  `notesd_var_lib_t`: **wrong label**, relabel it (`restorecon`).
+* Connecting to `http_port_t`: a **missing rule**; the narrowest interface is
+  `corenet_tcp_connect_http_port`. *Add to module…* writes it into
+  `notesd.te`, and after the build the card says *Resolved*.
+* Writing its own log (`notesd_log_t`, only append is allowed): both types
+  are notesd's, so the fix is **a plain rule** in `notesd.te`.
+* notesd running as `unconfined_service_t`: **not in its domain**. The
+  program should be `notesd_exec_t` and run as `notesd_t`; more rules for
+  `unconfined_service_t` would be the wrong fix.
+
 ## Solutions
 
 <details>

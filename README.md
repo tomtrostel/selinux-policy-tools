@@ -405,11 +405,20 @@ gets a verdict, checked in this order:
 
 | Verdict | When | Fix offered |
 | --- | --- | --- |
+| Not in its domain | the process runs as `unconfined_service_t`, `init_t`, `initrc_t`, `unconfined_t` or `kernel_t`, and its program (from the SYSCALL record) is labeled, or should be, with the program type of a domain of its own (`chronyd_exec_t` → `chronyd_t`): mislabeled, started from a shell, or started without the transition | `restorecon -v <program>` when it's mislabeled; otherwise how to start it so it enters its domain |
+| No policy for this program | the same, but the program has a generic label (`bin_t`, `usr_t`, …) that only unconfined domains enter | **New Service…**: the service editor with the program filled in |
+| Constraint | the rules allow it, but a `constrain`/`mlsconstrain` evaluated on the two contexts fails: MCS/MLS levels (`h1 dom h2`), SELinux users (UBAC), roles; the failing comparisons are shown with their values | `chcon -l <level>` or `chcon -u <user>` on the file, or an exemption interface |
 | Wrong label | the policy's file contexts give the path another type (`matchpathcon`); for a `create`, the directory's label or a missing type transition | `restorecon -v <paths>` (none if the file has been relabeled since) |
 | Boolean | the policy allows it once a boolean is changed (settings from rules on the type itself first; the one that covers every permission) | `setsebool -P <boolean> on` |
-| Already allowed | the policy allows it now (an older denial, or a constraint / MLS rule) | none; the allowing rules are shown |
+| Already allowed | the policy allows it now and no constraint fails (an older denial) | none; the allowing rules are shown |
 | Generic label | the target is a catch-all type (`default_t`, `var_t`, `var_lib_t`, `usr_t`, …) | give the files a type of their own |
-| Missing rule | none of the above | the interfaces that grant it, narrowest first (below) |
+| Missing rule | none of the above | the interfaces that grant it, narrowest first (below); two that do together; or a new interface in the owner module |
+
+When the rules already allow an access as labeled, a label that differs
+from the file contexts isn't reported as its cause (libvirt's
+`svirt_image_t` images, for instance, differ from `virt_image_t` in the file
+contexts on purpose). In a standalone workspace, the module's own `.fc` is
+used with the running policy's file contexts, so its paths are checked too.
 
 Types the policy doesn't have ("from a different policy") and
 `SELINUX_ERR` records are reported as such; permissive mode and
@@ -441,6 +450,14 @@ there. Examples on Rocky 9: `chronyd_t` writing `etc_t` →
 `corenet_tcp_connect_http_port` (a template-generated interface); reading
 `shadow_t` → `auth_read_shadow`; reading `/dev/urandom` →
 `dev_read_urand`. Click a call to open its definition, or copy it.
+When no single interface covers every denied permission, the narrowest
+**pairs** that do together are listed (*Add to module…* adds both). When no
+interface grants it at all and the module that owns the target type is in
+the workspace, it proposes **a new interface** for that module, named the
+refpolicy way (`ntp_read_ntpd_extra_files`, `syslogd_sendto_unix_dgram_sockets`),
+with its doc comment, `gen_require` and exactly the denied permissions;
+*Add to module…* writes it into the owner's `.if` and the call into the
+domain's module (in `optional_policy` when the owner can be off).
 
 **Applying the fix.** *Add to module…* on a suggestion (or on the plain
 rule for the domain's own types) shows exactly what goes where before
@@ -799,7 +816,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   standalone module, a new `local_httpd` module for `httpd_t`, and
   `files_rw_etc_files` written into a copy of CLIP's `apache.te` all build,
   and the rebuilt policy then allows each denial; asking again reports the
-  call as already there.
+  call as already there. Phase 4 (e2e on Rocky 9): `svirt_t` at s0:c1,c2
+  reading an image at s0:c3,c4 is an MCS constraint (with `chcon -l`),
+  `chronyd` running as `unconfined_service_t` is *Not running in
+  chronyd_t*, `/usr/bin/true` there is *No policy for this program*; in a
+  CLIP copy, a type added to `ntp.te` that no interface mentions gets
+  `ntp_read_ntpd_extra_files` proposed, written into `ntp.if` and called
+  from `apache.te` in `optional_policy`, and the rebuilt tree allows it.
+  The practice module's four sample denials get their intended verdicts,
+  and its HTTP fix resolves after a build (`npm run test:tutorial`).
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
   26 kinds of edits on each (capabilities, file types added, removed or
@@ -970,19 +995,23 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   tree, the policy) before the denial goes away. In a tree, a domain not
   declared in it can't be fixed from the panel.
 * Suggestions consider interfaces with one argument (the domain); patterns
-  that take a second type (file type transitions, `*_pattern` macros) and
-  combinations of two interfaces aren't suggested. In a tree they need a
-  build (its m4 output).
+  that take a second type (file type transitions, `*_pattern` macros)
+  aren't suggested, and pairs only when no single interface covers it. In a
+  tree they need a build (its m4 output). A new interface for another
+  standalone module can be written, but not verified: a standalone build
+  is linked with the installed policy and that one module only.
 * Labels are checked only for denials whose full path is known (a `path=`
   field, or PATH records of the same event, which need syscall auditing);
   with only `name=` the label check is skipped. Commands are meant for the
   host that logged the denials.
-* Constraint and MLS/MCS denials show up as *Already allowed*; a process
-  that didn't transition into its domain (e.g. a service running as
-  `unconfined_service_t`) isn't recognized yet.
+* *Not in its domain* needs the program's path (the SYSCALL record's
+  `exe`). Constraints are evaluated for `constrain` / `mlsconstrain`
+  (not `validatetrans`).
 
 **Tutorials**
 
+* The practice module's `sample-denials.log` is checked against the
+  module's build: build it first (save `notesd.te`).
 * The line under a walkthrough saying that Code collects usage data is VS
   Code's own telemetry notice, not this extension's (it collects nothing);
   it goes away with `"telemetry.telemetryLevel": "off"` in your user

@@ -24,6 +24,7 @@ class Index:
         self.path = path
         self.mtime = os.stat(path).st_mtime
         p = setools.SELinuxPolicy(path)
+        self.policy = p
         self.attrs = {str(t): [str(a) for a in t.attributes()] for t in p.types()}
         self.members = {}
         for t, attrs in self.attrs.items():
@@ -438,6 +439,102 @@ class Index:
             out.append(res)
         return out
 
+    # ----- constraints (constrain / mlsconstrain) on a denied access -----
+
+    OPERANDS = {"u1", "u2", "u3", "r1", "r2", "r3", "t1", "t2", "t3", "l1", "l2", "h1", "h2"}
+
+    def constraints(self, scontext, tcontext, cls, perms):
+        """The constraints for cls on any of perms that the two contexts fail, each with the
+        comparisons it is made of (operands' values and whether each held)."""
+        p = self.policy
+        def ctx(raw):
+            parts = raw.split(":")
+            out = {"u": parts[0], "r": parts[1], "t": parts[2], "low": None, "high": None}
+            if len(parts) > 3 and p.mls:
+                rng = p.lookup_range(":".join(parts[3:]))
+                out["low"], out["high"] = rng.low, rng.high
+            return out
+        s, t = ctx(scontext), ctx(tcontext)
+        vals = {"u1": s["u"], "r1": s["r"], "t1": s["t"], "l1": s["low"], "h1": s["high"],
+                "u2": t["u"], "r2": t["r"], "t2": t["t"], "l2": t["low"], "h2": t["high"]}
+        failing = []
+        for c in p.constraints():
+            if str(c.tclass) != cls or not hasattr(c, "perms"):
+                continue
+            hit = sorted(str(x) for x in c.perms if str(x) in perms)
+            if not hit:
+                continue
+            if c.ruletype.name.startswith("mls") and not p.mls:
+                continue
+            leaves = []
+            ok = self.eval_constraint(c.expression, vals, leaves)
+            if not ok:
+                failing.append({"kind": str(c.ruletype), "perms": hit, "text": str(c.expression), "leaves": leaves})
+        return failing
+
+    def eval_constraint(self, expr, vals, leaves):
+        stack = []
+        def show(v):
+            return "{ %s }" % " ".join(sorted(v)[:6]) + (" …" if len(v) > 6 else "") if isinstance(v, set) else str(v)
+        for tok in expr:
+            if isinstance(tok, (set, frozenset)):
+                stack.append(("set", {str(x) for x in tok}))
+                continue
+            s = str(tok)
+            if s in self.OPERANDS:
+                stack.append(("op", s))
+            elif s in ("and", "or"):
+                b, a = stack.pop(), stack.pop()
+                stack.append(("bool", (a[1] and b[1]) if s == "and" else (a[1] or b[1])))
+            elif s == "not":
+                a = stack.pop()
+                stack.append(("bool", not a[1]))
+            else:
+                b, a = stack.pop(), stack.pop()
+                av = vals.get(a[1])
+                if b[0] == "set":
+                    names = b[1]
+                    if a[1].startswith("t"):
+                        member = av in names or any(x in names for x in self.attrs.get(av, []))
+                    else:
+                        member = av in names
+                    res = member if s == "==" else not member
+                    leaves.append({"text": "%s %s %s" % (a[1], s, show(names)), "ok": res, "a": str(av)})
+                else:
+                    bv = vals.get(b[1])
+                    if av is None or bv is None:
+                        res = True  # no levels in this policy or context
+                    elif s == "==":
+                        res = av == bv
+                    elif s == "!=":
+                        res = av != bv
+                    elif s == "dom":
+                        res = av >= bv
+                    elif s == "domby":
+                        res = av <= bv
+                    elif s == "incomp":
+                        res = bool(av ^ bv)
+                    else:
+                        res = True
+                    leaves.append({"text": "%s %s %s" % (a[1], s, b[1]), "ok": res, "a": str(av), "b": str(bv)})
+                stack.append(("bool", res))
+        return stack[-1][1] if stack else True
+
+    def entrypoint_domains(self, types):
+        """For each file type: the domains it is an entrypoint of (a program with that label starts them),
+        from rules written for the type itself (attribute rules make e.g. container domains enter anything)."""
+        out = {}
+        for ft in types:
+            ft2 = self.aliases.get(ft, ft)
+            doms = set()
+            for n in [ft2]:
+                for i in self.by_tgt.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] == "allow" and r["c"] == "file" and "entrypoint" in r["perms"] and not r["cond"]:
+                        doms.update(d for d in self.expand(r["s"]) if d in self.domains)
+            out[ft] = sorted(doms)
+        return out
+
     def typeinfo(self, names, source_rules):
         """For ranking interfaces: what each name is ({attr, size, attrs}), and the allow
         rules written for attributes an interface would add to a domain."""
@@ -485,6 +582,10 @@ def main():
                 resp.update(rules=rules, via=via, count=len(rules))
             elif req.get("op") == "transitions":
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
+            elif req.get("op") == "constraints":
+                resp.update(failing=idx.constraints(req["s"], req["t"], req["c"], set(req.get("perms") or [])))
+            elif req.get("op") == "entrypoints":
+                resp.update(domains=idx.entrypoint_domains(req.get("types") or []))
             elif req.get("op") == "typeinfo":
                 resp.update(idx.typeinfo(req.get("names", []), req.get("sourceRules", [])))
             elif req.get("op") == "avc":

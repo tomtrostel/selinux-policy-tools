@@ -774,7 +774,7 @@
           {
             "id": "read",
             "title": "Read the denial",
-            "description": "Who (scontext), what (permission), on what (tclass and tcontext): one sentence. The denial assistant reads them for you and says whether a rule is really missing.\n[Analyze Denials…](command:selinux.analyzeDenials)\n[Open a Terminal](command:workbench.action.terminal.new)",
+            "description": "Who (scontext), what (permission), on what (tclass and tcontext): one sentence. The denial assistant reads them for you and says whether a rule is really missing.\n[Analyze the Practice Denials](command:selinux.analyzeDenials?%5B%22practice%22%5D)\n[Analyze Denials…](command:selinux.analyzeDenials)\n[Open a Terminal](command:workbench.action.terminal.new)",
             "media": {
               "markdown": "media/walkthroughs/denial/read.md"
             },

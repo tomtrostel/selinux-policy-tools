@@ -385,9 +385,9 @@ so far covered by the e2e tests only.
    2026-10-11): from an AVC denial to the smallest correct fix.
    Phases: 1 parse/group/verdicts (done, unreleased), 2 interface
    suggestions (done, unreleased), 3 apply + verify after build (done,
-   unreleased), 4 later (no transition into
-   the domain, two-interface covers, new interface in the owner module,
-   constraint/MLS explanations, a tutorial quick action).
+   unreleased), 4 (done, unreleased): no transition into the domain,
+   two-interface covers, new interface in the owner module,
+   constraint/MLS explanations, a tutorial quick action.
    Phase 1: `server/denials.js` (pure): `records()` (audit.log /
    ausearch --raw, ausearch -i " : " stamps, kernel `type=1400 audit(...)`,
    bare "avc: denied" lines; RHEL ENRICHED text after \x1d dropped),
@@ -473,6 +473,41 @@ so far covered by the e2e tests only.
    with against 'build' and marks verdict allowed as resolved; `opened`
    keeps toggled cards. e2e: standalone call + optional call + local module
    for httpd_t + CLIP copy apache.te, each rebuilt → allowed.
+   Phase 4: policy_query ops `constraints` {s, t, c, perms} (evaluates
+   constrain/mlsconstrain postfix expressions: sets of names (types expand
+   attributes), ==/!=/dom/domby/incomp on setools Levels from lookup_range;
+   returns failing constraints with each comparison's values; self.policy
+   kept) and `entrypoints` {types} (domains with allow D T:file entrypoint
+   written for T itself, not via attributes). Server: after the avc query,
+   groups whose perms are all allowed get te.constraints;
+   `denialTransitions()` for sources in UNCONFINED_SOURCES with an exe:
+   matchpathcon + stat of the program, entrypoints of its types; generic when
+   unconfined/initrc domains enter it, else domains sorted <stem>_t first.
+   `moduleFileContexts()`: in devel mode the 'build' policy's fc = running
+   file_contexts(+homedirs,+local) + the module's tmp/<mod>.mod.fc.
+   verdict(): unknown → transition (wrong label / not running in D (shell or
+   transition; relabel hint when the current label is unknown) / no policy
+   → action newService) → constraint (when TE allows all) → label (only when
+   TE doesn't allow all) → boolean → allowed → generic → missing;
+   `constraintVerdict()` words MCS (chcon -l), UBAC (chcon -u), roles.
+   rankInterfaces adds `combos` (pairs among the first 40 partials whose
+   union covers, by extra, top 3) when nothing covers; `newInterfaceText()`
+   (<module>_<verb>_<stem>_<class>s, verb read/rw/manage for file classes,
+   the perm or 'use' otherwise, unique suffix, XML doc, gen_require type,
+   exact perms); server `proposeInterface()` (owner .te in the workspace,
+   not the domain's own module) → suggest.newIface; denialFix takes
+   `calls` (pairs) and `newInterface` {target, tclass, perms} → plan.also
+   = the owner .if, call optional per `moduleOptional()`; client applies
+   also files in the same edit. Webview: badges domain/constraint, New
+   Service… button (client → showServiceEditor(ctx, null, {exec}), server
+   serviceInfo prefill → model.exec + name from the basename), pairs and
+   new-interface rows, plans listing both files. Practice:
+   media/practice/sample-denials.log (label, http → corenet, own log rule,
+   unconfined_service_t); `selinux.analyzeDenials` arg 'practice' opens it
+   against 'build'; denial walkthrough button; TUTORIAL.md section 6.
+   Tests: denials-test (verdicts, pairs, names, cards), denials-e2e (svirt
+   MCS, chronyd/true transitions, CLIP ntpd_extra_t new interface flow,
+   prefill), tutorial-e2e (the sample denials + fix).
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.

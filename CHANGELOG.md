@@ -28,6 +28,14 @@
   each one really expands to (m4 with the policy's own Makefile) and the
   compiled policy. A plain rule is suggested when both types are the
   domain's own.
+* **Denial assistant, more cases**: a service that isn't in its domain
+  (running as `unconfined_service_t`, `init_t`, … while its program has a
+  domain of its own: relabel, or start it right; or no policy at all:
+  *New Service…* with the program filled in); denials by constraints (MCS/MLS
+  levels, UBAC users, roles) explained with the failing comparisons; pairs
+  of interfaces when no single one covers the denial; a new interface for
+  the module that owns the type when none grants it. The practice module
+  has sample denials, opened from the *Fix a denial* tutorial.
 * **Applying the fix**: *Add to module…* shows the exact insertion (file,
   line, text; `optional_policy` when the interface's module can be off),
   *Apply* writes it and saves, and after the build the denial is checked

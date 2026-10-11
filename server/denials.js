@@ -176,7 +176,9 @@ function groupDenials(denials) {
  *   te:     policy_query `avc` result { unknown?, unknownClass?, perms: {p: {status, rules, options}}, permissiveDomain }
  *   labels: [{ path, expected, current }] (matchpathcon / stat) for the group's paths, or null
  * → { verdict, title, detail, fixes: [{ text, command? }], notes }.
- * Order: unknown types, wrong label, boolean, already allowed, generic label, missing rule.
+ * Order: unknown types, a program outside its domain (te.transition), wrong label, boolean,
+ * a constraint (te.constraints: allowed by the rules, denied by constrain/mlsconstrain),
+ * already allowed, generic label, missing rule.
  */
 function verdict(g, te, labels, policyName) {
   const notes = [];
@@ -192,7 +194,29 @@ function verdict(g, te, labels, policyName) {
   if (te && te.unknownClass) {
     return { verdict: 'unknown', title: 'Unknown class', detail: `${policyName} has no class ${g.tclass}; the denial came from a host running a different policy.`, fixes: [], notes };
   }
-  const wrong = (labels || []).filter(l => l.expected && l.expected !== g.target);
+  const tr = te && te.transition;
+  if (tr) {
+    const D = tr.domains[0];
+    if (D && tr.current && tr.expected && tr.current !== tr.expected) {
+      return { verdict: 'transition', title: 'Program has the wrong label', detail: `${tr.exe} is labeled ${tr.current}, but the policy labels it ${tr.expected}, the program type of ${D}. With the wrong label it doesn't enter ${D} and runs as ${g.source}, so this denial isn't about missing rules: relabel the program and restart the service.`,
+        fixes: [{ text: 'Relabel the program, then restart the service', command: `restorecon -v ${shellQuote(tr.exe)}` }], notes };
+    }
+    if (D) {
+      return { verdict: 'transition', title: `Not running in ${D}`, detail: `${tr.exe} is labeled ${tr.expected || tr.current}, the program type of ${D}, but it runs as ${g.source}. ${g.source === 'unconfined_t'
+        ? `It was started from a login shell, where it stays unconfined: start it as a service (systemctl start …) so it enters ${D}.`
+        : `It was started without the transition into ${D}: check that the service starts this program directly (not through a script or interpreter with another label) and was started by systemd${tr.current ? '' : `, and that the file on the host is labeled ${tr.expected} (ls -Z: a copied-in program keeps its old label)`}.`} Don't give ${g.source} more rights: the denial goes away once it runs in ${D}.`,
+        fixes: tr.current ? [] : [{ text: 'If the program has another label on the host, relabel it, then restart the service', command: `restorecon -v ${shellQuote(tr.exe)}` }], notes };
+    }
+    if (tr.generic) {
+      return { verdict: 'transition', title: 'No policy for this program', detail: `${tr.exe} has the generic label ${tr.current || tr.expected || 'of ordinary programs'}, so no confined domain exists for it and it runs as ${g.source}. Rules for ${g.source} aren't the fix: to confine the program, write a service policy for it (its own domain and program type), install it and relabel the program.`,
+        fixes: [{ text: 'Create a service policy for this program', action: { cmd: 'newService', exec: tr.exe } }], notes };
+    }
+  }
+  const per0 = (te && te.perms) || {};
+  const allAllowed = !!te && g.perms.length > 0 && g.perms.every(p => per0[p] && per0[p].status === 'allowed');
+  if (allAllowed && te.constraints && te.constraints.length) return constraintVerdict(g, te.constraints, policyName, notes);
+  // With the rules already allowing the access as labeled, a label that differs from the file contexts didn't cause it.
+  const wrong = allAllowed ? [] : (labels || []).filter(l => l.expected && l.expected !== g.target);
   if (wrong.length) {
     const creating = g.perms.every(p => p === 'create');
     const fixed = wrong.filter(l => l.current && l.current === l.expected);
@@ -224,6 +248,9 @@ function verdict(g, te, labels, policyName) {
       fixes: [{ text: `Set ${bools.length > 1 ? 'them' : 'it'} permanently (on the host that logged the denial)`, command: `setsebool -P ${bools.map(([b, v]) => `${b} ${v ? 'on' : 'off'}`).join(' ')}` }],
       rules: viaBool.flatMap(p => per[p].rules || []).slice(0, 4), notes };
   }
+  if (te && !missing.length && !viaBool.length && te.constraints && te.constraints.length) {
+    return constraintVerdict(g, te.constraints, policyName, notes);
+  }
   if (te && !missing.length && !viaBool.length) {
     return { verdict: 'allowed', title: 'Already allowed', detail: `${policyName} allows ${g.perms.join(', ')} for ${g.source} on ${g.target} (${g.tclass}). The denial is probably from before the policy was loaded or a boolean was changed; if it keeps happening, a constraint or an MLS/MCS rule denied it (compare the levels of the two contexts).`,
       fixes: [], rules: allowed.flatMap(p => per[p].rules || []).slice(0, 4), notes };
@@ -236,6 +263,41 @@ function verdict(g, te, labels, policyName) {
   }
   return { verdict: 'missing', title: 'Missing rule', detail: `${policyName} doesn't allow ${(missing.length ? missing : g.perms).join(', ')} for ${g.source} on ${g.target} (${g.tclass}). Grant it with an interface of the module that owns ${g.target}, in the module of ${g.source}, rather than with this raw rule.`,
     fixes: [], needed: allow, notes };
+}
+
+/**
+ * Allowed by the rules but denied by a constraint: which comparisons failed,
+ * in words (MCS/MLS levels, SELinux users (UBAC), roles), and what to do.
+ */
+function constraintVerdict(g, failing, policyName, notes) {
+  const bad = failing.flatMap(c => c.leaves.filter(l => !l.ok));
+  const mls = bad.filter(l => /^(l|h)[12] /.test(l.text));
+  const users = bad.filter(l => /^u1 /.test(l.text));
+  const roles = bad.filter(l => /^r1 /.test(l.text));
+  const levelOf = (raw) => (raw || '').split(':').slice(3).join(':');
+  const lines = failing.map(c => `${c.kind} ${g.tclass} { ${c.perms.join(' ')} }: ${c.text}`).join('\n');
+  const fixes = [];
+  const p = g.paths[0];
+  let title, why;
+  if (mls.length) {
+    const l = mls[0];
+    title = 'Denied by MCS/MLS levels';
+    why = `The process's level ${levelOf(g.scontext) || l.a} doesn't satisfy ${l.text} for the object's ${levelOf(g.tcontext) || l.b}${/dom/.test(l.text) ? ' (the process must have every category the object has)' : ''}. The rules allow the access; the categories don't.`;
+    if (p) fixes.push({ text: `Give the file the process's categories (if it should share them)`, command: `chcon -l ${levelOf(g.scontext).split('-').pop()} ${shellQuote(p)}` });
+    notes.push('If the domain really must use objects of every category, it needs an MCS/MLS exemption interface (e.g. mcs_file_read_all, mcs_file_write_all) rather than a relabel.');
+  } else if (users.length) {
+    const u = g.scontext.split(':')[0], o = g.tcontext.split(':')[0];
+    title = 'Denied by SELinux user separation (UBAC)';
+    why = `The process's SELinux user ${u} differs from the object's ${o}, and ${g.source} isn't exempt from user-based access control.`;
+    if (p) fixes.push({ text: `Give the file the process's SELinux user (if it belongs to it)`, command: `chcon -u ${u} ${shellQuote(p)}` });
+  } else if (roles.length) {
+    title = 'Denied by a role constraint';
+    why = `The process's role ${g.scontext.split(':')[1]} doesn't satisfy ${roles[0].text}.`;
+  } else {
+    title = 'Denied by a constraint';
+    why = 'A constraint on this class denies it although the rules allow it.';
+  }
+  return { verdict: 'constraint', title, detail: `${why}\n${lines}\nFailed: ${bad.map(l => `${l.text} (${l.b !== undefined ? `${l.a} vs ${l.b}` : l.a})`).join('; ')}`, fixes, notes, constraints: failing };
 }
 
 /* ---------- interface suggestions ---------- */
@@ -394,7 +456,65 @@ function rankInterfaces(need, cands, stmts, types, attrRules = {}) {
   // Far broader than the best: shown, but flagged.
   const best = out.length ? out[0].extra : 0;
   for (const x of out) x.broad = x.extra > 50 * best + 300;
+  // No single interface covers it all: the narrowest pairs that do together.
+  out.combos = [];
+  if (!out.some(x => x.covers)) {
+    const parts = out.slice(0, 40);
+    for (let i = 0; i < parts.length; i++) {
+      for (let j = i + 1; j < parts.length; j++) {
+        const a = parts[i], b = parts[j];
+        if (need.perms.every(p => !a.missing.includes(p) || !b.missing.includes(p))) out.combos.push({ items: [a, b], extra: a.extra + b.extra });
+      }
+    }
+    out.combos.sort((x, y) => x.extra - y.extra);
+    out.combos = out.combos.slice(0, 3);
+  }
   return out;
+}
+
+const READ_PERMS = new Set(['read', 'getattr', 'open', 'lock', 'ioctl', 'map', 'search', 'watch', 'watch_reads']);
+const MANAGE_PERMS = new Set(['create', 'unlink', 'rename', 'add_name', 'remove_name', 'rmdir', 'reparent', 'link']);
+
+/**
+ * A new interface for the module that owns `target`, granting a domain
+ * exactly the denied permissions, named the refpolicy way
+ * (<module>_<verb>_<object>, e.g. notesd_read_var_lib_files), with its
+ * XML doc comment. exists(name) says whether a name is taken.
+ * → { name, text (to append to the .if), summary }.
+ */
+function newInterfaceText({ module, target, tclass, perms }, exists = () => false) {
+  const fileLike = !!FILE_MODES[tclass];
+  const verb = fileLike
+    ? (perms.every(p => READ_PERMS.has(p)) ? 'read' : perms.some(p => MANAGE_PERMS.has(p)) ? 'manage' : 'rw')
+    : (perms.length === 1 ? perms[0] : 'use');
+  const plural = tclass === 'dir' ? 'dirs' : `${tclass}s`;
+  const bare = target.replace(/_t$/, '');
+  const stem = bare === module ? '' : bare.startsWith(`${module}_`) ? bare.slice(module.length + 1) : bare;
+  const base = [module, verb, stem, plural].filter(Boolean).join('_');
+  let name = base;
+  for (let n = 2; exists(name); n++) name = `${base}_${n}`;
+  const words = (x) => x.replace(/_/g, ' ');
+  const summary = `${verb[0].toUpperCase()}${verb.slice(1)} ${stem ? `${words(stem)} ` : ''}${words(plural)} (${target}).`;
+  const text = `
+########################################
+## <summary>
+##	${summary}
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(\`${name}',\`
+	gen_require(\`
+		type ${target};
+	')
+
+	allow $1 ${target}:${tclass} { ${perms.join(' ')} };
+')
+`;
+  return { name, text, summary };
 }
 
 const WRITE_PERMS = new Set(['write', 'append', 'create', 'unlink', 'rename', 'link', 'setattr', 'add_name', 'remove_name', 'rmdir', 'reparent', 'relabelfrom', 'relabelto', 'mounton', 'quotaon', 'swapon', 'setfscreate', 'audit_access', 'sendto', 'connectto', 'name_bind', 'node_bind', 'kill', 'sigkill', 'ptrace', 'setsched', 'setrlimit']);
@@ -499,4 +619,4 @@ ${call}
 
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };
+module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, newInterfaceText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };

@@ -18,7 +18,7 @@
   }
 
   const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week']];
-  const BADGE = { label: 'label', boolean: 'boolean', allowed: 'allowed', generic: 'label', missing: 'rule', unknown: 'other policy', error: 'error' };
+  const BADGE = { label: 'label', boolean: 'boolean', allowed: 'allowed', generic: 'label', missing: 'rule', unknown: 'other policy', error: 'error', transition: 'domain', constraint: 'constraint' };
 
   const tip = (id, text) => $(id).setAttribute('title', text);
   tip('analyze', 'Read the denials in the box and check each group against the chosen policy');
@@ -70,7 +70,8 @@
     const p = f.plan;
     if (p.unavailable || p.already) return h('div', { class: 'fixbox warn' }, p.unavailable || p.message, ' ', h('button', { onclick: () => { fixes.delete(g.key); rerender(); } }, 'OK'));
     return h('div', { class: 'fixbox' },
-      h('div', {}, `${p.exists ? 'Adds to' : 'Creates'} `, h('code', {}, p.path), ` at line ${p.line + 1}${p.optional ? ' (in optional_policy: that module can be turned off)' : ''}:`),
+      (p.also || []).map(a => [h('div', {}, `${a.exists ? 'Adds to' : 'Creates'} `, h('code', {}, a.path), ` at line ${a.line + 1}${a.what ? ` (${a.what})` : ''}:`), h('pre', { class: 'rules add' }, a.inserted.join('\n'))]),
+      h('div', {}, `${p.also && p.also.length ? 'and adds to' : p.exists ? 'Adds to' : 'Creates'} `, h('code', {}, p.path), ` at line ${p.line + 1}${p.optional ? ' (in optional_policy: that module can be turned off)' : ''}:`),
       h('pre', { class: 'rules add' }, p.inserted.join('\n')),
       p.note ? h('div', { class: 'muted' }, p.note) : null,
       h('div', { class: 'cmd' },
@@ -107,8 +108,23 @@
           h('span', { class: 'muted' }, 'also grants: '), x.grants.join('; ')) : h('div', { class: 'grants muted' }, 'grants nothing else'),
         x.attrs && x.attrs.length ? h('div', { class: 'grants muted', title: 'Attributes the interface gives the domain; their rules count as granted too' }, `adds attributes: ${x.attrs.join(', ')}`) : null);
     });
-    return [h('div', { class: 'sub', title: 'Interfaces that grant this access, worked out from what each one really expands to; the narrowest first' }, s.partial ? 'Interfaces that grant part of it' : 'Suggested interfaces'),
-      rows.length ? rows : null, s.note ? h('div', { class: 'muted' }, s.note) : null];
+    // No single interface covers it: the narrowest pairs that do together.
+    const pairs = (s.combos || []).map((c, k) => {
+      const calls = c.items.map(x => `${x.name}(${g.source})`);
+      return h('div', { class: 'iface' },
+        h('div', { class: 'cmd' }, calls.map((cl, i) => [i ? ' + ' : '', h('button', { class: 'link', title: `Open the definition of ${c.items[i].name}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: c.items[i].loc }) }, cl)]),
+          copyBtn(calls.join('\n'), 'both calls'), fixBtn(g, { calls }), k === 0 ? h('span', { class: 'tag best', title: 'Together they cover every denied permission with the fewest other rights' }, 'narrowest pair') : null),
+        h('div', { class: 'grants' }, h('span', { class: 'muted' }, 'also grant: '), c.items.flatMap(x => x.grants || []).slice(0, 4).join('; ') || 'nothing else'));
+    });
+    // Nothing grants it: a new interface for the module that owns the type.
+    const ni = s.newIface;
+    const newRow = ni ? [h('div', { class: 'sub', title: `No interface grants this, and ${ni.module} (which owns ${g.target}) is in this workspace: give it an interface for exactly this access, and call that` }, `Fix: a new interface in ${ni.module}`),
+      h('div', { class: 'iface' },
+        h('div', { class: 'cmd' }, h('code', {}, ni.call), fixBtn(g, { newInterface: { target: g.target, tclass: g.tclass, perms: g.perms } })),
+        h('div', { class: 'muted' }, `${ni.summary} Written into ${ni.ifPath.split(/[\\/]/).pop()} as `, h('code', {}, ni.rule.replace(g.source, '$1')), '.'))] : null;
+    return [rows.length || s.note ? h('div', { class: 'sub', title: 'Interfaces that grant this access, worked out from what each one really expands to; the narrowest first' }, s.partial ? 'Interfaces that grant part of it' : 'Suggested interfaces') : null,
+      rows.length ? rows : null, s.note ? h('div', { class: 'muted' }, s.note) : null,
+      pairs.length ? [h('div', { class: 'sub' }, 'Together they cover it'), pairs] : null, newRow];
   }
 
   function card(g, i) {
@@ -120,6 +136,7 @@
       h('span', { class: 'vtitle' }, v.title));
     const fixRows = (v.fixes || []).map(f => h('div', { class: 'fix' },
       h('div', {}, f.text),
+      f.action && f.action.cmd === 'newService' ? h('div', { class: 'cmd' }, h('button', { class: 'primary', title: `Open the service editor for ${f.action.exec}: a domain of its own, with the rights you choose`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: f.action.exec }) }, 'New Service…')) : null,
       f.command ? h('div', { class: 'cmd' }, h('code', {}, f.command),
         h('button', { title: 'Copy the command', onclick: () => vscode.postMessage({ cmd: 'copy', text: f.command }) }, 'Copy'),
         h('button', { title: 'Put the command (with sudo) into a terminal on this host; press Enter there to run it', onclick: () => vscode.postMessage({ cmd: 'run', command: `sudo ${f.command}` }) }, 'Send to terminal')) : null));
@@ -160,10 +177,10 @@
     $('status').textContent = n ? `${r.count} denial${r.count === 1 ? '' : 's'} in ${n} group${n === 1 ? '' : 's'}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : 'No denials found in the text.';
     $('status').setAttribute('title', r.policy ? `Rules from ${r.policy.label}; expected file labels from ${r.policy.fileContexts}` : '');
     if (r.notes && r.notes.length) list.append(h('ul', { class: 'notes top' }, r.notes.map(x => h('li', {}, x))));
-    const order = ['label', 'boolean', 'generic', 'missing', 'allowed', 'unknown', 'error'];
+    const order = ['transition', 'label', 'boolean', 'constraint', 'generic', 'missing', 'allowed', 'unknown', 'error'];
     const counts = {};
     for (const g of r.groups) counts[g.v.verdict] = (counts[g.v.verdict] || 0) + 1;
-    if (n > 1) list.append(h('div', { class: 'summary muted' }, order.filter(k => counts[k]).map(k => `${counts[k]} ${({ label: 'wrong label', boolean: 'boolean', generic: 'generic label', missing: 'missing rule', allowed: 'already allowed', unknown: 'not in this policy', error: 'error' })[k]}`).join(' · ')));
+    if (n > 1) list.append(h('div', { class: 'summary muted' }, order.filter(k => counts[k]).map(k => `${counts[k]} ${({ transition: 'not in its domain', label: 'wrong label', boolean: 'boolean', constraint: 'constraint', generic: 'generic label', missing: 'missing rule', allowed: 'already allowed', unknown: 'not in this policy', error: 'error' })[k]}`).join(' · ')));
     r.groups.forEach((g, i) => list.append(card(g, i)));
   }
 
@@ -180,7 +197,7 @@
     const m = e.data;
     if (m.cmd === 'policies') setPolicies(m.policies);
     else if (m.cmd === 'result') { if (m.result.policies) setPolicies(m.result.policies, m.result.policy && m.result.policy.id); render(m.result); }
-    else if (m.cmd === 'log') { $('log').value = m.text; analyze(); }
+    else if (m.cmd === 'log') { $('log').value = m.text; analyze(m.against || undefined); }
     else if (m.cmd === 'status') $('status').textContent = m.text;
     else if (m.cmd === 'fixPlan') { fixes.set(m.key, { plan: m.plan }); opened.set(m.key, true); rerender(); }
     else if (m.cmd === 'applied') { fixes.set(m.key, { applied: m.path }); rerender(); }

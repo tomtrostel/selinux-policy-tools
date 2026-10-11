@@ -36,6 +36,10 @@ allow demo_t demo_data_t:file read_file_perms;
 `);
 fs.writeFileSync(path.join(ws, 'demo.if'), '## <summary>demo</summary>\n');
 fs.writeFileSync(path.join(ws, 'demo.fc'), '/usr/bin/demo\t--\tgen_context(system_u:object_r:demo_exec_t,s0)\n');
+// A second module next to it whose type no interface mentions (for "a new interface in the owner module").
+fs.writeFileSync(path.join(ws, 'other.te'), 'policy_module(other, 1.0.0)\n\ntype other_data_t;\nfiles_type(other_data_t)\n');
+fs.writeFileSync(path.join(ws, 'other.if'), '## <summary>other</summary>\n');
+fs.writeFileSync(path.join(ws, 'other.fc'), '');
 
 const proc = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
 const conn = rpc.createMessageConnection(new rpc.StreamMessageReader(proc.stdout), new rpc.StreamMessageWriter(proc.stdin));
@@ -155,7 +159,47 @@ const LOG = [
     check(b3.ok, 'the local module builds', b3.ok ? undefined : b3.log);
     r = await conn.sendRequest('selinux/analyzeDenials', { text: LOG3, against: 'build' });
     check(by('httpd_t', 'etc_t').v.verdict === 'allowed' && /local_httpd/.test(r.policy.label), `the installed policy + local_httpd allows it: ${by('httpd_t', 'etc_t').v.verdict} (${r.policy.label})`, r.notes);
+    // Phase 4: the fix with a new interface in another module next to it (the linked policy holds only
+    // demo, so other_data_t isn't analyzed here; the tree part checks the whole flow).
+    plan = await conn.sendRequest('selinux/denialFix', { domain: 'demo_t', newInterface: { target: 'other_data_t', tclass: 'file', perms: ['read', 'open'] } });
+    const ifPlan = (plan.also || [])[0];
+    check(ifPlan && ifPlan.path === path.join(ws, 'other.if') && /interface\(`other_read_data_files'/.test(ifPlan.text) && plan.path === te && plan.inserted.includes('\tother_read_data_files(demo_t)'),
+      `fix: the interface into other.if and the call into demo.te (${plan.optional ? 'optional' : 'not optional'})`, plan);
+    fs.writeFileSync(ifPlan.path, ifPlan.text);
+    conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(ifPlan.path), languageId: 'selinux', version: 1, text: ifPlan.text } });
+    b3 = await applyPlan(conn, plan, versions);
+    check(b3.ok, 'demo.te calling the new interface builds', b3.ok ? undefined : b3.log);
+    // The service editor opened from "No policy for this program": its path and a name filled in.
+    const pre = await conn.sendRequest('selinux/serviceInfo', { prefill: { exec: '/opt/acme/bin/acme-agent' } });
+    check(pre.isNew && pre.model.exec.join() === '/opt/acme/bin/acme-agent' && pre.model.name === 'acme_agent', `New Service from the denial assistant: ${pre.model && pre.model.name} for ${pre.model && pre.model.exec}`);
   } else console.log(`SKIP build part: ${tc.reason}`);
+
+  // Phase 4 against the running policy: constraints and programs outside their domain.
+  const sys = (ev2, exe) => `type=SYSCALL msg=audit(1728650100.${ev2}:${ev2}): arch=c000003e syscall=257 success=no exit=-13 items=1 ppid=1 pid=77 comm="x" exe="${exe}" subj=system_u:system_r:unconfined_service_t:s0 key=(null)`;
+  const P4 = [
+    'type=AVC msg=audit(1728650100.901:901): avc:  denied  { read } for  pid=7 comm="qemu-kvm" path="/var/lib/libvirt/images/a.img" scontext=system_u:system_r:svirt_t:s0:c1,c2 tcontext=system_u:object_r:svirt_image_t:s0:c3,c4 tclass=file permissive=0',
+    'type=AVC msg=audit(1728650100.902:902): avc:  denied  { write } for  pid=77 comm="chronyd" name="x" scontext=system_u:system_r:unconfined_service_t:s0 tcontext=system_u:object_r:etc_t:s0 tclass=file permissive=0', sys(902, '/usr/sbin/chronyd'),
+    'type=AVC msg=audit(1728650100.903:903): avc:  denied  { write } for  pid=78 comm="true" name="y" scontext=system_u:system_r:unconfined_service_t:s0 tcontext=system_u:object_r:etc_runtime_t:s0 tclass=file permissive=0', sys(903, '/usr/bin/true'),
+  ].join('\n');
+  const c4 = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
+  const k4 = rpc.createMessageConnection(new rpc.StreamMessageReader(c4.stdout), new rpc.StreamMessageWriter(c4.stdin));
+  let d4; const i4 = new Promise(res => (d4 = res));
+  k4.onNotification('selinux/indexing', p => { if (p.state === 'done') d4(); });
+  for (const n of ['textDocument/publishDiagnostics', 'selinux/checks', 'selinux/build', 'window/logMessage', 'selinux/inactiveRanges']) k4.onNotification(n, () => {});
+  k4.listen();
+  const ws4 = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-p4-'));
+  await k4.sendRequest('initialize', { processId: null, rootUri: uri(ws4), capabilities: {}, initializationOptions: { trusted: true } });
+  k4.sendNotification('initialized', {});
+  await i4;
+  r = await k4.sendRequest('selinux/analyzeDenials', { text: P4 });
+  const sv = by('svirt_t', 'svirt_image_t');
+  check(sv && sv.v.verdict === 'constraint' && /MCS/.test(sv.v.title) && /h1 dom h2/.test(sv.v.detail) && /chcon -l s0:c1,c2/.test((sv.v.fixes[0] || {}).command || ''), `svirt_t with other categories: ${sv && sv.v.title}`, sv && sv.v);
+  const ch = by('unconfined_service_t', 'etc_t');
+  check(ch && ch.v.verdict === 'transition' && ch.v.title === 'Not running in chronyd_t', `chronyd as unconfined_service_t: ${ch && ch.v.title}`, ch && ch.v);
+  const tru = by('unconfined_service_t', 'etc_runtime_t');
+  check(tru && tru.v.verdict === 'transition' && tru.v.title === 'No policy for this program' && tru.v.fixes[0].action.exec === '/usr/bin/true', `/usr/bin/true as unconfined_service_t: ${tru && tru.v.title}`, tru && tru.v);
+  c4.kill();
+  fs.rmSync(ws4, { recursive: true, force: true });
   proc.kill();
 
   // A tree build: checked against its own policy.bin and file contexts.
@@ -198,6 +242,22 @@ const LOG = [
     check(tb2.ok, `tree with the fix builds (${tb2.ms} ms)`, tb2.ok ? undefined : tb2.log && tb2.log.slice(-2000));
     r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('write', 'httpd_t', 'etc_t', 'file'), against: 'build' });
     check(by('httpd_t', 'etc_t').v.verdict === 'allowed', `tree build after the fix: ${by('httpd_t', 'etc_t').v.title}`, r.notes);
+    // No interface mentions a type: a new interface in its module (ntp), called from apache.te.
+    const ntpTe = path.join(tree, 'policy/modules/services/ntp.te');
+    const ntpText = fs.readFileSync(ntpTe, 'utf8').replace(/(\ntype ntpd_t;)/, '$1\ntype ntpd_extra_t;\nfiles_type(ntpd_extra_t)');
+    await applyPlan(c2, { path: ntpTe, text: ntpText }, tv);
+    r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('read open', 'httpd_t', 'ntpd_extra_t', 'file'), against: 'build' });
+    const nx = by('httpd_t', 'ntpd_extra_t');
+    const nis = nx && nx.suggest && nx.suggest.newIface;
+    check(nx && nx.v.verdict === 'missing' && nis && nis.module === 'ntp' && nis.name === 'ntp_read_ntpd_extra_files', `no interface mentions ntpd_extra_t: propose ${nis && nis.name} in ntp`, nx && { v: nx.v, s: nx.suggest, notes: r.notes });
+    tplan = await c2.sendRequest('selinux/denialFix', { domain: 'httpd_t', newInterface: { target: 'ntpd_extra_t', tclass: 'file', perms: ['read', 'open'] } });
+    const tif = (tplan.also || [])[0];
+    check(tif && /\/ntp\.if$/.test(tif.path) && /interface\(`ntp_read_ntpd_extra_files'/.test(tif.text) && /\/apache\.te$/.test(tplan.path) && tplan.optional, `fix: the interface into ntp.if, the call into apache.te in optional_policy`, tplan);
+    await applyPlan(c2, tif, tv);
+    const tb3 = await applyPlan(c2, tplan, tv);
+    check(tb3.ok, `tree with the new interface builds (${tb3.ms} ms)`, tb3.ok ? undefined : tb3.log && tb3.log.slice(-2000));
+    r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('read open', 'httpd_t', 'ntpd_extra_t', 'file'), against: 'build' });
+    check(by('httpd_t', 'ntpd_extra_t').v.verdict === 'allowed', `after the new interface: ${by('httpd_t', 'ntpd_extra_t').v.title}`, r.notes);
     p2.kill();
     fs.rmSync(tree, { recursive: true, force: true });
   } else console.log('SKIP tree part: no refpolicy tree or toolchain');

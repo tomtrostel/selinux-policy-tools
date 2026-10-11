@@ -113,6 +113,29 @@ const fixesFor = async (f, d) => (await conn.sendRequest('textDocument/codeActio
     for (let t = 0; t < 120000 && !(summary && summary.failed !== undefined && !summary.note); t += 200) await sleep(200);
     await sleep(500);
     check(summary && summary.total === 4 && summary.failed === 0, `the practice checks hold: ${JSON.stringify(summary)}`, (diags[uri(file('selinux.checks'))] || []).map(d => `${d.range.start.line + 1}: ${d.message}`));
+
+    // The tutorial's denials (sample-denials.log), against the module's build.
+    const log = fs.readFileSync(file('sample-denials.log'), 'utf8');
+    let r = await conn.sendRequest('selinux/analyzeDenials', { text: log, against: 'build' });
+    const by = (s, t) => r.groups.find(g => g.source === s && g.target === t);
+    const db = by('notesd_t', 'var_lib_t');
+    check(db && db.v.verdict === 'label' && db.labels.some(l => l.expected === 'notesd_var_lib_t') && /restorecon -v \/var\/lib\/notesd\/notes\.db/.test((db.v.fixes[0] || {}).command || ''),
+      `notes.db: wrong label (notesd.fc says notesd_var_lib_t): ${db && db.v.title}`, db && { v: db.v, labels: db.labels, fc: r.policy && r.policy.fileContexts });
+    const http = by('notesd_t', 'http_port_t');
+    const top = http && http.suggest && http.suggest.list && http.suggest.list[0];
+    check(http && http.v.verdict === 'missing' && top && top.name === 'corenet_tcp_connect_http_port', `http_port_t: ${http && http.v.title}, ${top && top.name}`, http && http.suggest);
+    const logw = by('notesd_t', 'notesd_log_t');
+    check(logw && logw.suggest && logw.suggest.own && logw.suggest.rule === 'allow notesd_t notesd_log_t:file { write };', `own log: a plain rule in notesd`, logw && { v: logw.v, s: logw.suggest });
+    const unc = by('unconfined_service_t', 'admin_home_t');
+    check(unc && unc.v.verdict === 'transition' && /notesd_t/.test(unc.v.title + unc.v.detail), `unconfined_service_t: ${unc && unc.v.title}`, unc && unc.v);
+    // Apply the http fix and the build allows it.
+    const plan = await conn.sendRequest('selinux/denialFix', { domain: 'notesd_t', call: 'corenet_tcp_connect_http_port(notesd_t)' });
+    check(plan.path === file('notesd.te') && plan.inserted.join() === 'corenet_tcp_connect_http_port(notesd_t)', `fix plan into notesd.te line ${plan.line + 1}`, plan);
+    change('notesd.te', plan.text);
+    await sleep(600);
+    const b2 = await conn.sendRequest('selinux/build', { uri: uri(file('notesd.te')) });
+    r = await conn.sendRequest('selinux/analyzeDenials', { text: log, against: 'build' });
+    check(b2.ok && by('notesd_t', 'http_port_t').v.verdict === 'allowed', 'after the fix and a build: allowed');
   }
 
   await conn.sendRequest('shutdown');

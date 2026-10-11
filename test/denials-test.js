@@ -149,6 +149,55 @@ check(ranked.find(x => x.name === 'files_manage_etc_files').extra > ranked.find(
 const part = d.rankInterfaces({ domain: 'myd_t', target: 'etc_t', tclass: 'file', perms: ['write', 'execute'] }, [cand('files_rw_etc_files')], st, types);
 check(part.length === 1 && !part[0].covers && part[0].missing.join() === 'execute', 'partial cover reported with what it lacks');
 
+/* ---------- phase 4: domains, constraints, pairs, new interfaces ---------- */
+
+const ug = (o) => g({ source: 'unconfined_service_t', target: 'etc_t', exes: ['/usr/sbin/myd'], ...o });
+v = d.verdict(ug({}), { perms: { read: { status: 'allowed' } }, transition: { exe: '/usr/sbin/myd', expected: 'myd_exec_t', current: 'bin_t', domains: ['myd_t'], generic: false } }, null, P);
+check(v.verdict === 'transition' && /wrong label/.test(v.title) && v.fixes[0].command === 'restorecon -v /usr/sbin/myd', 'program with the wrong label: relabel, not rules', v);
+v = d.verdict(ug({}), { perms: { read: { status: 'missing' } }, transition: { exe: '/usr/sbin/myd', expected: 'myd_exec_t', current: 'myd_exec_t', domains: ['myd_t'], generic: false } }, null, P);
+check(v.verdict === 'transition' && v.title === 'Not running in myd_t' && /started without the transition/.test(v.detail) && !v.fixes.length, 'labeled right but not in its domain: how it was started', v);
+v = d.verdict(ug({ source: 'unconfined_t' }), { perms: {}, transition: { exe: '/usr/sbin/myd', expected: 'myd_exec_t', current: 'myd_exec_t', domains: ['myd_t'], generic: false } }, null, P);
+check(/login shell/.test(v.detail) && /systemctl start/.test(v.detail), 'started from a shell: start it as a service');
+v = d.verdict(ug({}), { perms: {}, transition: { exe: '/usr/sbin/myd', expected: 'myd_exec_t', current: null, domains: ['myd_t'], generic: false } }, null, P);
+check(/ls -Z/.test(v.detail) && /restorecon/.test(v.fixes[0].command), 'current label unknown: suggests checking and relabeling');
+v = d.verdict(ug({ exes: ['/opt/x/run'] }), { perms: { read: { status: 'missing' } }, transition: { exe: '/opt/x/run', expected: 'usr_t', current: 'usr_t', domains: [], generic: true } }, null, P);
+check(v.verdict === 'transition' && v.title === 'No policy for this program' && v.fixes[0].action.cmd === 'newService' && v.fixes[0].action.exec === '/opt/x/run', 'no policy for the program: offers a new service policy', v);
+
+const mcs = [{ kind: 'mlsconstrain', perms: ['read'], text: 'h1 dom h2 or ( t1 != mcs_constrained_type )', leaves: [{ text: 'h1 dom h2', ok: false, a: 's0:c1.c2', b: 's0:c3.c4' }, { text: 't1 != { mcs_constrained_type }', ok: false, a: 'svirt_t' }] }];
+v = d.verdict(g({ source: 'svirt_t', target: 'svirt_image_t', scontext: 'system_u:system_r:svirt_t:s0:c1,c2', tcontext: 'system_u:object_r:svirt_image_t:s0:c3,c4', paths: ['/var/lib/libvirt/images/a.img'] }),
+  { perms: { read: { status: 'allowed', rules: [] } }, constraints: mcs }, null, P);
+check(v.verdict === 'constraint' && /MCS\/MLS/.test(v.title) && /s0:c1,c2/.test(v.detail) && /h1 dom h2/.test(v.detail) && v.fixes[0].command === 'chcon -l s0:c1,c2 /var/lib/libvirt/images/a.img', 'MCS constraint: explained, chcon -l offered', v);
+v = d.verdict(g({ scontext: 'staff_u:staff_r:staff_t:s0', tcontext: 'user_u:object_r:user_home_t:s0', paths: ['/home/a/x'] }),
+  { perms: { read: { status: 'allowed' } }, constraints: [{ kind: 'constrain', perms: ['read'], text: 'u1 == u2 or t1 == ubac_exempt', leaves: [{ text: 'u1 == u2', ok: false, a: 'staff_u', b: 'user_u' }] }] }, null, P);
+check(v.verdict === 'constraint' && /UBAC/.test(v.title) && v.fixes[0].command === 'chcon -u staff_u /home/a/x', 'UBAC constraint: SELinux users differ, chcon -u offered');
+v = d.verdict(g({}), { perms: { read: { status: 'allowed' } }, constraints: [] }, null, P);
+check(v.verdict === 'allowed', 'no failing constraint: already allowed');
+
+// Pairs when no single interface covers it.
+const st2 = d.probeStatements(`##### begin a_read(myd_t) depth: 1
+	allow myd_t x_t:file { read open };
+##### end a_read(myd_t) depth: 0
+##### begin b_write(myd_t) depth: 1
+	allow myd_t x_t:file { write };
+##### end b_write(myd_t) depth: 0
+##### begin c_append(myd_t) depth: 1
+	allow myd_t x_t:file { write append create unlink };
+##### end c_append(myd_t) depth: 0
+`);
+const pr = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['read', 'write'] }, ['a_read', 'b_write', 'c_append'].map(n => cand(n)), st2, { x_t: { attr: false, size: 1, attrs: [] } });
+check(!pr.some(x => x.covers) && pr.combos.length === 2 && pr.combos[0].items.map(x => x.name).sort().join() === 'a_read,b_write', `no single cover: the narrowest pair first (${pr.combos.map(c => c.items.map(x => x.name).join('+')).join(', ')})`);
+const one = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['write'] }, ['b_write', 'c_append'].map(n => cand(n)), st2, { x_t: { attr: false, size: 1, attrs: [] } });
+check(one.combos.length === 0, 'no pairs when one interface covers it');
+
+// A new interface for the owner module.
+let ni = d.newInterfaceText({ module: 'notesd', target: 'notesd_var_lib_t', tclass: 'file', perms: ['read', 'open'] });
+check(ni.name === 'notesd_read_var_lib_files' && /interface\(`notesd_read_var_lib_files',`/.test(ni.text) && /gen_require\(`\n\t\ttype notesd_var_lib_t;\n\t'\)/.test(ni.text) && /allow \$1 notesd_var_lib_t:file \{ read open \};/.test(ni.text) && /## <param name="domain">/.test(ni.text),
+  'new interface: refpolicy name, doc, gen_require, the exact rule', ni.text);
+check(d.newInterfaceText({ module: 'notesd', target: 'notesd_var_lib_t', tclass: 'dir', perms: ['add_name', 'write'] }).name === 'notesd_manage_var_lib_dirs'
+  && d.newInterfaceText({ module: 'notesd', target: 'notesd_log_t', tclass: 'file', perms: ['write'] }).name === 'notesd_rw_log_files'
+  && d.newInterfaceText({ module: 'syslogd', target: 'syslogd_t', tclass: 'unix_dgram_socket', perms: ['sendto'] }).name === 'syslogd_sendto_unix_dgram_sockets'
+  && d.newInterfaceText({ module: 'notesd', target: 'notesd_log_t', tclass: 'file', perms: ['write'] }, n => n === 'notesd_rw_log_files').name === 'notesd_rw_log_files_2', 'names: manage / rw / a permission for other classes; taken names get a suffix');
+
 /* ---------- writing the fix ---------- */
 
 const TE = `policy_module(myd, 1.0.0)
@@ -312,6 +361,34 @@ send({ cmd: 'log', text: 'x avc:  denied', source: 'this host' });
 check(byId.log.value === 'x avc:  denied' && last('analyze').text === 'x avc:  denied', 'a log from the host fills the box and is analyzed');
 const untitled = [byId.analyze, byId.host, byId.openFile, byId.against, byId.since].filter(e => !e.attrs.title).map(e => e.tag);
 check(!untitled.length, 'every control has hover help', untitled);
+
+// Phase 4 cards: no policy for a program (New Service…), a constraint, pairs, a new interface.
+send({ cmd: 'result', result: { policy: { id: 'build', label: 'Last build' }, count: 4, notes: [], groups: [
+  { key: 'p1', kind: 'deny', source: 'unconfined_service_t', target: 'etc_t', tclass: 'file', perms: ['write'], count: 1, comms: [], exes: ['/opt/x/run'], paths: [], labels: [],
+    v: { verdict: 'transition', title: 'No policy for this program', detail: '…', fixes: [{ text: 'Create a service policy for this program', action: { cmd: 'newService', exec: '/opt/x/run' } }], notes: [] } },
+  { key: 'p2', kind: 'deny', source: 'svirt_t', target: 'svirt_image_t', tclass: 'file', perms: ['read'], count: 1, comms: [], exes: [], paths: [], labels: [],
+    v: { verdict: 'constraint', title: 'Denied by MCS/MLS levels', detail: 'h1 dom h2 …', fixes: [{ text: 'Give the file the categories', command: 'chcon -l s0:c1,c2 /x' }], notes: [] } },
+  { key: 'p3', kind: 'deny', source: 'myd_t', target: 'x_t', tclass: 'file', perms: ['read', 'write'], count: 1, comms: [], exes: [], paths: [], labels: [],
+    v: { verdict: 'missing', title: 'Missing rule', detail: '…', fixes: [], needed: 'allow myd_t x_t:file { read write };', notes: [] },
+    suggest: { list: [], partial: true, combos: [{ items: [{ name: 'a_read', grants: [], loc: { p: '/t/a.if', l: 1, c: 0 } }, { name: 'b_write', grants: ['x_t file: write'], loc: { p: '/t/b.if', l: 2, c: 0 } }], extra: 3 }] } },
+  { key: 'p4', kind: 'deny', source: 'httpd_t', target: 'ntpd_extra_t', tclass: 'file', perms: ['read'], count: 1, comms: [], exes: [], paths: [], labels: [],
+    v: { verdict: 'missing', title: 'Missing rule', detail: '…', fixes: [], needed: 'allow httpd_t ntpd_extra_t:file { read };', notes: [] },
+    suggest: { list: [], note: 'No interface mentions ntpd_extra_t.', newIface: { module: 'ntp', name: 'ntp_read_ntpd_extra_files', summary: 'Read ntpd extra files (ntpd_extra_t).', call: 'ntp_read_ntpd_extra_files(httpd_t)', ifPath: '/t/ntp.if', rule: 'allow httpd_t ntpd_extra_t:file { read };' } } },
+] } });
+const pc = find(e => (e.attrs.class || '').split(' ').includes('group'));
+check(pc.length === 4 && /DOMAIN|domain/.test(pc[0].textContent) && /constraint/i.test(pc[1].textContent), 'transition and constraint cards with their badges');
+btn(pc[0], 'New Service…').fire('click');
+check(last('newService') && last('newService').exec === '/opt/x/run', 'No policy for this program: New Service… for the program');
+check(/Together they cover it/.test(pc[2].textContent) && /narrowest pair/.test(pc[2].textContent), 'pairs listed when no single interface covers it');
+btn(pc[2], 'Add to module…').fire('click');
+check(last('fix').calls && last('fix').calls.join() === 'a_read(myd_t),b_write(myd_t)', 'Add to module for a pair sends both calls');
+check(/a new interface in ntp/.test(pc[3].textContent) && /ntp_read_ntpd_extra_files\(httpd_t\)/.test(pc[3].textContent), 'nothing grants it: a new interface in the owner module');
+btn(pc[3], 'Add to module…').fire('click');
+check(last('fix').newInterface && last('fix').newInterface.target === 'ntpd_extra_t' && last('fix').newInterface.perms.join() === 'read', 'Add to module for a new interface sends what it must grant');
+send({ cmd: 'fixPlan', key: 'p4', plan: { path: '/t/apache.te', exists: true, line: 9, inserted: ['optional_policy(`', '\tntp_read_ntpd_extra_files(httpd_t)', "')"], optional: true, text: 'x',
+  also: [{ path: '/t/ntp.if', exists: true, line: 40, inserted: ['interface(`ntp_read_ntpd_extra_files\',`'], what: 'new interface ntp_read_ntpd_extra_files' }] } });
+const p4 = find(e => (e.attrs.class || '').split(' ').includes('group'))[3];
+check(/\/t\/ntp\.if/.test(p4.textContent) && /new interface ntp_read_ntpd_extra_files/.test(p4.textContent) && /and adds to/.test(p4.textContent) && /\/t\/apache\.te/.test(p4.textContent), 'the plan shows both files');
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall denial checks passed');
 process.exit(failures ? 1 : 0);

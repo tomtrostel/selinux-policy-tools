@@ -410,7 +410,15 @@ function activate(context) {
       }
       showTransitionGraph(context, name, 'out');
     }),
-    vscode.commands.registerCommand('selinux.analyzeDenials', () => {
+    vscode.commands.registerCommand('selinux.analyzeDenials', async (arg) => {
+      // From the tutorial: the practice module's sample denials, checked against its build.
+      if (arg === 'practice') {
+        const found = await vscode.workspace.findFiles('**/sample-denials.log', '**/node_modules/**', 1);
+        if (!found.length) { vscode.window.showInformationMessage('No practice module in this workspace: create one with SELinux: Create Practice Module… first.'); return; }
+        const doc = await vscode.workspace.openTextDocument(found[0]);
+        showDenials(context, doc.getText(), 'build');
+        return;
+      }
       // Start from the active editor's selection, or the whole document when it holds audit records.
       const ed = vscode.window.activeTextEditor;
       let text = null;
@@ -736,14 +744,14 @@ async function applyServicePlan(plan) {
   return uris.length;
 }
 
-function showServiceEditor(context, mod) {
+function showServiceEditor(context, mod, prefill = null) {
   const key = mod || '';
   const existing = servicePanels.get(key);
-  if (existing) { existing.reveal(); return; }
+  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); return; }
   const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
   servicePanels.set(key, panel);
-  let current = { module: mod || null, domain: null, files: null, standalone: false };
+  let current = { module: mod || null, domain: null, files: null, standalone: false, prefill };
   const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
   const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'service.js'));
   panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
@@ -825,13 +833,15 @@ function showServiceEditor(context, mod) {
 </body></html>`;
   const post = (m) => panel.webview.postMessage(m);
   const load = async (keep = false) => {
-    const info = await client.sendRequest('selinux/serviceInfo', { module: current.module, domain: current.domain, standalone: current.standalone });
+    const info = await client.sendRequest('selinux/serviceInfo', { module: current.module, domain: current.domain, standalone: current.standalone, prefill: current.module ? null : current.prefill });
     if (info.unavailable) { post({ cmd: 'error', msg: info.unavailable }); return; }
     current.files = info.files || null;
     current.domain = info.model.domain || null;
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
     post({ cmd: 'init', info, keep });
   };
+  // A new-service form opened again for another program (from the denial assistant) starts over with it.
+  panel.prefill = (p) => { current.prefill = p; load(); };
   // Edits to the module's files elsewhere make the form stale.
   let ownWrite = false;
   const watch = vscode.workspace.onDidSaveTextDocument((doc) => {
@@ -1468,10 +1478,10 @@ function denialTerminal() {
   return vscode.window.terminals.find(t => t.name === 'SELinux Denials') || vscode.window.createTerminal('SELinux Denials');
 }
 
-function showDenials(context, text) {
+function showDenials(context, text, against = null) {
   if (denialPanel) {
     denialPanel.reveal();
-    if (text) denialPanel.webview.postMessage({ cmd: 'log', text });
+    if (text) denialPanel.webview.postMessage({ cmd: 'log', text, against });
     return;
   }
   const panel = vscode.window.createWebviewPanel('selinuxDenials', 'Denials', vscode.ViewColumn.Active,
@@ -1500,7 +1510,8 @@ function showDenials(context, text) {
   .group.label, .group.generic { border-left-color: var(--vscode-charts-yellow, #cca700); }
   .group.boolean { border-left-color: var(--vscode-charts-blue, #3794ff); }
   .group.missing { border-left-color: var(--vscode-charts-red, #f14c4c); }
-  .group.allowed, .group.unknown, .group.error { border-left-color: var(--vscode-charts-purple, #b180d7); }
+  .group.allowed, .group.unknown, .group.error, .group.constraint { border-left-color: var(--vscode-charts-purple, #b180d7); }
+  .group.transition { border-left-color: var(--vscode-charts-orange, #d18616); }
   .group > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
   .badge { font-size: .8em; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
   .vtitle { font-weight: 600; margin-left: auto; }
@@ -1550,7 +1561,7 @@ function showDenials(context, text) {
       if (m.cmd === 'ready') {
         const r = await client.sendRequest('selinux/denialPolicies');
         panel.webview.postMessage({ cmd: 'policies', policies: r.policies });
-        if (text) panel.webview.postMessage({ cmd: 'log', text });
+        if (text) panel.webview.postMessage({ cmd: 'log', text, against });
       } else if (m.cmd === 'analyze') {
         const result = await client.sendRequest('selinux/analyzeDenials', { text: m.text, against: m.against });
         panel.webview.postMessage({ cmd: 'result', result });
@@ -1583,8 +1594,10 @@ function showDenials(context, text) {
       } else if (m.cmd === 'copy') {
         await vscode.env.clipboard.writeText(m.text);
         vscode.window.setStatusBarMessage('Copied', 2000);
+      } else if (m.cmd === 'newService') {
+        showServiceEditor(context, null, { exec: m.exec });
       } else if (m.cmd === 'fix') {
-        const plan = await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, rule: m.rule });
+        const plan = await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, calls: m.calls, rule: m.rule, newInterface: m.newInterface });
         panel.webview.postMessage({ cmd: 'fixPlan', key: m.key, plan });
       } else if (m.cmd === 'applyFix') {
         await applyDenialFix(m.plan);
@@ -1602,19 +1615,24 @@ function showDenials(context, text) {
   panel.onDidDispose(() => { stopWatch(); denialPanel = null; }, undefined, context.subscriptions);
 }
 
-/** Write a planned fix (one undoable edit), save it so it builds, and show the inserted lines. */
+/** Write a planned fix (one undoable edit, with any other file it needs, e.g. a new interface), save it so it builds, and show the inserted lines. */
 async function applyDenialFix(plan) {
   const uri = vscode.Uri.file(plan.path);
   const edit = new vscode.WorkspaceEdit();
-  if (!fs.existsSync(plan.path)) {
-    fs.mkdirSync(path.dirname(plan.path), { recursive: true });
-    edit.createFile(uri, { ignoreIfExists: true });
-    edit.insert(uri, new vscode.Position(0, 0), plan.text);
-  } else {
-    const doc = await vscode.workspace.openTextDocument(uri);
-    edit.replace(uri, doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0)), plan.text);
+  const files = [...(plan.also || []), plan];
+  for (const p of files) {
+    const u = vscode.Uri.file(p.path);
+    if (!fs.existsSync(p.path)) {
+      fs.mkdirSync(path.dirname(p.path), { recursive: true });
+      edit.createFile(u, { ignoreIfExists: true });
+      edit.insert(u, new vscode.Position(0, 0), p.text);
+    } else {
+      const d = await vscode.workspace.openTextDocument(u);
+      edit.replace(u, d.validateRange(new vscode.Range(0, 0, d.lineCount, 0)), p.text);
+    }
   }
   if (!(await vscode.workspace.applyEdit(edit))) throw new Error('VS Code refused the edit.');
+  for (const p of plan.also || []) await (await vscode.workspace.openTextDocument(vscode.Uri.file(p.path))).save();
   const doc = await vscode.workspace.openTextDocument(uri);
   await doc.save();
   const ed = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
