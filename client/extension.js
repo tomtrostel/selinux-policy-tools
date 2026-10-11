@@ -84,6 +84,76 @@ const count = (n, word) => `${n} ${n === 1 ? word : word + (/(s|x|ch|sh)$/.test(
 
 let extensionContext = null;
 
+/*
+ * Tutorials: the walkthroughs in package.json (contributes.walkthroughs), a
+ * command that opens them, and a practice module (media/practice) copied into
+ * a folder of the user's choice for the hands-on steps.
+ */
+const PRACTICE_DIR = 'selinux-practice';
+
+function registerTutorials(context) {
+  const walkthroughs = (context.extension.packageJSON.contributes || {}).walkthroughs || [];
+  const open = (id) => vscode.commands.executeCommand('workbench.action.openWalkthrough', `${context.extension.id}#${id}`, false);
+  context.subscriptions.push(
+    vscode.commands.registerCommand('selinux.openTutorials', async (id) => {
+      if (typeof id === 'string' && walkthroughs.some(w => w.id === id)) return open(id);
+      const pick = await vscode.window.showQuickPick(walkthroughs.map(w => ({ label: w.title, detail: w.description, id: w.id })),
+        { title: 'SELinux Policy Tools tutorials', placeHolder: 'Pick a walkthrough' });
+      if (pick) await open(pick.id);
+    }),
+    vscode.commands.registerCommand('selinux.createPracticeModule', async () => {
+      const home = process.env.HOME || process.env.USERPROFILE;
+      const where = await vscode.window.showOpenDialog({
+        canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+        defaultUri: (vscode.workspace.workspaceFolders || [])[0] ? undefined : home && vscode.Uri.file(home),
+        openLabel: 'Create Here', title: `Where to create the practice folder (${PRACTICE_DIR}/)`,
+      });
+      if (!where) return;
+      const dir = vscode.Uri.joinPath(where[0], PRACTICE_DIR);
+      let exists = false;
+      try { await vscode.workspace.fs.stat(dir); exists = true; } catch (e) { /* new */ }
+      if (exists) {
+        const a = await vscode.window.showWarningMessage(`${dir.fsPath} already exists.`, { modal: true }, 'Open It', 'Replace Its Files');
+        if (!a) return;
+        if (a === 'Replace Its Files') exists = false;
+      }
+      if (!exists) {
+        const src = vscode.Uri.joinPath(context.extensionUri, 'media', 'practice');
+        await vscode.workspace.fs.createDirectory(dir);
+        for (const [name, kind] of await vscode.workspace.fs.readDirectory(src)) {
+          if (kind === vscode.FileType.File) await vscode.workspace.fs.copy(vscode.Uri.joinPath(src, name), vscode.Uri.joinPath(dir, name), { overwrite: true });
+        }
+      }
+      // The window reloads with the new folder; the tutorial page opens there (see below).
+      await context.globalState.update('selinux.practiceOpen', dir.toString());
+      const inWorkspace = (vscode.workspace.workspaceFolders || []).some(f => dir.toString().startsWith(f.uri.toString()));
+      if (inWorkspace) return showPractice(context, dir);
+      const choice = (vscode.workspace.workspaceFolders || []).length
+        ? await vscode.window.showInformationMessage(`Practice module created in ${dir.fsPath}.`, 'Open in New Window', 'Open Here')
+        : 'Open Here';
+      if (!choice) return;
+      await vscode.commands.executeCommand('vscode.openFolder', dir, { forceNewWindow: choice === 'Open in New Window' });
+    }),
+  );
+  // Just opened the practice folder: show its instructions and the module.
+  const pending = context.globalState.get('selinux.practiceOpen');
+  const here = (vscode.workspace.workspaceFolders || []).find(f => pending && pending.startsWith(f.uri.toString()));
+  if (here) showPractice(context, vscode.Uri.parse(pending));
+  else if (!context.globalState.get('selinux.tutorialsOffered')) {
+    // Once per installation: point new users at the tutorials.
+    context.globalState.update('selinux.tutorialsOffered', true);
+    vscode.window.showInformationMessage('SELinux Policy Tools: new here? The tutorials walk you through navigating, building, writing service policies and locking policy down.', 'Open Tutorials', 'Create Practice Module')
+      .then(a => { if (a === 'Open Tutorials') vscode.commands.executeCommand('selinux.openTutorials', 'getStarted'); else if (a) vscode.commands.executeCommand('selinux.createPracticeModule'); });
+  }
+}
+
+async function showPractice(context, dir) {
+  await context.globalState.update('selinux.practiceOpen', undefined);
+  try { await vscode.window.showTextDocument(vscode.Uri.joinPath(dir, 'notesd.te'), { preview: false }); } catch (e) { /* files removed meanwhile */ }
+  // The walkthrough beside the module, so its steps and the code are both in view.
+  await vscode.commands.executeCommand('workbench.action.openWalkthrough', `${context.extension.id}#getStarted`, true);
+}
+
 function activate(context) {
   extensionContext = context;
   watchTreeOfEditor(context);
@@ -205,6 +275,8 @@ function activate(context) {
       if (p.tree && p.ok) changes.afterBuild();
     });
   });
+
+  registerTutorials(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('selinux.reindex', async () => {

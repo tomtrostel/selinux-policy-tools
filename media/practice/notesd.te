@@ -1,0 +1,40 @@
+policy_module(notesd, 1.0.0)
+
+########################################
+#
+# Declarations
+#
+
+type notesd_t;
+type notesd_exec_t;
+init_daemon_domain(notesd_t, notesd_exec_t)
+
+type notesd_var_lib_t;
+files_type(notesd_var_lib_t)
+
+type notesd_log_t;
+logging_log_file(notesd_log_t)
+
+########################################
+#
+# notesd local policy
+#
+
+allow notesd_t self:fifo_file rw_fifo_file_perms;
+# Practice mistake 1: one of these is not a tcp_socket permission.
+allow notesd_t self:tcp_socket { create bind lisen accept };
+
+manage_dirs_pattern(notesd_t, notesd_var_lib_t, notesd_var_lib_t)
+manage_files_pattern(notesd_t, notesd_var_lib_t, notesd_var_lib_t)
+files_var_lib_filetrans(notesd_t, notesd_var_lib_t, dir)
+
+append_files_pattern(notesd_t, notesd_log_t, notesd_log_t)
+create_files_pattern(notesd_t, notesd_log_t, notesd_log_t)
+logging_log_filetrans(notesd_t, notesd_log_t, file)
+
+# Practice mistake 2: a misspelled interface name.
+logging_send_syslog_mesg(notesd_t)
+miscfiles_read_localization(notesd_t)
+
+# Practice mistake 3: urandom_device_t belongs to another module.
+allow notesd_t urandom_device_t:chr_file read_chr_file_perms;

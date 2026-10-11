@@ -233,6 +233,15 @@
         "command": "selinux.selectTree",
         "title": "SELinux: Select Policy Tree…",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "selinux.openTutorials",
+        "title": "SELinux: Open Tutorials",
+        "icon": "$(book)"
+      },
+      {
+        "command": "selinux.createPracticeModule",
+        "title": "SELinux: Create Practice Module…"
       }
     ],
     "menus": {
@@ -286,6 +295,11 @@
           "command": "selinux.compareWith",
           "when": "view == selinuxChanges",
           "group": "navigation@2"
+        },
+        {
+          "command": "selinux.openTutorials",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation@9"
         }
       ],
       "commandPalette": [
@@ -527,10 +541,342 @@
           "markdownDescription": "With several policy trees in the workspace, switch to the tree of the file you open (indexing, diagnostics, builds and views follow it). Otherwise switch with *SELinux: Select Policy Tree…* (or the status bar item)."
         }
       }
-    }
+    },
+    "viewsWelcome": [
+      {
+        "view": "selinuxPolicyExplorer",
+        "contents": "No SELinux policy sources found in this workspace. Open a policy source tree or a folder with a module (.te, .if, .fc).\n[Open Folder](command:workbench.action.files.openFolder)\nNew to SELinux Policy Tools? Try a practice module with a few deliberate mistakes, or follow the tutorials.\n[Create Practice Module](command:selinux.createPracticeModule)\n[Open Tutorials](command:selinux.openTutorials)"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "getStarted",
+        "title": "Get started with SELinux Policy Tools",
+        "description": "Navigate, check and build refpolicy-style SELinux policy, and see what it really compiles to.",
+        "steps": [
+          {
+            "id": "welcome",
+            "title": "What this extension does",
+            "description": "Source navigation and checks, real builds, and tools to review and lock down policy. Open a policy tree or module folder, or start with a practice module that has four deliberate mistakes.\n[Create Practice Module](command:selinux.createPracticeModule)\n[Open Folder](command:workbench.action.files.openFolder)",
+            "media": {
+              "markdown": "media/walkthroughs/start/welcome.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.createPracticeModule",
+              "onCommand:workbench.action.files.openFolder"
+            ]
+          },
+          {
+            "id": "setup",
+            "title": "Set up the Linux host",
+            "description": "Builds run the real SELinux toolchain on Linux; from Windows or macOS, use Remote-SSH. Install the tools once and trust the workspace.\n[Open a Terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthroughs/start/setup.md"
+            },
+            "completionEvents": [
+              "onCommand:workbench.action.terminal.new"
+            ]
+          },
+          {
+            "id": "navigate",
+            "title": "Find your way around",
+            "description": "Hover, F12, Shift+F12 and Ctrl+T work on interfaces, types and template-generated names. The Policy Explorer lists every module.\n[Show the Policy Explorer](command:selinuxPolicyExplorer.focus)\n[Open a Module…](command:selinux.findModule)",
+            "media": {
+              "markdown": "media/walkthroughs/start/navigate.md"
+            },
+            "completionEvents": [
+              "onView:selinuxPolicyExplorer",
+              "onCommand:selinux.findModule"
+            ]
+          },
+          {
+            "id": "diagnostics",
+            "title": "Fix problems as you type",
+            "description": "Unknown interfaces, wrong permissions, missing requires and more, with quick fixes (Ctrl+.). The practice module has four mistakes to fix.\n[Show Problems](command:workbench.actions.view.problems)",
+            "media": {
+              "markdown": "media/walkthroughs/start/diagnostics.md"
+            },
+            "completionEvents": [
+              "onCommand:workbench.actions.view.problems"
+            ]
+          },
+          {
+            "id": "build",
+            "title": "Build and see what a line grants",
+            "description": "Saving builds with the real toolchain; errors land on the right line. After a build, hover an interface call to see the rules it compiled to.\n[Build](command:selinux.buildModule)\n[Show Expanded Policy](command:selinux.showExpanded)",
+            "media": {
+              "markdown": "media/walkthroughs/start/build.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.buildModule",
+              "onCommand:selinux.showExpanded"
+            ]
+          },
+          {
+            "id": "trees",
+            "title": "Work on a full policy tree",
+            "description": "Trees are built with their own Makefile. For RHEL and Fedora trees, take the build settings from the RPM spec.\n[Configure Build from Spec File…](command:selinux.configureFromSpec)\n[Select Policy Tree…](command:selinux.selectTree)",
+            "media": {
+              "markdown": "media/walkthroughs/start/trees.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.configureFromSpec",
+              "onSettingChanged:selinux.build.tree.makeArgs"
+            ]
+          },
+          {
+            "id": "compiled",
+            "title": "Browse the compiled policy",
+            "description": "The policy as the kernel sees it after the last build: types, attributes, roles, and every rule traced back to the source line that grants it.\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)\n[Find in Compiled Policy](command:selinux.findInPolicy)",
+            "media": {
+              "markdown": "media/walkthroughs/start/compiled.md"
+            },
+            "completionEvents": [
+              "onView:selinuxCompiledPolicy",
+              "onCommand:selinux.findInPolicy"
+            ]
+          },
+          {
+            "id": "next",
+            "title": "Where to go next",
+            "description": "Three more walkthroughs: writing a service policy, fixing denials, and reviewing and locking down a policy.\n[Write a Service Policy](command:selinux.openTutorials?%5B%22services%22%5D)\n[Fix a Denial](command:selinux.openTutorials?%5B%22denials%22%5D)\n[Review and Lock Down](command:selinux.openTutorials?%5B%22lockdown%22%5D)",
+            "media": {
+              "markdown": "media/walkthroughs/start/next.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.openTutorials"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "services",
+        "title": "Write and maintain a service policy",
+        "description": "Confine a daemon with the service editor: files, ports, system access, booleans and helper programs, then edit it safely later.",
+        "steps": [
+          {
+            "id": "plan",
+            "title": "Before you start: what does the service need?",
+            "description": "A confined service gets only what its policy lists. Gather its program, files, ports and the system services it uses.",
+            "media": {
+              "markdown": "media/walkthroughs/service/plan.md"
+            }
+          },
+          {
+            "id": "create",
+            "title": "Open the service editor",
+            "description": "A form with a live preview of the .te, .if and .fc it writes. Hover anything for an explanation.\n[New Service…](command:selinux.newService)",
+            "media": {
+              "markdown": "media/walkthroughs/service/create.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.newService"
+            ]
+          },
+          {
+            "id": "files",
+            "title": "Give it files of its own",
+            "description": "One type per kind of file (runtime, state, logs, configuration, …) with the lowest access that works. Type transitions are set up for you.",
+            "media": {
+              "markdown": "media/walkthroughs/service/files.md"
+            }
+          },
+          {
+            "id": "network",
+            "title": "Network: ports it serves and uses",
+            "description": "Pick port types to listen on and connect to, or create a new port type for a port number nothing covers yet.",
+            "media": {
+              "markdown": "media/walkthroughs/service/network.md"
+            }
+          },
+          {
+            "id": "rights",
+            "title": "System access, capabilities and interfaces",
+            "description": "Common needs in plain words (logging, name lookups, D-Bus, TLS certificates…), root capabilities, and any other interface.",
+            "media": {
+              "markdown": "media/walkthroughs/service/rights.md"
+            }
+          },
+          {
+            "id": "booleans",
+            "title": "Optional rights with booleans",
+            "description": "Rights only some sites need go under a boolean that administrators switch on with setsebool.",
+            "media": {
+              "markdown": "media/walkthroughs/service/booleans.md"
+            }
+          },
+          {
+            "id": "helpers",
+            "title": "Split off helper programs",
+            "description": "Programs the service runs can get a domain of their own, with fewer (or different) rights than the service.",
+            "media": {
+              "markdown": "media/walkthroughs/service/helpers.md"
+            }
+          },
+          {
+            "id": "apply",
+            "title": "Create, install and test",
+            "description": "Create the module, install and label it, test in permissive mode and fix the denials before enforcing.\n[Install Module](command:selinux.installModule)",
+            "media": {
+              "markdown": "media/walkthroughs/service/apply.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.installModule"
+            ]
+          },
+          {
+            "id": "maintain",
+            "title": "Change it later, safely",
+            "description": "Open any service module in the same form: only the lines of changed settings are edited. Review the compiled effect before committing.\n[Edit Service…](command:selinux.editService)\n[Compare with HEAD](command:selinux.compareHead)",
+            "media": {
+              "markdown": "media/walkthroughs/service/maintain.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.editService",
+              "onCommand:selinux.compareHead"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "denials",
+        "title": "Fix a denial the right way",
+        "description": "From an AVC message to a minimal, reviewed fix: read it, find the cause, grant with an interface, verify what you granted.",
+        "steps": [
+          {
+            "id": "read",
+            "title": "Read the denial",
+            "description": "Who (scontext), what (permission), on what (tclass and tcontext): one sentence.\n[Open a Terminal](command:workbench.action.terminal.new)",
+            "media": {
+              "markdown": "media/walkthroughs/denial/read.md"
+            },
+            "completionEvents": [
+              "onCommand:workbench.action.terminal.new"
+            ]
+          },
+          {
+            "id": "diagnose",
+            "title": "Is the policy wrong, or the label?",
+            "description": "Many denials are mislabeled files or harmless probes. Look the type up before adding rules.\n[Go to Type…](command:workbench.action.showAllSymbols)\n[Find in Compiled Policy](command:selinux.findInPolicy)",
+            "media": {
+              "markdown": "media/walkthroughs/denial/diagnose.md"
+            },
+            "completionEvents": [
+              "onCommand:workbench.action.showAllSymbols",
+              "onCommand:selinux.findInPolicy"
+            ]
+          },
+          {
+            "id": "grant",
+            "title": "Grant it with an interface",
+            "description": "The module that owns the type has an interface for it. Find it with completion, hover and the interface search.\n[Open a Module…](command:selinux.findModule)",
+            "media": {
+              "markdown": "media/walkthroughs/denial/grant.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.findModule"
+            ]
+          },
+          {
+            "id": "verify",
+            "title": "Check what you actually granted",
+            "description": "Hover the call for the rules it compiled to, compare the compiled policy with HEAD, and guard the result with a property check.\n[Compare with HEAD](command:selinux.compareHead)\n[Open Property Checks](command:selinux.openChecks)",
+            "media": {
+              "markdown": "media/walkthroughs/denial/verify.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.compareHead",
+              "onCommand:selinux.openChecks"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "lockdown",
+        "title": "Review and lock down a policy",
+        "description": "Review compiled changes, turn modules off safely, follow domain transitions and keep security properties checked after every build.",
+        "steps": [
+          {
+            "id": "changes",
+            "title": "What did this change grant?",
+            "description": "Compare the compiled policy with HEAD, a release tag, two refs or a saved build: every permission, traced to source.\n[Compare with HEAD](command:selinux.compareHead)\n[Compare with…](command:selinux.compareWith)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/changes.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.compareHead",
+              "onCommand:selinux.compareWith"
+            ]
+          },
+          {
+            "id": "preview",
+            "title": "Turn modules off without surprises",
+            "description": "Preview link errors, optional blocks that drop out and rule changes before editing modules.conf.\n[Preview a Module Off/On…](command:selinux.previewModule)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/preview.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.previewModule"
+            ]
+          },
+          {
+            "id": "graph",
+            "title": "Who can become whom",
+            "description": "The domain transition graph of the compiled policy: which domains can reach which.\n[Show Transition Graph](command:selinux.transitionGraph)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/graph.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.transitionGraph"
+            ]
+          },
+          {
+            "id": "checks",
+            "title": "Security properties, checked every build",
+            "description": "Write requirements like \"never user_t reaches sysadm_t\" once; they are re-checked after every build and failures traced to source.\n[Open Property Checks](command:selinux.openChecks)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/checks.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.openChecks"
+            ]
+          },
+          {
+            "id": "installed",
+            "title": "Compare with what is installed",
+            "description": "What would change on this host if you installed your build, including local customizations you would lose.\n[Compare with Installed Policy](command:selinux.compareInstalled)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/installed.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.compareInstalled"
+            ]
+          },
+          {
+            "id": "users",
+            "title": "Users, roles and MLS levels",
+            "description": "gen_user lines are checked as you type; the Compiled Policy view shows users, roles and logins.\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/users.md"
+            },
+            "completionEvents": [
+              "onView:selinuxCompiledPolicy"
+            ]
+          },
+          {
+            "id": "routine",
+            "title": "A lockdown routine",
+            "description": "Preview, apply, build, check, compare: a repeatable way to shrink and harden a policy.",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/routine.md"
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
@@ -548,7 +894,9 @@
     "package": "vsce package",
     "test:ifelse": "node test/ifelse-test.js",
     "test:multi": "node test/multi-tree-e2e.js",
-    "test:confdefaults": "node test/conf-defaults-e2e.js"
+    "test:confdefaults": "node test/conf-defaults-e2e.js",
+    "test:walkthrough": "node test/walkthrough-test.js",
+    "test:tutorial": "node test/tutorial-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

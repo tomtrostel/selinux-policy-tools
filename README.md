@@ -87,6 +87,34 @@ The extension isn't on the Marketplace; it ships as a `.vsix` file on the
 **Updating:** install the newer `.vsix` the same way; it replaces the old
 version. **Removing:** Extensions view → SELinux Policy Tools → *Uninstall*.
 
+## Tutorials
+
+The extension comes with four step-by-step walkthroughs on VS Code's
+*Welcome* page. Open them with **SELinux: Open Tutorials** (or the book icon
+in the Policy Explorer title bar), or from *Help → Welcome → Walkthroughs*:
+
+* **Get started with SELinux Policy Tools**: setting up the Linux host,
+  navigating policy, fixing problems with quick fixes, building and the
+  "Compiles to" hover, full trees and spec settings, the Compiled Policy
+  view.
+* **Write and maintain a service policy**: the service editor from planning
+  to a confined, tested daemon (files, ports and port types, system access,
+  capabilities, booleans, helper programs), and editing it safely later.
+* **Fix a denial the right way**: reading an AVC message, telling a missing
+  rule from a wrong label, granting with the owning module's interface
+  instead of `audit2allow` rules, and checking what was actually granted.
+* **Review and lock down a policy**: compiled change review against HEAD,
+  tags or two refs, module previews, the transition graph, property checks,
+  comparing with the installed policy, users and roles, and a lockdown
+  routine.
+
+**SELinux: Create Practice Module…** copies a small daemon policy
+(`notesd`) with four deliberate mistakes and a `selinux.checks` file into a
+folder of your choice and opens it beside the walkthrough; its
+`TUTORIAL.md` lists the hands-on tasks with solutions. Each step offers
+buttons for the commands it describes and is ticked off when you use them.
+The first time the extension starts, it offers the tutorials once.
+
 ## Workspaces
 
 Open one of these as the workspace folder:
@@ -773,6 +801,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   above but haven't had interactive use yet.
 
 ## Limitations
+
+**Tutorials**
+
+* The walkthroughs' pages render in VS Code's Welcome editor; the practice
+  module's build and checks steps need a Linux host with
+  `selinux-policy-devel` (and an installed policy for the checks).
 
 **Service editor**
 

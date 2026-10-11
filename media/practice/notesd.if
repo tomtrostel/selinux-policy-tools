@@ -1,0 +1,21 @@
+## <summary>Practice daemon for the SELinux Policy Tools tutorials.</summary>
+
+########################################
+## <summary>
+##	Read notesd state data.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`notesd_read_lib_files',`
+	# Practice mistake 4: the gen_require block is missing a type used below.
+	gen_require(`
+		type notesd_t;
+	')
+
+	files_search_var_lib($1)
+	read_files_pattern($1, notesd_var_lib_t, notesd_var_lib_t)
+')

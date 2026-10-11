@@ -29,6 +29,11 @@
   editable when the module is opened again. A standalone module declares
   the type itself and lists the `semanage port -a` commands to run after
   installing. Numbers another port type already has are refused.
+* **Tutorials**: four walkthroughs on the Welcome page (*SELinux: Open
+  Tutorials*): getting started, writing and maintaining a service policy,
+  fixing a denial, and reviewing and locking down a policy, with buttons for
+  the commands each step describes. *SELinux: Create Practice Module…*
+  sets up a small module with four deliberate mistakes to fix along the way.
 * **Helper programs in the service editor**: *+ New helper program* gives
   a program the service starts a domain of its own (`domain_type`,
   `domain_entry_file`, `domtrans_pattern` from the service) with only the

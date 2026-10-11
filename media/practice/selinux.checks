@@ -1,0 +1,16 @@
+# Security properties of the practice module. They are checked against the
+# module linked with this host's installed policy after every build, and
+# whenever this file is saved. Each line shows "holds" or why it fails.
+
+# notesd must never change password hashes, nor open them for reading.
+never notesd_t may write shadow_t
+# (Not plain "read": it includes map, and on RHEL every domain may map any
+# file while the domain_can_mmap_files boolean is on. Try it and see the
+# failure traced to that rule.)
+never notesd_t may { open read } shadow_t:file
+
+# It may read /etc, but not change it.
+never notesd_t may write etc_t
+
+# It must keep being able to write its own log.
+require notesd_t may { append create } notesd_log_t:file

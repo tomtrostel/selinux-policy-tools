@@ -18,7 +18,7 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
-Unreleased (after 0.8.0): the service editor with booleans, port types and helper domains (step 6 below); e2e-tested,
+Unreleased (after 0.8.0): the service editor with booleans, port types and helper domains (step 6 below), tutorials (step 7); e2e-tested,
 not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -314,6 +314,30 @@ so far covered by the e2e tests only.
    Ideas not done: file access under a
    boolean, gen_bool.
 
+7. **Tutorials** (done, unreleased; user request: "tutorials … integrate
+   them into the vsix … how to use the add-on and how it can help them
+   making and maintaining SELinux policies"). package.json
+   `contributes.walkthroughs`: getStarted (8 steps), services (9), denials
+   (4), lockdown (7); pages in media/walkthroughs/<wt>/<step>.md; step
+   buttons are `command:` links (openTutorials takes a walkthrough id as
+   URL-encoded JSON arg). Client `registerTutorials()`: selinux.openTutorials
+   (quick pick or id → workbench.action.openWalkthrough
+   `<extension.id>#<id>`), selinux.createPracticeModule (copies
+   media/practice into <folder>/selinux-practice via workspace.fs, opens it;
+   globalState `selinux.practiceOpen` makes the reloaded window show
+   notesd.te with the walkthrough beside it), a one-time offer
+   (`selinux.tutorialsOffered`), Policy Explorer viewsWelcome + book icon.
+   Practice module notesd: mistakes lisen (unknown-perm), misspelled
+   logging_send_syslog_mesg, urandom_device_t without require (appears only
+   once the interface is fixed: an unknown call makes the scope uncertain),
+   missing gen_require in the .if. Its selinux.checks avoids plain `read` on
+   shadow_t (RHEL: `allow domain file_type:file map` under
+   domain_can_mmap_files). Tests: test/walkthrough-test.js (npm test: pages,
+   buttons, completion events, "SELinux: …" names, settings, every
+   contributed command registered), test/tutorial-e2e.js (melody: the
+   mistakes, quick fixes applied, build, Compiles-to hover, checks hold).
+   Not yet seen rendered in VS Code.
+
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
 is only visible to collaborators; making it public is the user's call.
@@ -545,6 +569,8 @@ is only visible to collaborators; making it public is the user's call.
 - `test/service-e2e.js` (`npm run test:service-e2e`, melody): new + edited
   service built with the tree; args `[tree [spec [variant]]]` (RHEL: copies
   the spec dir so modules.conf edits stay in the copy); standalone too.
+- `test/walkthrough-test.js` (in `npm test`) and `test/tutorial-e2e.js`
+  (`npm run test:tutorial`, melody): the walkthroughs and the practice module.
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

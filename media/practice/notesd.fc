@@ -1,0 +1,5 @@
+/usr/sbin/notesd	--	gen_context(system_u:object_r:notesd_exec_t,s0)
+
+/var/lib/notesd(/.*)?		gen_context(system_u:object_r:notesd_var_lib_t,s0)
+
+/var/log/notesd\.log	--	gen_context(system_u:object_r:notesd_log_t,s0)
