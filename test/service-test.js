@@ -303,6 +303,18 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   find(e => e.tag === 'button' && e.textContent === '+ Add' && e.parent && e.parent.attrs.class === 'adds')[0].fire('click');
   check(boolCard().length === 2 && /Kill|Signal processes of other users/.test(boolCard()[0].textContent) && /Connect to TCP any port/.test(boolCard()[0].textContent) && /existing boolean/.test(boolCard()[1].textContent),
     'booleans: new one with chips for its grants, existing one marked');
+  {
+    const cat = svc.catalog(ctx);
+    const noHelp = [...cat.fileKinds.map(k => ['file', k.id, k.help]), ...cat.access.flatMap(g => g.items).map(i => ['access', i.id, i.help]),
+      ...cat.self.map(s => ['self', s.id, s.help]), ...cat.caps.map(c => ['cap', c.name, c.help]), ...cat.provides.map(p => ['provides', p.id, p.help]),
+      ...Object.keys(cat.accessLabels).map(a => ['level', a, cat.accessHelp[a]])].filter(x => !x[2]);
+    check(!noHelp.length, 'every catalog item has hover help', noHelp);
+    const untitled = find(e => (e.tag === 'button' || e.tag === 'select' || e.tag === 'textarea' || (e.tag === 'input' && e.attrs.type === 'text') ||
+      (e.tag === 'label' && e.attrs.class && e.attrs.class.startsWith('check'))) && !e.attrs.title).map(e => `${e.tag} ${e.textContent.slice(0, 40)}`);
+    check(!untitled.length, 'every button, field and checkbox in the form has hover help', untitled);
+    const tmp = buttonText('+ Temporary files');
+    check(tmp && /webby_tmp_t/.test(tmp.attrs.title) && /\/tmp/.test(tmp.attrs.title), `"+ Temporary files" explains itself with the module's type: ${tmp && tmp.attrs.title}`);
+  }
   await wait(400);
   const p = last('plan').model;
   check(p.name === 'webby' && p.files.some(f => f.kind === 'state' && f.paths[0] === '/var/lib/%/') && p.caps.includes('net_bind_service') && p.access.includes('dbus') &&

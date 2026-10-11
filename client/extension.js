@@ -681,7 +681,7 @@ function showServiceEditor(context, mod) {
   <span id="title"></span>
   <button id="apply" disabled>Apply</button>
   <span id="status"></span>
-  <span id="stale" hidden>The module's files changed. <button id="reload">Reload</button> (discards the edits here)</span>
+  <span id="stale" hidden>The module's files changed. <button id="reload" title="Read the module's files again and start over from them">Reload</button> (discards the edits here)</span>
 </div>
 <div id="main"><div id="form"></div><div id="preview"></div></div>
 <script nonce="${nonce}" src="${script}"></script>

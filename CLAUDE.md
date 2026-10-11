@@ -266,6 +266,11 @@ so far covered by the e2e tests only.
    a boolean still referenced elsewhere is refused. Tests: 22 mutation
    kinds, 7172 Fedora edits; e2e: new service with a boolean + an external
    one, ntp + new boolean, rsync's own boolean edited, all build.
+   Hover help: `HELP` in server/service.js (file kinds with {T} = the
+   type, access levels, access/self/caps/provides) goes out as `help` in
+   `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
+   module name on hover); service-test checks every catalog item has help
+   and every button/field/checkbox in the form has a title.
    Ideas not done: new port types, helper domains, file access under a
    boolean, gen_bool.
 

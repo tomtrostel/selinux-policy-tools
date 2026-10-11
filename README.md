@@ -254,6 +254,10 @@ writes. It offers what the existing service modules use (taken from the
   `_exec`, read config/logs/state, manage state, `_stream_connect`,
   `_admin`).
 
+Every option, add button and field explains itself when you hover over it:
+what it allows in plain words, which type it adds (with the module's name
+filled in), and when it is usually needed or risky.
+
 The editor uses the tree's own interfaces and conventions (`files_pid_file`
 and `_var_run_t` on RHEL, `files_runtime_file` and `_runtime_t` upstream and
 in CLIP; `policy_module` with or without a version), wraps calls into

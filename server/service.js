@@ -161,6 +161,110 @@ const PROVIDES = [
   ['admin', '%_admin', 'Administer the service (signal it, manage all its files)'],
 ];
 
+// Hover help for the form, by catalog section and id. {T} = the type a file kind adds.
+const HELP = {
+  file: {
+    runtime: 'Files the service creates in /run while it runs: its PID file and Unix sockets. Adds the type {T}, labels the path, and gives what the service creates directly in /run that type automatically.',
+    state: 'Data the service keeps between restarts in /var/lib (databases, keys, anything it must not lose). Adds the type {T}, labels the directory, and gives what it creates directly in /var/lib that type.',
+    log: 'The service’s own log files in /var/log (for syslog or the journal, tick “Write to the system log” instead). Adds the type {T}. “Create and append” lets it add to its logs but not rewrite or delete them.',
+    config: 'Configuration files in /etc that only this service (and administrators) should read, instead of the generic etc_t everyone can read. Adds the type {T}; usually read only.',
+    cache: 'Data in /var/cache the service can rebuild if it is deleted. Adds the type {T} and labels the directory.',
+    spool: 'Queued work in /var/spool (mail, jobs, …). Adds the type {T}, labels the directory, and gives what it creates directly in /var/spool that type.',
+    tmp: 'Temporary files the service creates in /tmp or /var/tmp. Adds the type {T}; what it creates there gets that type automatically, so other services can’t read it. Needs no path.',
+    tmpfs: 'Shared memory (files in /dev/shm, memfd). Adds the type {T}; what the service creates on tmpfs gets that type automatically. Needs no path.',
+    lock: 'Lock files in /run/lock. Adds the type {T}; locks it creates there get that type automatically. Needs no path.',
+    other: 'Files anywhere else, e.g. /srv/% or /opt/%/data. Adds a type ({T} unless you name it) for the paths you list, with the access you choose.',
+    unit: 'Labels the service’s systemd unit file with {T}, so policy can say who may start, stop or change this service. The service itself gets no access to it.',
+    initrc: 'Labels a SysV init script (/etc/rc.d/init.d) with {T}, for systems that start the service with service/init scripts. The service itself gets no access to it.',
+  },
+  level: {
+    manage: 'Create, write, rename and delete files and directories of this type.',
+    append: 'Create files and add to them, but not overwrite, truncate or delete them, so a compromised service can’t erase its own logs.',
+    read: 'Read files and list directories; no changes.',
+    none: 'Only label the files; the service gets no access (for files that other programs use).',
+  },
+  access: {
+    syslog: 'Log through syslog() or the systemd journal (/dev/log). Almost every daemon needs this.',
+    audit: 'Write records to the kernel audit log, for security-relevant events (as login programs do).',
+    nsswitch: 'Look up users, groups and host names the way glibc does: /etc/passwd and /etc/hosts, plus SSSD, LDAP, NIS or DNS as nsswitch.conf says. Choose this when the service resolves user or host names.',
+    passwd: 'Read /etc/passwd and /etc/group only, for a service that just maps user IDs to names. Narrower than the nsswitch option.',
+    dns: 'Send DNS queries and read the resolver configuration. Needed to reach other servers by name.',
+    netconf: 'Read /etc/hosts, /etc/resolv.conf and similar network configuration, without sending DNS queries.',
+    pam: 'Check passwords and open sessions through PAM, as login-like services do. Grants what PAM modules typically need (password checker, faillock, …).',
+    kerberos: 'Use Kerberos: read krb5.conf and talk to the KDC. Reading a keytab needs more (e.g. kerberos_read_keytab under Other interfaces).',
+    sysstate: 'Read general system information in /proc: memory, CPUs, mounts, uptime, load.',
+    netstate: 'Read /proc/net: open sockets, interface statistics, routes.',
+    sysctl: 'Read kernel settings under /proc/sys/kernel (hostname, limits, …).',
+    netsysctl: 'Read network settings under /proc/sys/net.',
+    sysfs: 'Read device and kernel information in /sys.',
+    fsinfo: 'See the size and free space of any file system (statfs, as df does).',
+    utmp: 'Read /run/utmp to see who is logged in.',
+    locale: 'Read locale definitions and time zone data (/usr/share/zoneinfo, /etc/localtime). Most programs that format dates need this.',
+    certs: 'Read the system’s TLS certificates and CA bundles (/etc/pki, /etc/ssl), e.g. to check servers it connects to over TLS.',
+    etcfiles: 'Read the ordinary files in /etc (etc_t) that belong to no particular service.',
+    etcruntime: 'Read files in /etc that are rewritten at run time (etc_runtime_t, e.g. mtab).',
+    urandom: 'Read /dev/urandom. Older crypto libraries need it; getrandom() needs nothing.',
+    random: 'Read /dev/random.',
+    automount: 'Search automounted directories (autofs mount points such as /net), for paths that may lie under them.',
+    bin: 'Run ordinary programs from /usr/bin and /usr/sbin. They run in this service’s domain with its rights, not in a domain of their own.',
+    shell: 'Run /bin/sh and shell scripts, in this service’s domain.',
+    systemctl: 'Run the systemctl program. Actually starting or stopping units also needs rules for talking to systemd.',
+    kmod: 'Ask the kernel to load a kernel module on demand (e.g. for a protocol). The kernel loads it, not the service.',
+    dbus: 'Connect to the D-Bus system bus to send and receive messages. Which services it may talk to is decided separately (D-Bus policy and rules for each peer).',
+    mail: 'Run sendmail to send mail (e.g. alerts). The mail program runs in its own domain.',
+    nnp: 'Lets systemd start it in its domain when the unit sets NoNewPrivileges=yes or options that imply it (e.g. SystemCallFilter=); without this the start is refused.',
+    ttyfds: 'Use descriptors inherited from whoever started it, e.g. the terminal when an administrator runs it by hand.',
+    homequiet: 'Grants nothing: refusals to look into users’ home directories are just not logged, so harmless probing doesn’t fill the audit log.',
+  },
+  self: {
+    fifo: 'Pipes between the service’s own processes (parent and workers, or a pipe to a child program it runs).',
+    signal: 'Its processes may signal each other, e.g. a master process telling workers to reload or stop.',
+    unixstream: 'Unix stream sockets of its own: socketpair() between its processes, listening on its own socket. Connecting to another service’s socket needs that service’s interface.',
+    unixdgram: 'Unix datagram sockets of its own (socketpair, its own datagram sockets).',
+    sched: 'Change its own priority, scheduling policy or CPU affinity.',
+    rlimit: 'Change its own resource limits (open files, core size, …).',
+    shm: 'System V shared memory and semaphores between its own processes.',
+    netlink: 'Read network interfaces, addresses and routes through netlink (what getifaddrs() and “ip addr” use).',
+    execmem: 'Make memory writable and executable at once (JIT compilers, some interpreters). Weakens protection against injected code; grant it only when denials show it’s needed.',
+  },
+  cap: {
+    setuid: 'Change its user ID, usually to drop root after starting.',
+    setgid: 'Change its group IDs, usually to drop root after starting.',
+    chown: 'Change the owner or group of files, e.g. hand its directories to the service user.',
+    fowner: 'Skip “you must own the file” checks: chmod, utime or ACLs on files it doesn’t own.',
+    fsetid: 'Keep setuid/setgid bits when it changes files, and set the setgid bit for groups it isn’t in.',
+    dac_read_search: 'Read any file and search any directory whatever its Unix permissions (SELinux rules still apply). Often needed when root reads files owned by other users.',
+    dac_override: 'Read, write and run any file whatever its Unix permissions (SELinux rules still apply). Root daemons often trip over this because of file modes; fixing the files’ owner is usually better.',
+    kill: 'Send signals to processes of other users (SELinux still decides which domains).',
+    net_bind_service: 'Bind TCP/UDP ports below 1024 (80, 443, …). Which ports is still set in Network.',
+    net_admin: 'Configure network interfaces, routes and firewall rules, and use admin-only socket options. Grants a lot.',
+    net_raw: 'Raw and packet sockets: send any packet, see others’ traffic (ping, DHCP clients). Grants a lot.',
+    ipc_lock: 'Lock memory so it isn’t swapped out (mlock), e.g. to keep keys out of swap.',
+    sys_nice: 'Raise its priority, use real-time scheduling, change other processes’ priority.',
+    sys_resource: 'Go beyond resource limits (open files, reserved disk space, …).',
+    sys_time: 'Set the system clock (time services).',
+    sys_chroot: 'Call chroot() to shut itself into a directory.',
+    sys_tty_config: 'Configure terminals (vhangup, keyboard settings).',
+    setpcap: 'Change capabilities: drop them from the bounding set, keep them across a user change.',
+    audit_write: 'Write records to the kernel audit log.',
+    sys_ptrace: 'Trace and inspect other processes (ptrace). Grants a lot.',
+    sys_rawio: 'Raw access to I/O ports and device memory. Grants a lot.',
+    sys_admin: 'A catch-all for many admin operations (mount, namespaces, quotas, sethostname, …). Close to full root; avoid it.',
+    block_suspend: 'Keep the system from suspending.',
+    wake_alarm: 'Set timers that wake the system from suspend.',
+  },
+  provides: {
+    domtrans: 'Lets other domains run the program so it starts in this service’s domain (e.g. a tool that starts the service).',
+    exec: 'Lets other domains run the program without a transition: it then runs with the caller’s rights.',
+    read_config: 'Lets other domains (admin tools, …) read its configuration files.',
+    read_log: 'Lets other domains (log readers, …) read its log files.',
+    read_lib_files: 'Lets other domains read its state data in /var/lib.',
+    manage_lib_files: 'Lets other domains create, change and delete its state data.',
+    stream_connect: 'Lets other domains connect to its Unix socket in /run, i.e. be its clients.',
+    admin: 'For administrator roles: signal the service and see its processes, manage all its files, and run its init script.',
+  },
+};
+
 /* ---------- small helpers ---------- */
 
 const normArgs = (args) => args.map(a => {
@@ -1084,23 +1188,24 @@ function newModel() {
 function catalog(ctx) {
   const avail = (alts) => alts.some(a => a.some(n => ctx.has(n)));
   return {
-    fileKinds: FILE_KINDS.filter(k => k.decl.some(([h]) => ctx.has(h))).map(k => ({
-      id: k.id, label: k.label, where: k.where, path: k.path || '', access: k.access, file: !!k.file,
-      suffix: (k.decl.find(([h]) => ctx.has(h)) || k.decl[0])[1],
-    })),
+    fileKinds: FILE_KINDS.filter(k => k.decl.some(([h]) => ctx.has(h))).map(k => {
+      const suffix = (k.decl.find(([h]) => ctx.has(h)) || k.decl[0])[1];
+      return { id: k.id, label: k.label, where: k.where, path: k.path || '', access: k.access, file: !!k.file, suffix, help: HELP.file[k.id].replace(/\{T\}/g, `%${suffix}`) };
+    }),
     accessLabels: ACCESS_LABELS,
+    accessHelp: HELP.level,
     access: ACCESS_GROUPS.map(([g, items]) => ({ group: g, items: items.filter(([, , calls]) => avail(calls)).map(([id, label, calls]) => {
       const names = calls.map(a => pick(ctx, a)).filter(Boolean);
-      return { id, label, calls: names, optional: calls.some(a => ctx.optional(pick(ctx, a) || a[0])), cond: names.every(n => !ctx.condSafe || ctx.condSafe(n)) };
+      return { id, label, calls: names, help: HELP.access[id], optional: calls.some(a => ctx.optional(pick(ctx, a) || a[0])), cond: names.every(n => !ctx.condSafe || ctx.condSafe(n)) };
     }) })).filter(g => g.items.length),
-    self: SELF.map(([id, label, perms, risky]) => ({ id, label, risky: !!risky, rule: Object.entries(perms).map(([c, ps]) => `${c} ${ps.join(' ')}`).join('; ') })),
-    caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, risky: !!risky })),
-    provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, needs: needs || null })),
+    self: SELF.map(([id, label, perms, risky]) => ({ id, label, help: HELP.self[id], risky: !!risky, rule: Object.entries(perms).map(([c, ps]) => `${c} ${ps.join(' ')}`).join('; ') })),
+    caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, help: HELP.cap[name], risky: !!risky })),
+    provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, help: HELP.provides[id], needs: needs || null })),
   };
 }
 
 module.exports = {
-  FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES,
+  FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
   fcFromPath, pathFromFc, scanTe, fileType,
 };

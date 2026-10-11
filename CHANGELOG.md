@@ -22,6 +22,9 @@
   hold (interfaces declaring attributes or containing `optional` blocks,
   e.g. `dbus_system_bus_client`) or that are already always allowed are
   refused before building.
+* **Hover help in the service editor**: every option, add button (*+
+  Temporary files*, *+ Add port*, *+ New boolean*, …) and field explains
+  what it does when you hover over it, including the type it adds.
 
 **Tests**: `npm run test:service` (in `npm test`; with a policy dir, every
 daemon module in it), `npm run test:service-e2e` (real builds on CLIP,
