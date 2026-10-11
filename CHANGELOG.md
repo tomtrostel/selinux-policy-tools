@@ -29,6 +29,14 @@
   editable when the module is opened again. A standalone module declares
   the type itself and lists the `semanage port -a` commands to run after
   installing. Numbers another port type already has are refused.
+* **Helper programs in the service editor**: *+ New helper program* gives
+  a program the service starts a domain of its own (`domain_type`,
+  `domain_entry_file`, `domtrans_pattern` from the service) with only the
+  rights chosen for it: access to the service's file types, system access,
+  process rights, capabilities, ports, interfaces, and whether the service
+  may signal it. Existing helpers (e.g. `lsmd_plugin_t`) read back and are
+  edited in place; removing one that is still used elsewhere is refused.
+  A path labeled for two types is refused before building.
 * **Hover help in the service editor**: every option, add button (*+
   Temporary files*, *+ Add port*, *+ New boolean*, …) and field explains
   what it does when you hover over it, including the type it adds.

@@ -4,7 +4,7 @@
 //    and an unchanged model leaves the files byte-identical;
 //  - the webview runs a session against a fake DOM.
 // With a policy dir, also every daemon module in it: unchanged round trip and
-// 22 kinds of edits each (`node test/service-test.js ../selinux-policy/policy`).
+// 26 kinds of edits each (`node test/service-test.js ../selinux-policy/policy`).
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -24,7 +24,7 @@ manage_lnk_files_pattern list_dirs_pattern read_files_pattern read_lnk_files_pat
 logging_send_syslog_msg miscfiles_read_localization auth_use_nsswitch kernel_read_system_state dbus_system_bus_client mta_send_mail
 corenet_tcp_sendrecv_generic_if corenet_tcp_sendrecv_generic_node corenet_tcp_bind_generic_node corenet_tcp_bind_http_port corenet_sendrecv_http_server_packets
 corenet_tcp_connect_http_port corenet_udp_sendrecv_generic_if corenet_udp_sendrecv_generic_node corenet_udp_bind_generic_node corenet_udp_bind_ntp_port
-corenet_tcp_connect_all_ports corenet_tcp_connect_postgresql_port corenet_tcp_bind_postgresql_port corenet_tcp_bind_ntp_portfiles_search_pids files_search_var_lib logging_search_logs files_search_etc
+domain_type domain_entry_file domtrans_pattern corenet_tcp_connect_all_ports corenet_tcp_connect_postgresql_port corenet_tcp_bind_postgresql_port corenet_tcp_bind_ntp_portfiles_search_pids files_search_var_lib logging_search_logs files_search_etc
 admin_pattern init_labeled_script_domtrans signal_perms dev_read_urand nis_use_ypbind dev_read_sound corenet_tcp_bind_all_ports kernel_read_kernel_sysctls`.split(/\s+/));
 const OPTIONAL = new Set(['dbus_system_bus_client', 'mta_send_mail', 'nis_use_ypbind']);
 const ctx = { has: (n) => KNOWN.has(n), optional: (n) => OPTIONAL.has(n), moduleArgs: 2, moduleExists: (n) => n === 'rpcbind', typeExists: () => false,
@@ -35,7 +35,9 @@ const grantsNorm = (g) => ({ self: [...(g.self || [])].sort(), caps: [...(g.caps
   access: [...(g.access || [])].sort(), extra: [...(g.extra || [])].sort() });
 const boolsNorm = (m) => (m.booleans || []).map(b => [b.name.replace(/%/g, m.name), !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), grantsNorm(b.grants || {})])
   .sort((a, b) => a[0].localeCompare(b[0]));
-const norm = (m) => JSON.stringify({
+const helpersNorm = (m) => (m.helpers || []).map(h => [svc.helperNames(m, h).H, svc.helperNames(m, h).HE, !!h.signal, (h.exec || []).map(p => p.replace(/%/g, m.name)).sort(),
+  (h.files || []).filter(x => x.access && x.access !== 'none').map(x => `${x.type}:${x.access}`).sort(), grantsNorm(h)]).sort((a, b) => a[0].localeCompare(b[0]));
+const norm = (m) => JSON.stringify({ helpers: helpersNorm(m),
   files: m.files.map(f => [f.kind, svc.fileType(m, f, ctx), f.access, (f.paths || []).map(p => p.replace(/%/g, m.name)).sort()]).sort(),
   ...grantsNorm(m), permissive: !!m.permissive, exec: m.exec.map(p => p.replace(/%/g, m.name)).sort(), booleans: boolsNorm(m),
 });
@@ -81,6 +83,40 @@ const rec = svc.recognize(out, ctx, {});
 check(!rec.error && norm(rec.model) === norm(model), 'the new module reads back as the same model', [norm(rec.model), norm(model)]);
 check(rec.kept.length === 0, 'nothing in the new module is left unmodelled', rec.kept);
 check(svc.plan(rec.model, ctx, out).te === out.te, 'unchanged model: .te untouched');
+
+/* ---------- helper domains ---------- */
+
+const hm = JSON.parse(JSON.stringify(model));
+hm.helpers = [{ name: '%_helper', exec: ['/usr/libexec/%-helper'], signal: true, files: [{ type: 'webby_var_lib_t', access: 'read' }, { type: 'webby_log_t', access: 'append' }],
+  self: ['fifo'], caps: ['setuid'], net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: ['syslog'], extra: ['dev_read_sound', 'nis_use_ypbind'] }];
+check(svc.validate(hm, ctx, { isNew: true }).length === 0, 'model with a helper validates', svc.validate(hm, ctx, { isNew: true }));
+const ho = svc.plan(hm, ctx, null);
+for (const line of ['type webby_helper_t;\ntype webby_helper_exec_t;\ndomain_type(webby_helper_t)\ndomain_entry_file(webby_helper_t, webby_helper_exec_t)\nrole system_r types webby_helper_t;',
+  'domtrans_pattern(webby_t, webby_helper_exec_t, webby_helper_t)', 'allow webby_t webby_helper_t:process signal;', '# webby_helper_t local policy',
+  'allow webby_helper_t self:capability setuid;', 'allow webby_helper_t self:tcp_socket create_stream_socket_perms;', 'read_files_pattern(webby_helper_t, webby_var_lib_t, webby_var_lib_t)',
+  'append_files_pattern(webby_helper_t, webby_log_t, webby_log_t)', 'logging_log_filetrans(webby_helper_t, webby_log_t, { dir file })', 'corenet_tcp_connect_http_port(webby_helper_t)',
+  'logging_send_syslog_msg(webby_helper_t)', "optional_policy(`\n\tnis_use_ypbind(webby_helper_t)\n')"]) check(ho.te.includes(line), `helper: .te has ${line.split('\n')[0]}`, ho.te);
+check(ho.te.indexOf('# webby_helper_t local policy') > ho.te.indexOf("tunable_policy(`webby_connect_any'"), 'helper section comes after the service’s rules and booleans');
+check(ho.fc.includes('/usr/libexec/webby-helper\t--\tgen_context(system_u:object_r:webby_helper_exec_t,s0)'), 'helper program labeled in the .fc', ho.fc);
+const hr = svc.recognize(ho, ctx, {});
+check(!hr.error && norm(hr.model) === norm(hm) && hr.kept.length === 0, 'the module with a helper reads back as the same model, nothing kept', [norm(hr.model), norm(hm), hr.kept]);
+check(svc.plan(JSON.parse(JSON.stringify(hr.model)), ctx, ho).te === ho.te, 'helper: unchanged model, identical .te');
+check(svc.validate({ ...hm, helpers: [{ name: 'Bad-1' }, { name: 'webby' }, { name: 'x', files: [{ type: 'nope_t', access: 'read' }], extra: ['no_such_iface'] }] }, ctx, { isNew: true })
+  .filter(p => /Helper name|name of another type|isn't one of this service's file types|no_such_iface doesn't exist in this policy for helper/.test(p)).length === 4, 'helper checks: bad name, clash with the domain, unknown file type, unknown interface',
+  svc.validate({ ...hm, helpers: [{ name: 'Bad-1' }, { name: 'webby' }, { name: 'x', files: [{ type: 'nope_t', access: 'read' }], extra: ['no_such_iface'] }] }, ctx, { isNew: true }));
+check(svc.validate({ ...hm, exec: ['/usr/bin/%', '/usr/libexec/webby-helper'] }, ctx, { isNew: true }).some(p => /webby-helper is labeled both webby_exec_t and webby_helper_exec_t/.test(p)), 'a path labeled for two types is refused');
+let he = svc.plan((() => { const m = JSON.parse(JSON.stringify(hr.model)); const h = m.helpers[0]; h.caps.push('kill'); h.files[0].access = 'manage'; h.extra = h.extra.filter(x => x !== 'dev_read_sound'); h.signal = false; return m; })(), ctx, ho);
+let hd = svc.lineDiff(ho.te, he.te).filter(x => x[0] !== ' ');
+check(hd.some(x => x[0] === '+' && x[1] === 'allow webby_helper_t self:capability { setuid kill };') && hd.some(x => x[0] === '+' && x[1] === 'manage_files_pattern(webby_helper_t, webby_var_lib_t, webby_var_lib_t)') &&
+  hd.some(x => x[0] === '-' && x[1] === 'read_files_pattern(webby_helper_t, webby_var_lib_t, webby_var_lib_t)') && hd.some(x => x[0] === '-' && /dev_read_sound\(webby_helper_t\)/.test(x[1])) &&
+  hd.some(x => x[0] === '-' && x[1] === 'allow webby_t webby_helper_t:process signal;') && !hd.some(x => /webby_t self|webby_t, webby_var_lib/.test(x[1])), 'editing a helper changes only its lines', hd);
+he = svc.plan({ ...JSON.parse(JSON.stringify(hr.model)), helpers: [] }, ctx, ho);
+check(!/webby_helper/.test(he.te) && !/webby_helper/.test(he.fc) && he.te.replace(/\s+$/, '') === out.te.replace(/\s+$/, ''), 'removing the helper removes its declarations, rules, section and file contexts', svc.lineDiff(out.te, he.te).filter(x => x[0] !== ' '));
+// Adding a helper to an existing module that has none: declarations, the domain's rules, a new section at the end.
+he = svc.plan({ ...JSON.parse(JSON.stringify(rec.model)), helpers: hm.helpers }, ctx, out);
+const her = svc.recognize(he, ctx, {});
+check(norm(her.model) === norm(hm) && her.kept.length === 0 && /\n# webby_helper_t local policy\n#\n\n/.test(he.te) && he.te.startsWith(out.te.split('\n').slice(0, 5).join('\n')),
+  'a helper added to an existing module reads back the same', [norm(her.model), her.kept]);
 
 /* ---------- editing ---------- */
 
@@ -391,6 +427,17 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   const pnum = find(e => e.tag === 'input' && e.attrs.placeholder === 'e.g. 8080')[0];
   pnum.value = '9999'; pnum.fire('input');
   check(find(e => e.tag === 'datalist' && e.attrs.id === 'ports')[0].children.some(o => o.value === 'webby' && /new port type/.test(o.textContent)), 'the new port type is offered in the port pickers');
+  // A helper program: name, read access to the state data, a capability.
+  buttonText('+ New helper program').fire('click');
+  const helperCard = () => find(e => e.attrs.class === 'bool helper')[0];
+  const hname = helperCard().all(e => e.tag === 'input' && e.attrs.placeholder === 'webby_helper')[0];
+  hname.value = 'webby_worker_t'; hname.fire('change');
+  const stateSel = helperCard().all(e => e.tag === 'select' && e.parent.children.some(c => c.tag === 'code' && c.textContent === 'webby_var_lib_t'))[0];
+  stateSel.value = 'read'; stateSel.fire('change');
+  const hmenu = helperCard().all(e => e.tag === 'select' && e.children.some(c => c.tag === 'option' && /Add system access/.test(c.textContent)))[0];
+  hmenu.value = 'cap:setuid'; hmenu.fire('change');
+  check(helperCard() && /webby_worker/.test(helperCard().all(e => e.tag === 'input')[0].value) && /Change its user ID|setuid/.test(helperCard().textContent) && boolCard().length === 2,
+    'helper card: name, file access, capability chip (boolean cards unaffected)');
   {
     const cat = svc.catalog(ctx);
     const noHelp = [...cat.fileKinds.map(k => ['file', k.id, k.help]), ...cat.access.flatMap(g => g.items).map(i => ['access', i.id, i.help]),
@@ -407,6 +454,9 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   const p = last('plan').model;
   check(p.name === 'webby' && p.files.some(f => f.kind === 'state' && f.paths[0] === '/var/lib/%/') && p.caps.includes('net_bind_service') && p.access.includes('dbus') &&
     p.net.listen[0].port === 'http' && p.extra.includes('dev_read_urand'), 'edits end up in the model sent for planning', p);
+  check(p.helpers.length === 1 && p.helpers[0]._new && p.helpers[0].name === 'webby_worker' && p.helpers[0].signal && p.helpers[0].exec[0] === '/usr/libexec/%-helper' &&
+    JSON.stringify(p.helpers[0].files) === '[{"type":"webby_var_lib_t","access":"read"}]' && p.helpers[0].caps.join() === 'setuid' && svc.validate(p, ctx, { isNew: true }).every(x => x.startsWith('Note:')),
+    'helper in the planned model, and it validates', [p.helpers, svc.validate(p, ctx, { isNew: true })]);
   check(p.ports.length === 1 && p.ports[0]._new && p.ports[0].name === '' && p.ports[0].nums[0].port === '9999' && p.ports[0].nums[0].proto === 'tcp', 'new port type in the planned model', p.ports);
   check(p.booleans.length === 2 && p.booleans[0].name === 'webby_connect_any' && p.booleans[0]._new && p.booleans[0].grants.caps[0] === 'kill' && p.booleans[0].grants.net.connect[0].port === 'all' &&
     p.booleans[1].external && p.booleans[1].name === 'use_nfs_home_dirs', 'booleans in the planned model', p.booleans);
@@ -446,7 +496,7 @@ async function survey(root) {
     m => { m.caps.splice(0, 1); },
     m => { if (!m.self.includes('rlimit')) m.self.push('rlimit'); },
     m => { const t = m.name.replace(/-/g, '_') + '_cache_t'; if (!m.files.some(f => f.type === t)) m.files.push({ kind: 'cache', type: t, paths: [`/var/cache/${m.name}/`], access: 'manage' }); },
-    m => { const i = m.files.findIndex(f => f.kind === 'tmp'); if (i >= 0) m.files.splice(i, 1); },
+    m => { const i = m.files.findIndex(f => f.kind === 'tmp'); if (i >= 0) { const [r] = m.files.splice(i, 1); for (const h of m.helpers) h.files = h.files.filter(x => x.type !== r.type); } },
     m => { const f = m.files.find(x => x.access === 'manage' && x.kind !== 'tmp'); if (f) f.access = 'read'; },
     m => { const f = m.files.find(x => x.paths.length); if (f) f.paths.push(f.paths[0].endsWith('/') ? f.paths[0].slice(0, -1) + '2/' : f.paths[0] + '2'); },
     m => { if (!m.net.listen.some(x => x.port === 'http')) m.net.listen.push({ proto: 'tcp', port: 'http' }); },
@@ -464,12 +514,19 @@ async function survey(root) {
     m => { const b = m.booleans.find(x => !x.external); if (b) m.booleans.splice(m.booleans.indexOf(b), 1); },
     m => { const b = m.booleans[0]; if (b && !b.grants.caps.includes('kill')) b.grants.caps.push('kill'); },
     m => { for (const b of m.booleans) for (const k of ['extra', 'access', 'caps', 'self']) if (b.grants[k].length) { b.grants[k].splice(0, 1); return; } },
+    // Helper domains.
+    m => { m.helpers.push({ name: m.name.replace(/-/g, '_') + '_e2e_helper', exec: [`/usr/libexec/${m.name}-e2e-helper`], signal: true, _new: true, files: m.files.filter(x => x.kind !== 'unit' && x.kind !== 'initrc').slice(0, 1).map(x => ({ type: x.type, access: 'read' })),
+      self: ['fifo'], caps: ['setuid'], net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: ['syslog'], extra: ['dev_read_sound'] }); },
+    m => { if (m.helpers.length) m.helpers.splice(0, 1); },
+    m => { const h = m.helpers[0]; if (!h) return; if (!h.caps.includes('kill')) h.caps.push('kill'); h.signal = !h.signal; if (h.extra.length) h.extra.splice(0, 1); },
+    m => { const h = m.helpers[0]; if (!h) return; const x = h.files[0]; if (x) x.access = x.access === 'read' ? 'manage' : 'read'; else { const t = m.files.find(r => r.kind === 'config' || r.kind === 'state'); if (t) h.files.push({ type: t.type, access: 'read' }); } },
     m => { if (m.booleans.some(b => b.name === 'use_nfs_home_dirs')) return; m.booleans.push({ name: 'use_nfs_home_dirs', external: true, grants: { access: ['mail'], extra: [], caps: [], self: [], net: { listen: [], connect: [] } } }); },
   ];
   const bnorm = (m) => (m.booleans || []).filter(b => !b.external || Object.values(b.grants).some(v => (Array.isArray(v) ? v.length : v.listen.length + v.connect.length)))
     .map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : b.desc, JSON.stringify(grantsNorm(b.grants))]).sort((a, b) => a[0].localeCompare(b[0]));
   const tnorm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), [...m.self].sort(), [...m.caps].sort(),
-    m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m)]);
+    m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m),
+    (m.helpers || []).map(h => [svc.helperNames(m, h).H, !!h.signal, [...h.exec].sort(), h.files.map(x => x.type + x.access).sort(), JSON.stringify(grantsNorm(h))]).sort()]);
   let mods = 0, same = 0, edits = 0, good = 0;
   const bad = [];
   for (const f of idx.files.values()) {

@@ -18,7 +18,7 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
-Unreleased (after 0.8.0): the service editor with booleans and port types (step 6 below); e2e-tested,
+Unreleased (after 0.8.0): the service editor with booleans, port types and helper domains (step 6 below); e2e-tested,
 not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -285,12 +285,33 @@ so far covered by the e2e tests only.
    port type exists when corenet_tcp_bind_X_port does. e2e: svctest with a
    port type (portcon checked in the built corenetwork.te), ntp_port_t +
    tcp 47124, standalone develsvc_port_t; CLIP, RHEL 9, RHEL 10 pass.
+   Helper domains (done, unreleased): model.helpers [{name ('' =
+   %_helper), domain?/execType? (recognized names not NAME_t/NAME_exec_t),
+   exec[], signal, decl ('domain_type' | 'application_domain' as read),
+   files [{type, access}] (the service's file types), self, caps, net,
+   access, extra, _new}]. Units `helper:<H>` (types, decl calls, `role
+   system_r types H;` (scanTe now has kind 'role'), domtrans_pattern(D, HE,
+   H) with dom D), `h:<H>:signal`, `h:<H>:file:<T>`, and grantUnits(h,
+   `h:<H>:`, null, H) (statements carry `dom`; helper self keys
+   `h:H:self:cls:perm`). recognize: a top-level type with domtrans_pattern(D,
+   HE, H) + (domain_type + domain_entry_file | application_domain), not
+   another daemon; grantsIn(…, S=H) top level only; 1-arg calls on H →
+   helper extras. editTe: self-rule scopes '' / bool / '@H'; helper
+   statements after H's last rule, else a new "# H local policy" section at
+   the end (header removed with the helper); decls now end at the first
+   "local policy" header when there is one. validate: names, clashes, file
+   types, interfaces, and one path labeled for two types (setfiles refuses
+   it; found by the e2e). servicePlan refuses removing a helper whose types
+   are used elsewhere or by kept lines. Webview: Helper programs section
+   (grantsEditor shared with booleans). Fedora: 17 helpers recognized; e2e:
+   svctest_helper_t (transition checked in tmp/svctest.tmp), ntp + a new
+   helper, standalone develsvc helper; CLIP, RHEL 9, RHEL 10 pass.
    Hover help: `HELP` in server/service.js (file kinds with {T} = the
    type, access levels, access/self/caps/provides) goes out as `help` in
    `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
    module name on hover); service-test checks every catalog item has help
    and every button/field/checkbox in the form has a title.
-   Ideas not done: helper domains, file access under a
+   Ideas not done: file access under a
    boolean, gen_bool.
 
 Open decision for the user: the GitHub repo

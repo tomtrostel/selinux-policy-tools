@@ -260,6 +260,16 @@ writes. It offers what the existing service modules use (taken from the
   `optional` blocks (e.g. `dbus_system_bus_client`) are offered only as
   always-on, and so is anything already allowed always (a domain
   transition granted twice fails the build).
+* **Helper programs:** programs the service starts that should run with
+  other (usually fewer) rights than the service itself: a worker, a script,
+  a privileged helper. Each gets a domain of its own (`NAME_t`, its program
+  labeled `NAME_exec_t`; `domain_type`, `domain_entry_file`, `role
+  system_r`), entered through `domtrans_pattern` when the service runs its
+  program, and only the rights you give it: access to each of the
+  service's file types (none, read, append, manage), system access,
+  process rights, capabilities, ports, interfaces, and whether the service
+  may signal it. Its rules go into a `# NAME_t local policy` section of
+  their own.
 * **Interfaces for other modules:** the usual ones in the `.if` (`_domtrans`,
   `_exec`, read config/logs/state, manage state, `_stream_connect`,
   `_admin`).
@@ -288,12 +298,17 @@ goes next to the other declarations, a call left alone in an
 `optional_policy` block takes the block with it. Booleans read back with
 their description, default and grants; a new grant goes into the boolean's
 existing `tunable_policy` block, a changed default or description rewrites
-just the declaration. Everything the form doesn't model (`tunable_policy`
+just the declaration. Helper domains that the service enters through
+`domtrans_pattern` (declared with `domain_type` + `domain_entry_file` or
+`application_domain`) read back with their rights, e.g. `lsmd_plugin_t` or
+`sssd_selinux_manager_t`; new rules go after the helper's last one.
+Everything the form doesn't model (`tunable_policy`
 on several booleans or with an else branch, `ifdef` blocks, rules with
 other modules' types, …) stays exactly as it is and is listed under *Kept
-as is*, each line clickable. Removing a file type or a boolean that the
+as is*, each line clickable. Removing a file type, a boolean or a helper that the
 `.if` or another module still uses is refused, with the place that uses
-it.
+it. A path given for two types (say the service's program and a helper's)
+is refused too, since `setfiles` rejects the build.
 
 **Building** (Linux)
 
@@ -600,20 +615,23 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
-  22 kinds of edits on each (capabilities, file types added, removed or
+  26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
   permissive, program paths; booleans added, removed, with another default
-  or description, grants added and removed, an existing boolean used)
-  read back as the edited form and repeat as a no-op (7,172 edits). On
-  CLIP, RHEL 9 and RHEL 10 a new service using every kind of setting
-  (booleans and a port type of its own included) builds and links with the
-  full tree, with `portcon` entries for its port type, and so do an edited
-  `ntp` (a new boolean, a number added to `ntp_port_t`) and an edited
+  or description, grants added and removed, an existing boolean used;
+  helpers added, removed, with other rights or file access) read back as
+  the edited form and repeat as a no-op (8,476 edits); the 17 helper
+  domains among them read back. On CLIP, RHEL 9 and RHEL 10 a new service
+  using every kind of setting (booleans, a port type and a helper program
+  of its own included) builds and links with the full tree, with
+  `portcon` entries for its port type and the transition into its helper,
+  and so do an edited `ntp` (a new boolean, a new helper, a number added
+  to `ntp_port_t`) and an edited
   `rsync` (its own boolean's default and grants); grants conditional
   policy can't hold, and port numbers another port type has, are refused
   before building. None of the 766 calls Fedora's daemons make under a
-  boolean is refused. A standalone service with a port type of its own
-  builds against the devel headers. The form itself is tested with a fake DOM; it hasn't had
+  boolean is refused. A standalone service with a port type and a helper
+  of its own builds against the devel headers. The form itself is tested with a fake DOM; it hasn't had
   interactive use yet.
 * Source diagnostics over the full upstream Fedora tree, the RHEL 9 source
   (selinux-policy 38.1.75, from the Rocky 9.8 source RPM) and CLIP for RHEL 9
@@ -759,8 +777,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 **Service editor**
 
 * Services only: a domain started by init with `init_daemon_domain()`.
-  User applications, CGI scripts and helper domains of a service are edited
-  in the `.te` as before (helpers show up under *Kept as is*).
+  User applications and CGI scripts are edited in the `.te` as before.
+* Helpers: started by the service only (not by init or by users), with
+  rights at the top level (not under a boolean); access to the service's
+  file types, not file types of their own (give the service a type with
+  "label only" access and the helper the access). A helper started by
+  another helper, or declared through a template, isn't recognized and
+  stays under *Kept as is*; rules between the helper and the service
+  (sockets, pipes beyond `domtrans_pattern`) are written in the `.te`.
 * Port types: a port type can't be removed or renamed from the form once
   it is in `corenetwork.te.in` (other modules may use it); only port types
   named after the module are shown as its own. A standalone module's port

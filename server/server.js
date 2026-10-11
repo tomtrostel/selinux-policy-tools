@@ -1709,6 +1709,18 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
         if (uses.length) problems.push(`Boolean ${b.name} is still used in ${rel(uses[0].path)}:${uses[0].l + 1}; remove that use first, or keep the boolean.`);
         else if (keptUse) problems.push(`Boolean ${b.name} is still used on line ${keptUse.l + 1} of ${path.basename(paths.te)} (kept as is); remove that use first, or keep the boolean.`);
       }
+      // And a helper domain whose types are used outside what the editor models.
+      const keepH = new Set((model.helpers || []).map(h => service.helperNames(model, h).H));
+      for (const h of rec.model.helpers.filter(x => !keepH.has(service.helperNames(rec.model, x).H))) {
+        const { H, HE } = service.helperNames(rec.model, h);
+        for (const t of [H, HE]) {
+          const uses = idx.referencesOf(t).filter(u => u.path !== paths.te && u.path !== paths.fc);
+          const keptUse = rec.kept.find(k => new RegExp(`\\b${t}\\b`).test(k.text));
+          if (uses.length) problems.push(`${t} is still used in ${rel(uses[0].path)}:${uses[0].l + 1}${uses.length > 1 ? ` and ${uses.length - 1} more place${uses.length > 2 ? 's' : ''}` : ''}; remove those uses first, or keep the helper.`);
+          else if (keptUse) problems.push(`${t} is still used on line ${keptUse.l + 1} of ${path.basename(paths.te)} (kept as is); remove that use first, or keep the helper.`);
+          if (uses.length || keptUse) break;
+        }
+      }
     }
   }
   const cp = corenetPath();

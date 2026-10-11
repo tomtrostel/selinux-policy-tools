@@ -2,7 +2,7 @@
 // create a new service module (every kind of setting), build the tree, read it
 // back; edit an existing service, build, read it back; a removal the .if still
 // needs is refused. New port types: in corenetwork.te.in (tree) or declared in the
-// module (standalone), built and read back.
+// module (standalone), built and read back. Helper domains, built and read back.
 //   node test/service-e2e.js [tree-dir] [spec [variant]]
 // Default: the CLIP clone on melody with CLIP's make arguments; with a spec
 // (RHEL), its settings, overlays copied so modules.conf edits stay in the copy.
@@ -51,7 +51,9 @@ const check = (cond, what, extra) => {
 };
 const gnorm = (g) => [[...(g.self || [])].sort(), [...(g.caps || [])].sort(), ((g.net || {}).listen || []).map(x => x.proto + x.port).sort(), ((g.net || {}).connect || []).map(x => x.proto + x.port).sort(), [...(g.access || [])].sort(), [...(g.extra || [])].sort()];
 const norm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), gnorm(m), m.permissive, [...m.exec].sort(),
-  (m.booleans || []).map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), gnorm(b.grants || {})]).sort((a, b) => a[0].localeCompare(b[0]))]);
+  (m.booleans || []).map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), gnorm(b.grants || {})]).sort((a, b) => a[0].localeCompare(b[0])),
+  (m.helpers || []).map(h => [h.domain || `${((h.name || '').trim() || '%_helper').replace(/%/g, m.name)}_t`, !!h.signal, (h.exec || []).map(p => p.replace(/%/g, m.name)).sort(),
+    (h.files || []).map(x => `${x.type}:${x.access}`).sort(), gnorm(h)]).sort()]);
 const portsNorm = (m) => JSON.stringify((m.ports || []).map(p => [(p.name || '').trim() || m.name, (p.nums || []).filter(x => x.port).map(x => `${x.proto} ${x.port}`)]));
 const errors = (r) => Object.entries(diags).flatMap(([u, ds]) => ds.filter(d => d.severity === 1).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
 const write = async (plan) => {
@@ -101,6 +103,10 @@ const build = async (te) => {
   // A port type of its own (corenetwork.te.in), listened on always and connected to under a boolean.
   model.ports = [{ name: '', nums: [{ proto: 'tcp', port: '47123' }, { proto: 'udp', port: '47123' }], _new: true }];
   model.net.listen.push({ proto: 'tcp', port: 'svctest' });
+  // A helper program in a domain of its own, reading the service's runtime files.
+  const runtimeT = `svctest${info.catalog.fileKinds.find(k => k.id === 'runtime').suffix}`;
+  model.helpers = [{ name: '%_helper', exec: ['/usr/libexec/%-worker'], signal: true, files: [{ type: runtimeT, access: 'read' }], self: ['fifo'], caps: ['setuid'],
+    net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: ['syslog'], extra: ['files_read_usr_files'], _new: true }];
   model.booleans = [
     { name: '%_connect_any', desc: 'Allow svctest to connect to any TCP port and send mail.', default: false, grants: { caps: ['kill'], self: ['rlimit'], net: { listen: [], connect: [{ proto: 'tcp', port: 'all' }, { proto: 'udp', port: 'svctest' }] }, access: [condItem(model.access).id], extra: [] } },
     { name: 'use_nfs_home_dirs', external: true, grants: { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: ['fs_read_nfs_files'] } },
@@ -116,6 +122,8 @@ const build = async (te) => {
     'corenetwork.te.in gets one network_port line for the new port type', netFile && netFile.diff.filter(x => x[0] !== ' '));
   const clash = await conn.sendRequest('selinux/servicePlan', { model: { ...model, ports: [{ name: 'svctest2', nums: [{ proto: 'tcp', port: '80' }], _new: true }] }, module: null, where: info.defaultLayer });
   check(blocking(clash).some(p => /tcp 80 already belongs to http_port_t/.test(p)), `a port number another port type has is refused: ${blocking(clash)[0]}`);
+  const twice = await conn.sendRequest('selinux/servicePlan', { model: { ...model, helpers: [{ ...model.helpers[0], exec: ['/usr/libexec/%-helper'] }] }, module: null, where: info.defaultLayer });
+  check(blocking(twice).some(p => /svctest-helper is labeled both svctest_exec_t and svctest_helper_exec_t/.test(p)), `a helper program that is also the service's program is refused: ${blocking(twice)[0]}`);
   await write(plan);
   const te = plan.files.find(f => f.kind === 'te').path;
   let r = await build(te);
@@ -128,6 +136,9 @@ const build = async (te) => {
   check(!back.unavailable && norm(back.model) === norm({ ...model, files: model.files.map(f => ({ ...f, type: `svctest${info.catalog.fileKinds.find(k => k.id === f.kind).suffix}`, paths: f.paths.map(p => p.replace(/%/g, 'svctest')) })), exec: model.exec, booleans: model.booleans.map(b => ({ ...b, name: b.name.replace(/%/g, 'svctest') })) }) &&
     back.kept.length === 0 && back.model.provides.length === model.provides.length, 'the new module reads back as created (nothing unmodelled)', back.unavailable || { got: norm(back.model), kept: back.kept });
   check(portsNorm(back.model) === '[["svctest",["tcp 47123","udp 47123"]]]', `its port type reads back from corenetwork.te.in: ${portsNorm(back.model)}`);
+  check(back.model.helpers.length === 1 && back.model.helpers[0].name === 'svctest_helper' && back.model.helpers[0].exec[0] === '/usr/libexec/svctest-worker', 'its helper reads back (svctest_helper_t)', back.model.helpers);
+  const modTmp = r.workDir && path.join(r.workDir, 'tmp', 'svctest.tmp');
+  check(modTmp && fs.existsSync(modTmp) && /type_transition svctest_t svctest_helper_exec_t:process svctest_helper_t;/.test(fs.readFileSync(modTmp, 'utf8')), 'the built module has the transition into the helper domain');
 
   // 2. Edit an existing, enabled service.
   const list = await conn.sendRequest('selinux/serviceList');
@@ -144,6 +155,11 @@ const build = async (te) => {
   // A port number added to the module's own port type in corenetwork.te.in (ntp_port_t).
   const ownPort = m.ports.find(p => p.nums.length);
   if (ownPort) { ownPort.nums.push({ proto: 'tcp', port: '47124' }); changes.push(`+${ownPort.name}_port_t tcp 47124`); }
+  // A helper program added, reading the service's configuration.
+  const hconf = m.files.find(f => f.kind === 'config' || f.kind === 'state' || f.kind === 'runtime');
+  m.helpers.push({ name: `${name}_e2e_helper`, exec: [`/usr/libexec/${name}-e2e-helper`], signal: true, files: hconf ? [{ type: hconf.type, access: 'read' }] : [], self: ['fifo'], caps: ['kill'],
+    net: { listen: [], connect: [] }, access: ['syslog'], extra: [], _new: true });
+  changes.push(`+helper ${name}_e2e_helper_t`);
   m.booleans.push({ name: `${name}_e2e_extra`, desc: 'Test boolean.', default: false, external: false, _new: true, grants: { self: ['rlimit', 'sched'].filter(x => !m.self.includes(x)).slice(0, 1), caps: ['kill', 'sys_chroot', 'fsetid'].filter(x => !m.caps.includes(x)).slice(0, 1),
     net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: [condItem(m.access).id], extra: [] } });
   changes.push(`+boolean ${name}_e2e_extra`);
@@ -169,6 +185,7 @@ const build = async (te) => {
   check(r.ok && r.validated, `tree with the edited ${name} builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
   const ex2 = await conn.sendRequest('selinux/serviceInfo', { module: name });
   const want = { ...m, files: m.files.map(f => (f.type ? f : { ...f, type: `${name}_cache_t` })) };
+  check(ex2.model.helpers.some(h => h.name === `${name}_e2e_helper`), `${name}: the new helper reads back (${ex2.model.helpers.map(h => h.name).join(', ')})`);
   check(ex2.model.booleans.some(b => b.name === `${name}_e2e_extra` && !b.external), `${name}: the new boolean reads back (${ex2.model.booleans.map(b => b.name).join(', ')})`);
   if (ownPort) check(portsNorm(ex2.model) === portsNorm(m) && new RegExp(`portcon tcp 47124 gen_context\\(system_u:object_r:${ownPort.name}_port_t`).test(fs.readFileSync(path.join(r.workDir, 'policy/modules/kernel/corenetwork.te'), 'utf8')),
     `${ownPort.name}_port_t: the added number is built and reads back (${portsNorm(ex2.model)})`, { want: portsNorm(m), portcons: fs.readFileSync(path.join(r.workDir, 'policy/modules/kernel/corenetwork.te'), 'utf8').split('\n').filter(l => l.includes(`${ownPort.name}_port_t`)) });
@@ -244,6 +261,7 @@ async function standalone() {
   model.net.listen.push({ proto: 'tcp', port: 'http' }, { proto: 'tcp', port: 'develsvc' });
   model.access.push('nsswitch', 'dbus');
   model.ports = [{ name: '', nums: [{ proto: 'tcp', port: '47125' }], _new: true }];
+  model.helpers = [{ name: '', exec: ['/usr/libexec/develsvc-helper'], signal: false, files: [{ type: `develsvc${info.catalog.fileKinds.find(k => k.id === 'state').suffix}`, access: 'manage' }], self: [], caps: [], net: { listen: [], connect: [] }, access: ['syslog'], extra: [], _new: true }];
   const plan = await c2.sendRequest('selinux/servicePlan', { model, module: null, where: null });
   check((plan.problems || []).some(p => /^Note: .*semanage port -a -t develsvc_port_t -p tcp 47125/.test(p)) && /^type develsvc_port_t;$/m.test(plan.files[0].text), 'standalone: the port type is declared in the module, numbers as a semanage note', plan.problems);
   check(plan.files.length === 3 && plan.files.every(f => path.dirname(f.path) === path.join(dir, 'develsvc')), `files go to ${path.join(path.basename(dir), 'develsvc')}/`, plan.files.map(f => f.path));
@@ -254,7 +272,8 @@ async function standalone() {
   const r = await c2.sendRequest('selinux/build', { uri: uri(path.join(dir, 'develsvc', 'develsvc.te')) });
   check(r.ok, `standalone module builds against the devel headers (${r.ms} ms)`, r.log && r.log.slice(-2000));
   const back = await c2.sendRequest('selinux/serviceInfo', { module: 'develsvc' });
-  check(!back.unavailable && back.kept.length === 0 && back.model.net.listen.length === 2 && portsNorm(back.model) === '[["develsvc",["tcp 47125"]]]', 'reads back from the folder (with its port type)', back.unavailable || [back.kept, back.model.net, portsNorm(back.model)]);
+  check(!back.unavailable && back.kept.length === 0 && back.model.net.listen.length === 2 && portsNorm(back.model) === '[["develsvc",["tcp 47125"]]]' && back.model.helpers.length === 1 && back.model.helpers[0].files[0].access === 'manage',
+    'reads back from the folder (with its port type and helper)', back.unavailable || [back.kept, back.model.net, portsNorm(back.model), back.model.helpers]);
   await c2.sendRequest('shutdown');
   c2.sendNotification('exit');
   await sleep(200);

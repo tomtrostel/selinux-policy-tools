@@ -301,6 +301,17 @@ function names(model) {
   const n = model.name;
   return { D: model.domain || `${n}_t`, E: model.execType || `${n}_exec_t` };
 }
+/*
+ * Helper domains (model.helpers: [{ name, domain, execType, exec, signal, decl, files: [{ type, access }],
+ * self, caps, net, access, extra }]): programs the service runs in a domain of their own, entered
+ * through domtrans_pattern from the service's domain, each with its own rights.
+ */
+const helperBase = (model, h) => sub((h.name || '').trim() || '%_helper', model.name);
+function helperNames(model, h) {
+  const b = helperBase(model, h);
+  return { H: h.domain || `${b}_t`, HE: h.execType || `${b}_exec_t` };
+}
+const HELPER_DECLS = ['domain_type', 'domain_entry_file', 'application_domain'];
 function fileType(model, row, ctx) {
   if (row.type) return sub(row.type, model.name);
   const k = KIND[row.kind];
@@ -369,6 +380,7 @@ function unitsOf(model, ctx) {
   const { D, E } = names(model);
   const add = (key, sig, stmts) => units.set(key, { sig: JSON.stringify(sig), stmts });
   const call = (name, args, section = 'local', group = null, bool = null) => ({ key: scoped(bool, callKey(name, args)), kind: 'call', name, args, text: callText(name, args), section, opt: section === 'local' && ctx.optional(name), group, bool });
+  const callOf = call;
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
 
   add('domain', { D, E }, [type(D), type(E), call('init_daemon_domain', [D, E], 'decl')]);
@@ -419,13 +431,41 @@ function unitsOf(model, ctx) {
     }
     grantUnits(b.grants || {}, `b:${name}:`, name);
   }
+
+  // Helper domains: declared here, entered from the service's domain, with rights of their own.
+  const fileKinds = new Map((model.files || []).filter(r => KIND[r.kind]).map(r => [fileType(model, r, ctx), KIND[r.kind]]));
+  for (const h of model.helpers || []) {
+    const { H, HE } = helperNames(model, h);
+    if (!/^\w+_t$/.test(H) || !/^\w+_t$/.test(HE) || H === D) continue;
+    const decl = h.decl === 'application_domain' ? [call('application_domain', [H, HE], 'decl')] : [call('domain_type', [H], 'decl'), call('domain_entry_file', [H, HE], 'decl')];
+    add(`helper:${H}`, { H, HE, decl: h.decl || 'domain_type' }, [type(H), type(HE), ...decl,
+      { key: `role:system_r:${H}`, kind: 'role', text: `role system_r types ${H};`, section: 'decl' },
+      { ...call('domtrans_pattern', [D, HE, H]), opt: false, dom: D }]);
+    if (h.signal) add(`h:${H}:signal`, 1, [{ key: allowKey(D, H, 'process', ['signal']), kind: 'allow', name: 'allow', text: `allow ${D} ${H}:process signal;`, section: 'local', dom: D }]);
+    for (const f of h.files || []) {
+      const k = fileKinds.get(f.type);
+      if (!k || !f.access || f.access === 'none') continue;
+      const T = f.type, g = `file:${T}`;
+      const pat = (p) => ({ ...call(p, [H, T, T], 'local', g), opt: false, dom: H, key: callKey(p, [H, T, T]) });
+      const st = [];
+      if (f.access === 'read') st.push(pat('list_dirs_pattern'), pat('read_files_pattern'), pat('read_lnk_files_pattern'));
+      if (f.access === 'append') st.push(pat('manage_dirs_pattern'), pat('append_files_pattern'), pat('create_files_pattern'), pat('setattr_files_pattern'));
+      if (f.access === 'manage') { st.push(pat('manage_dirs_pattern'), pat('manage_files_pattern')); for (const e of k.extra || []) st.push(pat(e)); }
+      const ft = pick(ctx, k.filetrans);
+      if ((f.access === 'manage' || f.access === 'append') && ft) st.push({ ...call(ft, [H, T, k.ftClasses], 'local', g), opt: false, dom: H });
+      add(`h:${H}:file:${T}`, f.access, st);
+    }
+    grantUnits(h, `h:${H}:`, null, H);
+  }
   return units;
 
-  /** Units for what the domain is granted, at the top level (bool null) or under a boolean. */
-  function grantUnits(g, prefix, bool) {
-    const self = (cls, perm) => ({ key: scoped(bool, `self:${cls}:${perm}`), kind: 'self', cls, perm, section: 'local', bool });
-    const dcall = (name, group) => call(name, [D], 'local', group, bool);
-    const allow = (tgt, cls, perms) => ({ key: scoped(bool, allowKey(D, tgt, cls, perms)), kind: 'allow', name: 'allow', text: `allow ${D} ${tgt}:${cls} ${perms.length === 1 ? perms[0] : `{ ${perms.join(' ')} }`};`, section: 'local', group: 'net', bool });
+  /** Units for what a domain (the service's, or a helper's: S) is granted, at the top level (bool null) or under a boolean. */
+  function grantUnits(g, prefix, bool, S = D) {
+    const selfKey = (cls, perm, b) => (S === D ? scoped(b, `self:${cls}:${perm}`) : `h:${S}:self:${cls}:${perm}`);
+    const self = (cls, perm) => ({ key: selfKey(cls, perm, bool), kind: 'self', cls, perm, section: 'local', bool, dom: S });
+    const call = (name, args, section, group, b) => ({ ...callOf(name, args, section, group, b), dom: S });
+    const dcall = (name, group) => call(name, [S], 'local', group, bool);
+    const allow = (tgt, cls, perms) => ({ key: scoped(bool, allowKey(S, tgt, cls, perms)), kind: 'allow', name: 'allow', text: `allow ${S} ${tgt}:${cls} ${perms.length === 1 ? perms[0] : `{ ${perms.join(' ')} }`};`, section: 'local', group: 'net', bool, dom: S });
     for (const id of g.self || []) {
       const s = SELF_BY[id];
       if (!s) continue;
@@ -442,8 +482,9 @@ function unitsOf(model, ctx) {
         const st = [];
         const opt = (n) => { if (ctx.has(n)) st.push(dcall(n, 'net')); };
         // Sockets and generic node/interface rules stay at the top level even for a port under a boolean.
-        const shared = (n) => { if (ctx.has(n)) st.push(call(n, [D], 'local', 'net', null)); };
-        st.push({ ...(proto === 'udp' ? self('udp_socket', 'create_socket_perms') : self('tcp_socket', 'create_stream_socket_perms')), bool: null, key: `self:${proto === 'udp' ? 'udp_socket:create_socket_perms' : 'tcp_socket:create_stream_socket_perms'}` });
+        const shared = (n) => { if (ctx.has(n)) st.push(call(n, [S], 'local', 'net', null)); };
+        const sock = proto === 'udp' ? ['udp_socket', 'create_socket_perms'] : ['tcp_socket', 'create_stream_socket_perms'];
+        st.push({ ...self(...sock), bool: null, key: selfKey(...sock, null) });
         shared(`corenet_${proto}_sendrecv_generic_if`);
         shared(`corenet_${proto}_sendrecv_generic_node`);
         if (ownPorts.has(port)) {
@@ -522,6 +563,7 @@ function scanTe(text) {
     let m;
     if ((m = /^type\s+(\w+)\b[^;]*;/.exec(code))) stmts.push({ kind: 'type', name: m[1], key: `type:${m[1]}`, l, endL: l, ...where(l) });
     else if ((m = /^permissive\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'permissive', name: m[1], key: `permissive:${m[1]}`, l, endL: l, ...where(l) });
+    else if ((m = /^role\s+(\w+)\s+types\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'role', role: m[1], name: m[2], key: `role:${m[1]}:${m[2]}`, l, endL: l, ...where(l) });
     else if ((m = /^allow\s+(\w+)\s+([\w-]+)\s*:\s*(\w+)\s+(\{[^}]*\}|[\w-]+)\s*;$/.exec(code))) {
       const perms = m[4].replace(/[{}]/g, ' ').trim().split(/\s+/);
       const w = where(l);
@@ -575,6 +617,7 @@ function recognize(texts, ctx, opts = {}) {
   const claim = (pred) => { for (const s of editable) if (!claimed.has(s) && pred(s)) claimed.add(s); };
   claim(s => s.kind === 'type' && (s.name === D || s.name === E));
   claim(s => s.kind === 'call' && s.name === 'init_daemon_domain' && s.args[0] === D);
+  claim(s => s.kind === 'role' && s.name === D);
 
   // Owned file types: declared here, with a known declaration helper.
   const helperKinds = new Map(); // declaration helper -> [{ k, suffix }]
@@ -628,6 +671,49 @@ function recognize(texts, ctx, opts = {}) {
   }
   const ownPortTypes = new Set(ctx.corenet ? [] : model.ports.map(p => `${p.name}_port_t`));
 
+  // Helper domains: declared here (domain_type + domain_entry_file, or application_domain) and
+  // entered from the service's domain (domtrans_pattern at the top level). Other daemons aren't helpers.
+  model.helpers = [];
+  const daemons = new Set(domains.map(x => x.domain));
+  const topCall = (name, args) => editable.find(s => s.kind === 'call' && s.top && s.name === name && s.args.length === args.length && args.every((a, i) => s.args[i] === a));
+  for (const t of editable.filter(s => s.kind === 'type' && s.top && !claimed.has(s) && !daemons.has(s.name))) {
+    const H = t.name;
+    const dtp = editable.find(s => s.kind === 'call' && s.top && s.name === 'domtrans_pattern' && s.args.length === 3 && s.args[0] === D && s.args[2] === H);
+    if (!dtp) continue;
+    const HE = dtp.args[1];
+    const app = topCall('application_domain', [H, HE]);
+    const dt = topCall('domain_type', [H]), de = topCall('domain_entry_file', [H, HE]);
+    const typeE = editable.find(s => s.kind === 'type' && s.top && s.name === HE);
+    if (!typeE || !(app || (dt && de))) continue;
+    const u = `helper:${H}`;
+    const h = { name: H.replace(/_t$/, ''), domain: H, execType: HE, exec: pathsOf(HE), decl: app && !(dt && de) ? 'application_domain' : 'domain_type', signal: false, files: [], ...emptyGrants() };
+    if (h.domain === `${h.name}_t`) delete h.domain;
+    if (h.execType === `${h.name}_exec_t`) delete h.execType;
+    model.helpers.push(h);
+    for (const st of [t, typeE, dtp, ...(h.decl === 'application_domain' ? [app] : [dt, de])]) ownAdd(u, st);
+    for (const st of editable) {
+      if (claimed.has(st)) continue;
+      if (st.kind === 'role' && st.top && st.name === H) ownAdd(u, st);
+      else if (st.kind === 'call' && st.top && st.args.length === 1 && st.args[0] === HE) ownAdd(u, st);
+    }
+    const sig = editable.find(st => st.kind === 'allow' && st.top && st.src === D && st.tgt === H && st.cls === 'process' && st.perms.join(' ') === 'signal');
+    if (sig) { h.signal = true; ownAdd(`h:${H}:signal`, sig); }
+  }
+  const helperOf = new Map(model.helpers.map(h => [h.domain || `${h.name}_t`, h]));
+  // Their access to the service's file types (patterns on T, at the top level or in optional_policy).
+  for (const [H, h] of helperOf) {
+    for (const r of model.files) {
+      const T = r.type;
+      const mine = editable.filter(st => !st.bool && !claimed.has(st) && ((st.kind === 'call' && st.args[0] === H && st.args.slice(1).includes(T) && /(_pattern|filetrans)$/.test(st.name)) || (st.kind === 'allow' && st.src === H && st.tgt === T)));
+      if (!mine.length) continue;
+      const pats = new Set(mine.filter(st => st.kind === 'call' && st.args[1] === T && st.args[2] === T).map(st => st.name));
+      const access = pats.has('manage_files_pattern') ? 'manage' : pats.has('append_files_pattern') ? 'append' : pats.has('read_files_pattern') ? 'read' : null;
+      if (!access) continue;
+      h.files.push({ type: T, access });
+      for (const st of mine) ownAdd(`h:${H}:file:${T}`, st);
+    }
+  }
+
   if (editable.some(s => s.kind === 'permissive' && s.name === D)) { model.permissive = true; claim(s => s.kind === 'permissive' && s.name === D); }
 
   // Booleans declared here (gen_tunable with its doc comment above), then those only used here.
@@ -653,6 +739,7 @@ function recognize(texts, ctx, opts = {}) {
   // What the domain is granted, at the top level and under each boolean.
   grantsIn(model, null, '');
   for (const b of model.booleans) grantsIn(b.grants, b.name, `b:${b.name}:`);
+  for (const [H, h] of helperOf) grantsIn(h, null, `h:${H}:`, H);
 
   // Network statements the model generates are claimed through the units; the rest of the single-argument calls are "other interfaces".
   const gen = new Set();
@@ -666,14 +753,21 @@ function recognize(texts, ctx, opts = {}) {
     if (!g.extra.includes(s.name)) g.extra.push(s.name);
     claimed.add(s);
   }
+  for (const s of editable) {
+    const h = s.kind === 'call' && s.args.length === 1 && !s.bool && helperOf.get(s.args[0]);
+    if (!h || claimed.has(s) || generic(s.name) || HELPER_DECLS.includes(s.name)) continue;
+    if (!h.extra.includes(s.name)) h.extra.push(s.name);
+    claimed.add(s);
+  }
 
   // Everything else that mentions the domain stays as it is.
   const kept = [];
   // Rules on itself with permissions no setting stands for: shown, and never touched.
   const modelled = new Set();
-  for (const u of unitsOf(model, ctx).values()) for (const s of u.stmts) if (s.kind === 'self') modelled.add(scoped(s.bool, `${s.cls}:${s.perm}`));
+  for (const u of unitsOf(model, ctx).values()) for (const s of u.stmts) if (s.kind === 'self') modelled.add(s.key);
+  const selfKeyOf = (s, p) => (s.src === D ? scoped(s.bool, `self:${s.cls}:${p}`) : `h:${s.src}:self:${s.cls}:${p}`);
   for (const s of editable) {
-    if (isSelf(s) && s.perms.some(p => !modelled.has(scoped(s.bool, `${s.cls}:${p}`)))) claimed.delete(s);
+    if ((isSelf(s) || [...helperOf.keys()].some(H => isSelf(s, H))) && s.perms.some(p => !modelled.has(selfKeyOf(s, p)))) claimed.delete(s);
   }
   for (const s of te.stmts) if (!claimed.has(s) && mentionsD(s)) kept.push({ l: s.l, endL: s.endL, text: te.lines.slice(s.l, s.endL + 1).map(x => x.trim()).join(' ') });
   kept.sort((a, b) => a.l - b.l);
@@ -681,15 +775,19 @@ function recognize(texts, ctx, opts = {}) {
   return { model, own, kept, domains, provided, scan: te };
 
   function emptyGrants() { return { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] }; }
-  function mentionsD(s) { return new RegExp(`\\b${D}\\b`).test(te.lines.slice(s.l, s.endL + 1).join('\n')); }
-  function isSelf(s) { return s.kind === 'allow' && s.src === D && s.tgt === 'self' && (s.top || (s.bool && !s.opt)); }
+  function mentionsD(s) {
+    const text = te.lines.slice(s.l, s.endL + 1).join('\n');
+    return [D, ...(model.helpers || []).map(h => h.domain || `${h.name}_t`)].some(x => new RegExp(`\\b${x}\\b`).test(text));
+  }
+  // Self rules of the service's domain (top level or directly under a boolean), or of a helper (S; top level only).
+  function isSelf(s, S = D) { return s.kind === 'allow' && s.src === S && s.tgt === 'self' && (s.top || (S === D && s.bool && !s.opt)); }
 
-  /** Self rules, port items, catalog items in one scope (top level: bool null). */
-  function grantsIn(g, bool, prefix) {
+  /** Self rules, port items, catalog items of domain S in one scope (top level: bool null). */
+  function grantsIn(g, bool, prefix, S = D) {
     const inScope = (s) => (bool ? s.bool === bool : !s.bool);
     const selfPerms = new Map(); // cls -> Set
     for (const s of editable) {
-      if (!isSelf(s) || !inScope(s)) continue;
+      if (!isSelf(s, S) || !inScope(s)) continue;
       if (!selfPerms.has(s.cls)) selfPerms.set(s.cls, new Set());
       for (const p of s.perms) selfPerms.get(s.cls).add(p);
       claimed.add(s);
@@ -699,7 +797,7 @@ function recognize(texts, ctx, opts = {}) {
     for (const [c, cls] of CAPS) if (hasSelf(cls, c)) g.caps.push(c);
 
     // Calls taking only the domain.
-    const domCalls = editable.filter(s => inScope(s) && s.kind === 'call' && s.args.length === 1 && s.args[0] === D && !claimed.has(s));
+    const domCalls = editable.filter(s => inScope(s) && s.kind === 'call' && s.args.length === 1 && s.args[0] === S && !claimed.has(s));
     const present = new Set(domCalls.map(s => s.name));
     const take = (n) => { for (const s of domCalls) if (s.name === n) claimed.add(s); };
     for (const s of domCalls) {
@@ -727,7 +825,7 @@ function recognize(texts, ctx, opts = {}) {
     }
     // Rules on the module's own port types (standalone).
     for (const s of editable) {
-      if (!inScope(s) || s.kind !== 'allow' || s.src !== D || !ownPortTypes.has(s.tgt) || claimed.has(s)) continue;
+      if (!inScope(s) || s.kind !== 'allow' || s.src !== S || !ownPortTypes.has(s.tgt) || claimed.has(s)) continue;
       const proto = { tcp_socket: 'tcp', udp_socket: 'udp' }[s.cls];
       const ps = s.perms.slice().sort().join(' ');
       const dir = ps === 'name_bind' ? 'listen' : (proto === 'tcp' && ps === 'name_connect') || (proto === 'udp' && ps === 'recv_msg send_msg') ? 'connect' : null;
@@ -806,7 +904,8 @@ function renderTe(model, ctx) {
     (ds[0].kind === 'tunable' ? tunables : declBlocks).push(ds.map(s => s.text).join('\n'));
   }
   declBlocks.unshift(...tunables);
-  const local = uniq.filter(s => s.section === 'local' && !s.bool);
+  const ofD = (s) => (s.dom || D) === D;
+  const local = uniq.filter(s => s.section === 'local' && !s.bool && ofD(s));
   const selfs = selfLines(D, local.filter(s => s.kind === 'self'));
   const calls = local.filter(s => s.kind === 'call' || s.kind === 'allow');
   const underBool = uniq.filter(s => s.section === 'local' && s.bool);
@@ -828,6 +927,19 @@ function renderTe(model, ctx) {
     for (const s of mine.filter(s => s.kind === 'call' && s.opt).sort((x, y) => x.name.localeCompare(y.name))) body.push(optTunableBlock(name, [s.text]));
   }
   if (body.length) parts.push(body.join('\n\n') + '\n');
+  // Each helper domain in a section of its own.
+  for (const h of model.helpers || []) {
+    const { H } = helperNames(model, h);
+    const mine = uniq.filter(s => s.section === 'local' && s.dom === H);
+    const hb = [];
+    const hs = selfLines(H, mine.filter(s => s.kind === 'self'));
+    if (hs.length) hb.push(hs.join('\n'));
+    const hc = mine.filter(s => s.kind === 'call' || s.kind === 'allow');
+    for (const b of localBlocks(hc.filter(s => !s.opt))) hb.push(b.join('\n'));
+    for (const s of hc.filter(s => s.opt).sort((a, b) => a.name.localeCompare(b.name))) hb.push(optBlock(s));
+    parts.push(HEADER(`${H} local policy`));
+    if (hb.length) parts.push(hb.join('\n\n') + '\n');
+  }
   return parts.join('\n');
 }
 
@@ -838,6 +950,7 @@ function fcEntries(model, ctx) {
   const { E } = names(model);
   const out = [];
   for (const p of model.exec || []) if (p.trim()) out.push({ type: E, path: sub(p.trim(), model.name), exec: true });
+  for (const h of model.helpers || []) for (const p of h.exec || []) if (p.trim()) out.push({ type: helperNames(model, h).HE, path: sub(p.trim(), model.name), exec: true });
   for (const row of model.files || []) for (const p of row.paths || []) if (p.trim()) out.push({ type: fileType(model, row, ctx), path: sub(p.trim(), model.name), file: KIND[row.kind] && KIND[row.kind].file });
   return out.map(e => {
     const f = fcFromPath(e.path);
@@ -959,14 +1072,19 @@ function editTe(text, rec, model, ctx) {
   const { D } = names(model);
   const genNew = new Set([...cur.values()].flatMap(u => u.stmts.map(s => s.key)));
   const editable = scan.stmts.filter(s => s.top || s.opt || s.bool);
-  const presentKey = (s) => (s.kind === 'call' || s.kind === 'allow' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
+  const presentKey = (s) => (s.kind === 'call' || s.kind === 'allow' || s.kind === 'role' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
   const byKey = new Map();
   for (const s of editable) { const k = presentKey(s); if (k) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(s); } }
   // Self rules (top level, or directly under a boolean): perms per class with their lines.
-  const selfStmts = editable.filter(s => s.kind === 'allow' && s.src === D && s.tgt === 'self' && (s.top || (s.bool && !s.opt)));
-  const sameScope = (s, bool) => (s.bool || null) === (bool || null);
-  const selfHas = (bool, cls, p) => selfStmts.some(s => sameScope(s, bool) && s.cls === cls && s.perms.includes(p));
-  const isPresent = (st) => (st.kind === 'self' ? selfHas(st.bool, st.cls, st.perm) : byKey.has(st.key));
+  // Scopes of self rules: '' (top level), a boolean's name, or '@H' for a helper domain H (top level only).
+  const helperDoms = new Set([rec.model, model].flatMap(m => (m.helpers || []).map(h => helperNames(m, h).H)));
+  const selfStmts = editable.filter(s => s.kind === 'allow' && s.tgt === 'self' && ((s.src === D && (s.top || (s.bool && !s.opt))) || (helperDoms.has(s.src) && s.src !== D && s.top)));
+  const scopeOf = (s) => (s.src === D ? s.bool || '' : `@${s.src}`);
+  const stScope = (st) => (st.dom && st.dom !== D ? `@${st.dom}` : st.bool || '');
+  const subjOf = (scope) => (scope.startsWith('@') ? scope.slice(1) : D);
+  const sameScope = (s, scope) => scopeOf(s) === (scope || '');
+  const selfHas = (scope, cls, p) => selfStmts.some(s => sameScope(s, scope) && s.cls === cls && s.perms.includes(p));
+  const isPresent = (st) => (st.kind === 'self' ? selfHas(stScope(st), st.cls, st.perm) : byKey.has(st.key));
 
   // Units whose settings changed: delete what they had, insert what they need now.
   const delStmts = new Set(), delSelf = [], insStmts = [], insSelf = [];
@@ -990,7 +1108,7 @@ function editTe(text, rec, model, ctx) {
     if (inPlace.has(k) || (n && n.sig === u.sig)) continue;
     for (const st of u.stmts) {
       if (genNew.has(st.key)) continue;
-      if (st.kind === 'self') { if (selfHas(st.bool, st.cls, st.perm)) delSelf.push(st); continue; }
+      if (st.kind === 'self') { if (selfHas(stScope(st), st.cls, st.perm)) delSelf.push(st); continue; }
       for (const s of byKey.get(st.key) || []) delStmts.add(s);
     }
     for (const o of rec.own.get(k) || []) {
@@ -1017,16 +1135,16 @@ function editTe(text, rec, model, ctx) {
   for (const s of delStmts) for (let l = s.l; l <= s.endL; l++) delLines.add(l);
   // Self rules: drop perms from their lines, add new perms to the class's first line in the same scope.
   const newPerms = new Map(); // scope \0 cls -> perms
-  for (const st of insSelf) { const k = `${st.bool || ''}\0${st.cls}`; if (!newPerms.has(k)) newPerms.set(k, []); newPerms.get(k).push(st.perm); }
+  for (const st of insSelf) { const k = `${stScope(st)}\0${st.cls}`; if (!newPerms.has(k)) newPerms.set(k, []); newPerms.get(k).push(st.perm); }
   const perms = new Map(); // line -> perms
   for (const s of selfStmts) perms.set(s.l, s.perms.slice());
-  for (const st of delSelf) for (const s of selfStmts) if (sameScope(s, st.bool) && s.cls === st.cls) perms.set(s.l, perms.get(s.l).filter(p => p !== st.perm));
+  for (const st of delSelf) for (const s of selfStmts) if (sameScope(s, stScope(st)) && s.cls === st.cls) perms.set(s.l, perms.get(s.l).filter(p => p !== st.perm));
   const newClassLines = new Map(); // scope -> lines
   for (const [k, ps] of newPerms) {
     const [bool, cls] = k.split('\0');
     const first = selfStmts.find(s => sameScope(s, bool) && s.cls === cls && perms.get(s.l).length && !delLines.has(s.l));
     if (first) perms.set(first.l, [...perms.get(first.l), ...ps]);
-    else { if (!newClassLines.has(bool)) newClassLines.set(bool, []); newClassLines.get(bool).push(...selfLines(D, ps.map(perm => ({ cls, perm })))); }
+    else { if (!newClassLines.has(bool)) newClassLines.set(bool, []); newClassLines.get(bool).push(...selfLines(subjOf(bool), ps.map(perm => ({ cls, perm })))); }
   }
   for (const s of selfStmts) {
     if (delLines.has(s.l)) continue;
@@ -1035,7 +1153,7 @@ function editTe(text, rec, model, ctx) {
     if (!ps.length) { delLines.add(s.l); continue; }
     const indent = /^\s*/.exec(lines[s.l])[0];
     const comment = /\s*#.*$/.exec(lines[s.l]);
-    edits.push({ rep: [s.l, indent + selfLine(D, s.cls, ps) + (comment ? comment[0] : '')] });
+    edits.push({ rep: [s.l, indent + selfLine(s.src, s.cls, ps) + (comment ? comment[0] : '')] });
   }
   const containers = scan.blocks.filter(b => b.name === 'optional_policy' || b.name === 'tunable_policy').sort((a, b) => (a.endL - a.l) - (b.endL - b.l));
   for (const b of containers) {
@@ -1047,19 +1165,35 @@ function editTe(text, rec, model, ctx) {
     }
     if (touched && empty) for (let l = b.l; l <= b.endL; l++) delLines.add(l);
   }
+  // A removed helper's "# H local policy" header goes when nothing but blank lines is left under it.
+  const gone = (rec.model.helpers || []).map(h => helperNames(rec.model, h).H).filter(H => !(model.helpers || []).some(h => helperNames(model, h).H === H));
+  for (const H of gone) {
+    const at = lines.findIndex((ln, l) => new RegExp(`^#\\s*${H} local policy\\s*$`).test(ln) && /^#{10,}/.test(lines[l - 2] || '') && /^#\s*$/.test(lines[l + 1] || ''));
+    if (at < 0) continue;
+    let end = at + 2;
+    while (end < lines.length && !(/^#{10,}/.test(lines[end]) && /^#\s*$/.test(lines[end + 1] || ''))) end++;
+    let empty = true;
+    for (let l = at + 2; l < end; l++) if (!delLines.has(l) && lines[l].trim()) { empty = false; break; }
+    if (empty) for (let l = at - 2; l < end; l++) delLines.add(l);
+  }
 
   for (const l of delLines) edits.push({ del: [l, l] });
 
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
-  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat(['init_daemon_domain', 'domain_type', 'init_domain', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port']));
+  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat(['init_daemon_domain', 'domain_type', 'init_domain', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS]));
   const firstLocal = top.find(s => (s.kind === 'allow' || s.kind === 'rule') || (s.kind === 'call' && !declHelpers.has(s.name) && !/^policy_module$/.test(s.name)));
   const localHeader = (() => {
     const lim = firstLocal ? firstLocal.l : lines.length;
     for (let l = lim - 1; l >= 0; l--) if (/^#\s*\S.*polic(y|ies)\s*$/i.test(lines[l]) && /^#{10,}/.test(lines[l - 2] || '')) return l - 2;
     return null;
   })();
-  const declEnd = Math.max(-1, ...top.filter(s => (s.kind === 'type' || (s.kind === 'call' && declHelpers.has(s.name))) && (localHeader == null || s.l < localHeader) && (!firstLocal || s.l < firstLocal.l)).map(s => s.endL));
+  // The declarations end at the first "... local policy" header (they may hold other calls, e.g.
+  // application_executable_file); without one, after the last declaration before the first rule.
+  const firstHeader = lines.findIndex((ln, l) => /^#\s*(\S.*\s)?local polic(y|ies)\s*$/i.test(ln) && /^#{10,}/.test(lines[l - 2] || ''));
+  const beforeHeader = firstHeader > 1 ? top.filter(s => s.endL < firstHeader - 2 && s.kind !== 'rule' && !(s.kind === 'call' && s.name === 'policy_module')) : [];
+  const declEnd = beforeHeader.length ? Math.max(...beforeHeader.map(s => s.endL))
+    : Math.max(-1, ...top.filter(s => (s.kind === 'type' || s.kind === 'role' || (s.kind === 'call' && declHelpers.has(s.name))) && (localHeader == null || s.l < localHeader) && (!firstLocal || s.l < firstLocal.l)).map(s => s.endL));
   const policyModule = top.find(s => s.kind === 'call' && s.name === 'policy_module');
   const declAfter = declEnd >= 0 ? declEnd : policyModule ? policyModule.endL : -1;
   const domTop = top.filter(s => (s.kind === 'call' && s.args[0] === D && s.name !== 'init_daemon_domain') || (s.kind === 'allow' && s.src === D));
@@ -1096,13 +1230,14 @@ function editTe(text, rec, model, ctx) {
   if (declIns.length) edits.push({ ins: [declAfter, declIns.flat()] });
   const topNew = newClassLines.get('') || [];
   if (topNew.length) edits.push({ ins: [selfAfter, lastSelf.length ? topNew : ['', ...topNew]] });
-  const localNew = insStmts.filter(s => s.section === 'local' && !s.opt && !s.bool);
+  const ofD = (st) => (st.dom || D) === D;
+  const localNew = insStmts.filter(s => s.section === 'local' && !s.opt && !s.bool && ofD(s));
   if (localNew.length) edits.push({ ins: [localAfter, localBlocks(localNew).flatMap(b => ['', ...b])] });
-  const optNew = insStmts.filter(s => s.section === 'local' && s.opt && !s.bool).sort((a, b) => a.name.localeCompare(b.name));
+  const optNew = insStmts.filter(s => s.section === 'local' && s.opt && !s.bool && ofD(s)).sort((a, b) => a.name.localeCompare(b.name));
   if (optNew.length) edits.push({ ins: [optAfter, optNew.flatMap(s => ['', ...optBlock(s).split('\n')])] });
 
   // Under booleans: into the boolean's existing tunable_policy block, else a new one.
-  const bools = new Set([...insStmts.filter(s => s.bool).map(s => s.bool), ...[...newClassLines.keys()].filter(Boolean)]);
+  const bools = new Set([...insStmts.filter(s => s.bool).map(s => s.bool), ...[...newClassLines.keys()].filter(k => k && !k.startsWith('@'))]);
   const indentOf = (l) => /^\s*/.exec(lines[l])[0];
   const closes = (b) => /^\s*'\s*\)\s*(#.*)?$/.test(lines[b.endL]) && !delLines.has(b.l);
   const outside = (b) => !scan.blocks.some(o => o !== b && o.l < b.l && o.endL >= b.endL);
@@ -1123,6 +1258,28 @@ function editTe(text, rec, model, ctx) {
   }
   if (boolEdits.length) edits.push({ ins: [boolAfter, boolEdits] });
 
+  // Helper domains: after the helper's last rule, or a section of its own at the end.
+  const lastLine = lines.length && lines[lines.length - 1] === '' ? lines.length - 2 : lines.length - 1;
+  for (const h of model.helpers || []) {
+    const { H } = helperNames(model, h);
+    const selfNew = newClassLines.get(`@${H}`) || [];
+    const mine = insStmts.filter(st => st.section === 'local' && st.dom === H);
+    const plain = mine.filter(st => !st.opt), opts = mine.filter(st => st.opt).sort((a, b) => a.name.localeCompare(b.name));
+    if (!selfNew.length && !mine.length) continue;
+    const rules = top.filter(st => (st.kind === 'call' && st.args[0] === H && !declHelpers.has(st.name)) || (st.kind === 'allow' && st.src === H));
+    const optBlocks = scan.blocks.filter(b => b.name === 'optional_policy' && !delLines.has(b.l) && editable.some(st => st.opt === b && !st.bool && st.kind === 'call' && st.args[0] === H));
+    if (!rules.length && !optBlocks.length) {
+      const body = [selfNew, ...localBlocks(plain), ...opts.map(st => optBlock(st).split('\n'))].filter(b => b.length);
+      edits.push({ ins: [lastLine, ['', ...HEADER(`${H} local policy`).split('\n'), ...body.flatMap((b, i) => (i ? ['', ...b] : b))]] });
+      continue;
+    }
+    const hSelf = selfStmts.filter(st => st.src === H && !delLines.has(st.l)).map(st => st.l);
+    const after = rules.length ? Math.max(...rules.map(st => st.endL)) : Math.max(...optBlocks.map(b => b.endL));
+    if (selfNew.length) edits.push({ ins: [hSelf.length ? Math.max(...hSelf) : after, hSelf.length ? selfNew : ['', ...selfNew]] });
+    if (plain.length) edits.push({ ins: [after, localBlocks(plain).flatMap(b => ['', ...b])] });
+    if (opts.length) edits.push({ ins: [Math.max(after, ...optBlocks.map(b => b.endL)), opts.flatMap(st => ['', ...optBlock(st).split('\n')])] });
+  }
+
   return applyLineEdits(lines, edits).join('\n');
 }
 
@@ -1134,10 +1291,12 @@ function editFc(text, rec, model, ctx) {
   const oldTypes = new Map(); // type -> paths in the recognized model
   oldTypes.set(rec.model.execType, (rec.model.exec || []).join('\n'));
   for (const r of rec.model.files) oldTypes.set(r.type, (r.paths || []).join('\n'));
+  for (const h of rec.model.helpers || []) oldTypes.set(helperNames(rec.model, h).HE, (h.exec || []).join('\n'));
   const newTypes = new Map();
   const { E } = names(model);
   newTypes.set(E, (model.exec || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
   for (const r of model.files || []) newTypes.set(fileType(model, r, ctx), (r.paths || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
+  for (const h of model.helpers || []) newTypes.set(helperNames(model, h).HE, (h.exec || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
   const edits = [];
   const changed = new Set();
   for (const [t, p] of oldTypes) if (newTypes.get(t) !== p) changed.add(t);
@@ -1215,7 +1374,14 @@ function validate(model, ctx, opts = {}) {
     types.add(t);
     if (opts.isNew && ctx.typeExists && ctx.typeExists(t)) out.push(`Type ${t} is already declared elsewhere.`);
   }
-  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []))) if (p.trim() && !p.trim().startsWith('/')) out.push(`Path "${p}" must be absolute.`);
+  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []))) if (p.trim() && !p.trim().startsWith('/')) out.push(`Path "${p}" must be absolute.`);
+  // One path, one label: setfiles refuses a file_contexts with two specifications for the same path.
+  const specType = new Map();
+  for (const e of fcEntries(model, ctx)) {
+    const t = specType.get(e.spec);
+    if (t && t !== e.type) out.push(`${e.path} is labeled both ${t} and ${e.type}; a path can have only one type, so remove it from one of them.`);
+    else specType.set(e.spec, e.type);
+  }
   if (!(model.exec || []).some(p => p.trim())) out.push('Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
   ctx = portCtx(model, ctx);
@@ -1257,6 +1423,20 @@ function validate(model, ctx, opts = {}) {
     for (const n of g.extra || []) if (!ctx.has(n)) out.push(`Interface ${n} doesn't exist in this policy${where}.`);
   };
   grants(model, '');
+  // Helper domains.
+  const helperSeen = new Set();
+  for (const h of model.helpers || []) {
+    const b = helperBase(model, h);
+    if (!/^[a-z][a-z0-9_]*$/.test(b)) { out.push(`Helper name "${b}" must start with a letter and use only lowercase letters, digits and _.`); continue; }
+    const { H, HE } = helperNames(model, h);
+    if (H === names(model).D || types.has(H) || types.has(HE)) out.push(`Helper ${H} has the name of another type of this service; choose another name.`);
+    if (helperSeen.has(H)) out.push(`Helper ${H} is listed twice.`);
+    helperSeen.add(H);
+    if ((opts.isNew || h._new) && ctx.typeExists) for (const t of [H, HE]) if (ctx.typeExists(t)) out.push(`Type ${t} is already declared elsewhere; choose another helper name.`);
+    if (!(h.exec || []).some(p => p.trim())) out.push(`Note: helper ${H} has no program path, so nothing gets ${HE} and the service can't start it in its domain.`);
+    for (const fa of h.files || []) if (fa.access && fa.access !== 'none' && !types.has(fa.type)) out.push(`Helper ${H}: ${fa.type} isn't one of this service's file types any more; remove that access.`);
+    grants(h, ` for helper ${H}`);
+  }
   const bools = new Set();
   for (const b of model.booleans || []) {
     const n = sub(b.name || '', model.name);
@@ -1346,7 +1526,7 @@ function newModel() {
     name: '', summary: '', exec: ['/usr/bin/%'],
     files: [{ kind: 'unit', paths: ['/usr/lib/systemd/system/%.service'], access: 'none' }, { kind: 'runtime', paths: ['/run/%/'], access: 'manage' }],
     self: ['fifo'], caps: [], net: { listen: [], connect: [] }, access: ['syslog', 'locale'], extra: [], permissive: false,
-    booleans: [], ports: [], provides: ['domtrans', 'admin'],
+    booleans: [], ports: [], helpers: [], provides: ['domtrans', 'admin'],
   };
 }
 
@@ -1373,5 +1553,5 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  fcFromPath, pathFromFc, scanTe, fileType, editCorenet,
+  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames,
 };

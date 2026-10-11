@@ -107,7 +107,7 @@
           : h('textarea', { rows: Math.max(1, row.paths.length), spellcheck: 'false', placeholder: k.path || '/path/', title: 'One path per line, written to the .fc file. A path ending in / means the directory and everything in it; % is the module name', oninput: (e) => { row.paths = unlines(e.target.value); changed(); } }, lines(row.paths)),
         h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
           accessOpts.map(a => h('option', { value: a, selected: a === row.access, title: accessHelp(a) }, info.catalog.accessLabels[a] || a))),
-        h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { model.files.splice(i, 1); render(); changed(); } }, '✕')));
+        h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { const t = typeOf(row); model.files.splice(i, 1); for (const hp of model.helpers || []) hp.files = (hp.files || []).filter(x => x.type !== t); render(); changed(); } }, '✕')));
     });
     const add = h('div', { class: 'adds' }, h('span', { class: 'muted' }, 'Add: '),
       kinds.map(k => h('button', { class: 'chip', ...tipOf(k.help || k.where || k.label), onclick: () => {
@@ -221,13 +221,53 @@
 
   const emptyGrants = () => ({ self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] });
 
+  /**
+   * Chips for what g grants, and ways to add more. o: { cond (only what conditional policy allows),
+   * also (grants already given elsewhere, not offered again), removeTip, menuTip, portTip }.
+   */
+  function grantsEditor(g, o) {
+    const accessBy = new Map(info.catalog.access.flatMap(gr => gr.items).map(i => [i.id, i]));
+    const selfBy = new Map(info.catalog.self.map(x => [x.id, x]));
+    const capBy = new Map(info.catalog.caps.map(c => [c.name, c]));
+    const byName = new Map(info.interfaces.map(i => [i.n, i]));
+    const also = o.also || emptyGrants();
+    const chip = (label, code, remove, help) => h('span', { class: 'chip on', title: help }, label, code ? h('code', { class: 'code' }, code) : null,
+      h('button', { class: 'icon', title: o.removeTip, onclick: () => { remove(); render(); changed(); } }, '✕'));
+    const chips = h('div', { class: 'chips' },
+      g.access.map((id, i) => chip((accessBy.get(id) || { label: id }).label, '', () => g.access.splice(i, 1), (accessBy.get(id) || {}).help)),
+      g.self.map((id, i) => chip((selfBy.get(id) || { label: id }).label, '', () => g.self.splice(i, 1), (selfBy.get(id) || {}).help)),
+      g.caps.map((c, i) => chip((capBy.get(c) || { label: c }).label, c, () => g.caps.splice(i, 1), (capBy.get(c) || {}).help)),
+      ['listen', 'connect'].flatMap(dir => g.net[dir].map((it, i) => chip(`${dir === 'listen' ? 'Listen on' : 'Connect to'} ${it.proto.toUpperCase()} ${it.port === 'all' ? 'any port' : it.port + '_port_t'}`, '', () => g.net[dir].splice(i, 1)))),
+      g.extra.map((n, i) => chip('', n, () => g.extra.splice(i, 1), (byName.get(n) || {}).s)));
+    const condTip = 'Its interface declares attributes or contains optional blocks, which conditional policy can’t hold; grant it always or not at all';
+    const menu = h('select', { title: o.menuTip, onchange: (e) => {
+      const [kind, id] = e.target.value.split(':');
+      if (kind === 'access') g.access.push(id); else if (kind === 'self') g.self.push(id); else if (kind === 'cap') g.caps.push(id);
+      render(); changed();
+    } }, h('option', { value: '' }, 'Add system access, process right or capability…'),
+      // Not what is already given; under a boolean, items whose interfaces conditional policy refuses are shown disabled.
+      info.catalog.access.map(gr => h('optgroup', { label: gr.group }, gr.items.filter(i => !g.access.includes(i.id) && !also.access.includes(i.id)).map(i => {
+        const bad = o.cond && i.cond === false;
+        return h('option', { value: `access:${i.id}`, disabled: bad, title: bad ? condTip : i.help }, bad ? `${i.label} (can't be under a boolean)` : i.label);
+      }))),
+      h('optgroup', { label: 'Its own processes' }, info.catalog.self.filter(x => !g.self.includes(x.id) && !also.self.includes(x.id)).map(x => h('option', { value: `self:${x.id}`, title: x.help }, x.label))),
+      h('optgroup', { label: 'Capabilities' }, info.catalog.caps.filter(c => !g.caps.includes(c.name) && !also.caps.includes(c.name)).map(c => h('option', { value: `cap:${c.name}`, title: c.help }, `${c.name}: ${c.label}${c.risky ? ' ⚠' : ''}`))));
+    const dir = h('select', { title: 'Connect to another server’s port, or listen on one for clients' }, h('option', { value: 'connect' }, 'connect to'), h('option', { value: 'listen' }, 'listen on'));
+    const proto = h('select', { title: 'TCP or UDP' }, h('option', { value: 'tcp' }, 'TCP'), h('option', { value: 'udp' }, 'UDP'));
+    const port = h('input', { type: 'text', list: 'ports', size: 18, spellcheck: 'false', placeholder: 'port type or all', title: PORT_TIP });
+    const portRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Port:'), dir, proto, port, h('button', { class: 'chip', title: o.portTip, onclick: () => {
+      const p = port.value.trim().replace(/_port_t$/, '');
+      if (!p) return;
+      g.net[dir.value].push({ proto: proto.value, port: p });
+      render(); changed();
+    } }, '+ Add'));
+    const [search, results] = ifaceSearch([...g.extra, ...also.extra], (n) => { g.extra.push(n); render(); changed(); }, (i) => !o.cond || !i.u);
+    return [chips, h('div', { class: 'row' }, menu), portRow, h('div', { class: 'row' }, search), results];
+  }
+
   function boolsSection() {
     model.booleans = model.booleans || [];
-    const accessBy = new Map(info.catalog.access.flatMap(g => g.items).map(i => [i.id, i]));
-    const selfBy = new Map(info.catalog.self.map(s => [s.id, s]));
-    const capBy = new Map(info.catalog.caps.map(c => [c.name, c]));
     const boolBy = new Map((info.bools || []).map(b => [b.n, b]));
-    const byName = new Map(info.interfaces.map(i => [i.n, i]));
     const cards = model.booleans.map((b, bi) => {
       const g = b.grants = Object.assign(emptyGrants(), b.grants || {});
       g.net = Object.assign({ listen: [], connect: [] }, g.net || {});
@@ -244,36 +284,9 @@
       const desc = b.external
         ? (ext && ext.s ? h('div', { class: 'muted small' }, ext.s) : null)
         : h('textarea', { rows: 2, spellcheck: 'true', placeholder: 'What switching it on allows (semanage boolean -l shows this)', title: 'Written as the comment above gen_tunable; semanage boolean -l shows it to administrators', oninput: (e) => { b.desc = e.target.value; changed(); } }, b.desc || '');
-      // What it grants, as removable chips.
-      const chip = (label, code, remove, help) => h('span', { class: 'chip on', title: help }, label, code ? h('code', { class: 'code' }, code) : null,
-        h('button', { class: 'icon', title: 'No longer allow this when the boolean is on', onclick: () => { remove(); render(); changed(); } }, '✕'));
-      const chips = h('div', { class: 'chips' },
-        g.access.map((id, i) => chip((accessBy.get(id) || { label: id }).label, '', () => g.access.splice(i, 1), (accessBy.get(id) || {}).help)),
-        g.self.map((id, i) => chip((selfBy.get(id) || { label: id }).label, '', () => g.self.splice(i, 1), (selfBy.get(id) || {}).help)),
-        g.caps.map((c, i) => chip((capBy.get(c) || { label: c }).label, c, () => g.caps.splice(i, 1), (capBy.get(c) || {}).help)),
-        ['listen', 'connect'].flatMap(dir => g.net[dir].map((it, i) => chip(`${dir === 'listen' ? 'Listen on' : 'Connect to'} ${it.proto.toUpperCase()} ${it.port === 'all' ? 'any port' : it.port + '_port_t'}`, '', () => g.net[dir].splice(i, 1)))),
-        g.extra.map((n, i) => chip('', n, () => g.extra.splice(i, 1), (byName.get(n) || {}).s)));
-      // Adding: one menu for the catalog, a port row, an interface search.
-      const menu = h('select', { title: 'Pick something the service may do only while the boolean is on. Things it is always allowed aren’t listed', onchange: (e) => {
-        const [kind, id] = e.target.value.split(':');
-        if (kind === 'access') g.access.push(id); else if (kind === 'self') g.self.push(id); else if (kind === 'cap') g.caps.push(id);
-        render(); changed();
-      } }, h('option', { value: '' }, 'Add system access, process right or capability…'),
-        // Not what is already always allowed; items whose interfaces conditional policy refuses are shown disabled.
-        info.catalog.access.map(gr => h('optgroup', { label: gr.group }, gr.items.filter(i => !g.access.includes(i.id) && !model.access.includes(i.id)).map(i => h('option', { value: `access:${i.id}`, disabled: i.cond === false, title: i.cond === false ? 'Its interface declares attributes or contains optional blocks, which conditional policy can’t hold; grant it always or not at all' : i.help }, i.cond === false ? `${i.label} (can't be under a boolean)` : i.label)))),
-        h('optgroup', { label: 'Its own processes' }, info.catalog.self.filter(s => !g.self.includes(s.id) && !model.self.includes(s.id)).map(s => h('option', { value: `self:${s.id}`, title: s.help }, s.label))),
-        h('optgroup', { label: 'Capabilities' }, info.catalog.caps.filter(c => !g.caps.includes(c.name) && !model.caps.includes(c.name)).map(c => h('option', { value: `cap:${c.name}`, title: c.help }, `${c.name}: ${c.label}${c.risky ? ' ⚠' : ''}`))));
-      const dir = h('select', { title: 'Connect to another server’s port, or listen on one for clients' }, h('option', { value: 'connect' }, 'connect to'), h('option', { value: 'listen' }, 'listen on'));
-      const proto = h('select', { title: 'TCP or UDP' }, h('option', { value: 'tcp' }, 'TCP'), h('option', { value: 'udp' }, 'UDP'));
-      const port = h('input', { type: 'text', list: 'ports', size: 18, spellcheck: 'false', placeholder: 'port type or all', title: PORT_TIP });
-      const portRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Port:'), dir, proto, port, h('button', { class: 'chip', title: 'Allow this port only while the boolean is on', onclick: () => {
-        const p = port.value.trim().replace(/_port_t$/, '');
-        if (!p) return;
-        g.net[dir.value].push({ proto: proto.value, port: p });
-        render(); changed();
-      } }, '+ Add'));
-      const [search, results] = ifaceSearch([...g.extra, ...model.extra], (n) => { g.extra.push(n); render(); changed(); }, (i) => !i.u);
-      return h('div', { class: 'bool' }, head, desc, h('div', { class: 'sub small' }, 'When on, also allow'), chips, h('div', { class: 'row' }, menu), portRow, h('div', { class: 'row' }, search), results);
+      const ed = grantsEditor(g, { cond: true, also: model, removeTip: 'No longer allow this when the boolean is on',
+        menuTip: 'Pick something the service may do only while the boolean is on. Things it is always allowed aren’t listed', portTip: 'Allow this port only while the boolean is on' });
+      return h('div', { class: 'bool' }, head, desc, h('div', { class: 'sub small' }, 'When on, also allow'), ed);
     });
     const existing = h('input', { type: 'text', list: 'bools', size: 30, spellcheck: 'false', placeholder: 'e.g. use_nfs_home_dirs', title: 'A boolean another module (or the tree’s global tunables) already declares; type to search' });
     const add = h('div', { class: 'adds' },
@@ -289,6 +302,52 @@
     return section('Booleans', `${model.booleans.length}`, [
       h('div', { class: 'muted small' }, 'Rights an administrator can switch on at run time (setsebool). Everything above is always allowed; what you add here only while the boolean is on.'),
       cards, add], model.booleans.length > 0 || info.isNew);
+  }
+
+  const HELPER_TIP = 'A program the service runs (a script, a worker, a privileged helper) that gets a domain of its own: started from the service’s domain, it has only the rights you give it here, not the service’s';
+
+  function helpersSection() {
+    model.helpers = model.helpers || [];
+    const ownFiles = model.files.filter(r => !kindOf(r.kind).file);
+    const cards = model.helpers.map((hp, hi) => {
+      const g = Object.assign(hp, { ...emptyGrants(), ...hp });
+      g.net = Object.assign({ listen: [], connect: [] }, g.net || {});
+      hp.files = hp.files || [];
+      const fresh = hp._new || info.isNew;
+      const base = sub((hp.name || '').trim() || '%_helper');
+      const H = hp.domain || `${base}_t`;
+      const head = h('div', { class: 'row' },
+        fresh ? h('input', { type: 'text', value: hp.name || '', size: 24, spellcheck: 'false', placeholder: `${model.name || 'NAME'}_helper`,
+          title: 'The helper’s name: its domain is NAME_t and its program’s type NAME_exec_t. Leave empty for MODULE_helper',
+          onchange: (e) => { hp.name = e.target.value.trim().replace(/_t$/, ''); render(); changed(); } }) : h('code', { title: 'The helper’s domain' }, H),
+        fresh ? h('span', { class: 'muted' }, '_t') : null,
+        h('button', { class: 'icon', title: 'Remove this helper: its domain, its rules and its program’s label', onclick: () => { model.helpers.splice(hi, 1); render(); changed(); } }, '✕'));
+      const prog = h('div', { class: 'row top' }, h('label', { class: 'lbl', title: 'The helper’s executable(s), one per line. They are labeled with its _exec_t type; when the service runs them, the process enters the helper’s domain' }, 'Program'),
+        h('textarea', { title: 'One path per line; % is the module name', rows: Math.max(1, (hp.exec || []).length), cols: 40, spellcheck: 'false', placeholder: '/usr/libexec/%-helper', oninput: (e) => { hp.exec = unlines(e.target.value); changed(); } }, lines(hp.exec)));
+      const sig = check('The service may signal it (e.g. stop it)', !!hp.signal, (v) => { hp.signal = v; }, { help: `Adds allow ${model.domain || `${model.name || 'NAME'}_t`} ${H}:process signal, so the service can stop or notify the helper. It can always wait for it to finish` });
+      const files = ownFiles.length ? h('div', { class: 'helperfiles' }, h('div', { class: 'sub small' }, 'Access to the service’s files'), ownFiles.map(r => {
+        const T = typeOf(r), k = kindOf(r.kind);
+        const cur = (hp.files.find(x => x.type === T) || {}).access || 'none';
+        const levels = [...new Set([...k.access, 'none'])];
+        return h('div', { class: 'row' }, h('code', { title: `${k.label}${k.where ? ` (${k.where})` : ''}` }, T), ' ',
+          h('select', { title: `What the helper may do with these files: ${accessHelp(cur)}`, onchange: (e) => {
+            hp.files = hp.files.filter(x => x.type !== T);
+            if (e.target.value !== 'none') hp.files.push({ type: T, access: e.target.value });
+            e.target.title = `What the helper may do with these files: ${accessHelp(e.target.value)}`;
+            changed();
+          } }, levels.map(a => h('option', { value: a, selected: a === cur, title: accessHelp(a) }, info.catalog.accessLabels[a] || a))));
+      })) : null;
+      const ed = grantsEditor(g, { removeTip: 'No longer allow the helper this',
+        menuTip: 'Pick something the helper may do. It gets nothing from the service: only what is listed here', portTip: 'Allow the helper this port' });
+      return h('div', { class: 'bool helper' }, head, prog, sig, files, h('div', { class: 'sub small' }, 'The helper may also'), ed);
+    });
+    return section('Helper programs', `${model.helpers.length}`, [
+      h('div', { class: 'muted small' }, 'Programs the service starts that should run with other (usually fewer) rights than the service itself. Each gets its own domain, entered when the service runs its program.'),
+      cards,
+      h('div', { class: 'adds' }, h('button', { class: 'chip', title: HELPER_TIP, onclick: () => {
+        model.helpers.push({ name: '', exec: ['/usr/libexec/%-helper'], signal: true, files: [], self: ['fifo'], caps: [], net: { listen: [], connect: [] }, access: ['syslog', 'locale'], extra: [], _new: true });
+        render(); changed();
+      } }, '+ New helper program'))], model.helpers.length > 0);
   }
 
   function providesSection() {
@@ -372,7 +431,7 @@
     const scroll = form.scrollTop;
     const open = [...form.querySelectorAll('details')].map(d => d.open);
     form.textContent = '';
-    const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     $('title').textContent = info.isNew ? 'New service' : `Service: ${model.name}`;
