@@ -273,6 +273,8 @@ function activate(context) {
       expanded.refresh();
       compiled.refresh(); // a module build is linked with the installed policy when the view (or a check) needs it
       if (p.tree && p.ok) changes.afterBuild();
+      // The denial assistant re-checks applied fixes against the new build.
+      if (denialPanel) denialPanel.webview.postMessage({ cmd: 'built', ok: p.ok, module: p.module });
     });
   });
 
@@ -1460,6 +1462,11 @@ function showDenials(context, text) {
   .tag { font-size: .8em; padding: 0 6px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); }
   .tag.best { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border: none; }
   .tag.warn { color: var(--vscode-editorWarning-foreground); }
+  .fixbox { border: 1px solid var(--vscode-focusBorder); border-radius: 4px; padding: 6px 10px; margin: 6px 0; }
+  .fixbox.ok { border-color: var(--vscode-testing-iconPassed, #73c991); color: var(--vscode-testing-iconPassed, #73c991); }
+  .fixbox.warn { border-color: var(--vscode-editorWarning-foreground); }
+  pre.add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(80,160,80,.2)); }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
   pre.rules { margin: 0; padding: 6px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: .92em; }
   code { font-family: var(--vscode-editor-font-family); }
   .facts div { margin: 2px 0; }
@@ -1523,6 +1530,12 @@ function showDenials(context, text) {
       } else if (m.cmd === 'copy') {
         await vscode.env.clipboard.writeText(m.text);
         vscode.window.setStatusBarMessage('Copied', 2000);
+      } else if (m.cmd === 'fix') {
+        const plan = await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, rule: m.rule });
+        panel.webview.postMessage({ cmd: 'fixPlan', key: m.key, plan });
+      } else if (m.cmd === 'applyFix') {
+        await applyDenialFix(m.plan);
+        panel.webview.postMessage({ cmd: 'applied', key: m.key, path: m.plan.path });
       } else if (m.cmd === 'run') {
         // Not executed: the user reviews it and presses Enter.
         const t = denialTerminal();
@@ -1534,6 +1547,27 @@ function showDenials(context, text) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { stopWatch(); denialPanel = null; }, undefined, context.subscriptions);
+}
+
+/** Write a planned fix (one undoable edit), save it so it builds, and show the inserted lines. */
+async function applyDenialFix(plan) {
+  const uri = vscode.Uri.file(plan.path);
+  const edit = new vscode.WorkspaceEdit();
+  if (!fs.existsSync(plan.path)) {
+    fs.mkdirSync(path.dirname(plan.path), { recursive: true });
+    edit.createFile(uri, { ignoreIfExists: true });
+    edit.insert(uri, new vscode.Position(0, 0), plan.text);
+  } else {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    edit.replace(uri, doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0)), plan.text);
+  }
+  if (!(await vscode.workspace.applyEdit(edit))) throw new Error('VS Code refused the edit.');
+  const doc = await vscode.workspace.openTextDocument(uri);
+  await doc.save();
+  const ed = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+  const r = new vscode.Range(plan.line, 0, plan.line + Math.max(0, plan.inserted.length - 1), 1e4);
+  ed.selection = new vscode.Selection(r.start, r.end);
+  ed.revealRange(r, vscode.TextEditorRevealType.InCenter);
 }
 
 function deactivate() { return client ? client.stop() : undefined; }

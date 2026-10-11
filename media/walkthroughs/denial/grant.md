@@ -23,7 +23,8 @@ dev_read_urand(notesd_t)
   else it grants (worked out from what the interface really expands to,
   not from its name). For the example it puts `dev_read_urand` first. When
   both types belong to the domain's own module it says a plain rule there
-  is the fix.
+  is the fix. **Add to module…** shows where it would go and, with
+  **Apply**, writes it, builds, and checks the denial against the build.
 * Type the beginning in a `.te` (`dev_read`, `files_read`, `logging_`):
   completion lists interfaces with their summaries and inserts them with
   named parameters.

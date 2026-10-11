@@ -51,6 +51,16 @@ const check = (cond, what, extra) => {
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + JSON.stringify(extra, null, 1).slice(0, 3000).replace(/\n/g, '\n     ')); }
 };
 
+/** What the client does with a fix plan: write the file (also as the open editor's text) and build it. */
+async function applyPlan(c, plan, versions) {
+  fs.mkdirSync(path.dirname(plan.path), { recursive: true });
+  fs.writeFileSync(plan.path, plan.text);
+  const u = URI.file(plan.path).toString();
+  if (versions[plan.path]) c.sendNotification('textDocument/didChange', { textDocument: { uri: u, version: ++versions[plan.path] }, contentChanges: [{ text: plan.text }] });
+  else { versions[plan.path] = 1; c.sendNotification('textDocument/didOpen', { textDocument: { uri: u, languageId: 'selinux', version: 1, text: plan.text } }); }
+  await new Promise(r => setTimeout(r, 600)); // reindex debounce
+  return c.sendRequest('selinux/build', { uri: u });
+}
 const top = (g) => (g && g.suggest && g.suggest.list && g.suggest.list[0] ? g.suggest.list[0].name : null);
 let ev = 100;
 const avc = (perms, s, t, cls, extra = '') => `type=AVC msg=audit(1728650000.${ev}:${ev++}): avc:  denied  { ${perms} } for  pid=1234 comm="x" ${extra} scontext=system_u:system_r:${s}:s0 tcontext=system_u:object_r:${t}:s0 tclass=${cls} permissive=0`;
@@ -119,12 +129,41 @@ const LOG = [
     const ownS = by('demo_t', 'demo_data_t').suggest;
     check(ownS && ownS.own && ownS.module === 'demo' && ownS.rule === 'allow demo_t demo_data_t:file { write };', 'own types: a plain rule in the module', ownS);
     check(top(by('demo_t', 'shadow_t')) === 'auth_read_shadow' && by('demo_t', 'shadow_t').suggest.list[0].attrs.includes('can_read_shadow_passwords'), `demo_t read shadow_t: ${top(by('demo_t', 'shadow_t'))} (adds can_read_shadow_passwords)`, by('demo_t', 'shadow_t').suggest);
+    // Phase 3: write the fix, build, and the denial is allowed by the build.
+    const versions = { [te]: 1 };
+    const LOG3 = [avc('write', 'demo_t', 'etc_t', 'file'), avc('read', 'demo_t', 'httpd_sys_content_t', 'file'), avc('write', 'httpd_t', 'etc_t', 'file')].join('\n');
+    r = await conn.sendRequest('selinux/analyzeDenials', { text: LOG3, against: 'build' });
+    const call1 = `${top(by('demo_t', 'etc_t'))}(demo_t)`;
+    let plan = await conn.sendRequest('selinux/denialFix', { domain: 'demo_t', call: call1 });
+    check(plan.path === te && !plan.optional && plan.inserted.join() === call1 && plan.diff.some(x => x.t === '+' || x.add || x.kind === 'add' || /\+/.test(JSON.stringify(x))), `fix plan: ${call1} into demo.te at line ${plan.line + 1}, not optional (files is a base module)`, plan);
+    let b3 = await applyPlan(conn, plan, versions);
+    check(b3.ok, 'demo.te with the call builds', b3.ok ? undefined : b3.log);
+    const call2 = `${top(by('demo_t', 'httpd_sys_content_t'))}(demo_t)`;
+    plan = await conn.sendRequest('selinux/denialFix', { domain: 'demo_t', call: call2 });
+    check(plan.optional && /optional_policy\(`\n\t/.test(plan.text) && plan.inserted[0] === 'optional_policy(`', `${call2} goes in optional_policy (apache can be off)`, plan);
+    b3 = await applyPlan(conn, plan, versions);
+    check(b3.ok, 'demo.te with the optional call builds', b3.ok ? undefined : b3.log);
+    r = await conn.sendRequest('selinux/analyzeDenials', { text: LOG3, against: 'build' });
+    check(by('demo_t', 'etc_t').v.verdict === 'allowed' && by('demo_t', 'httpd_sys_content_t').v.verdict === 'allowed', `after the fixes the build allows both: ${by('demo_t', 'etc_t').v.verdict}, ${by('demo_t', 'httpd_sys_content_t').v.verdict}`, r.notes);
+    plan = await conn.sendRequest('selinux/denialFix', { domain: 'demo_t', call: call1 });
+    check(plan.already, 'asking again: already there');
+    // A domain of the installed policy: a local module of its own.
+    const call3 = `${top(by('httpd_t', 'etc_t'))}(httpd_t)`;
+    plan = await conn.sendRequest('selinux/denialFix', { domain: 'httpd_t', call: call3 });
+    check(!plan.exists && plan.path === path.join(ws, 'local_httpd', 'local_httpd.te') && /gen_require\(`\n\ttype httpd_t;/.test(plan.text) && plan.note, `httpd_t (installed policy): new module ${plan.path && path.relative(ws, plan.path)}`, plan);
+    b3 = await applyPlan(conn, plan, versions);
+    check(b3.ok, 'the local module builds', b3.ok ? undefined : b3.log);
+    r = await conn.sendRequest('selinux/analyzeDenials', { text: LOG3, against: 'build' });
+    check(by('httpd_t', 'etc_t').v.verdict === 'allowed' && /local_httpd/.test(r.policy.label), `the installed policy + local_httpd allows it: ${by('httpd_t', 'etc_t').v.verdict} (${r.policy.label})`, r.notes);
   } else console.log(`SKIP build part: ${tc.reason}`);
   proc.kill();
 
   // A tree build: checked against its own policy.bin and file contexts.
-  const tree = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
-  if (detectToolchain(null).ok && fs.existsSync(path.join(tree, 'Rules.modular'))) {
+  const treeSrc = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
+  if (detectToolchain(null).ok && fs.existsSync(path.join(treeSrc, 'Rules.modular'))) {
+    const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-tree-'));
+    cp.execFileSync('cp', ['-a', treeSrc + '/.', tree]);
+    fs.rmSync(path.join(tree, 'tmp'), { recursive: true, force: true });
     const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
     const makeArgs = ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
       'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
@@ -151,7 +190,16 @@ const LOG = [
     r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('write', 'httpd_t', 'etc_t', 'file'), against: 'build' });
     const hw = by('httpd_t', 'etc_t');
     check(hw && hw.v.verdict === 'missing' && top(hw) === 'files_rw_etc_files' && hw.suggest.list[0].loc.p.startsWith(tree), `tree build: httpd_t write etc_t: ${top(hw)} from ${hw && hw.suggest && hw.suggest.list && hw.suggest.list[0] ? path.relative(tree, hw.suggest.list[0].loc.p) : '?'}`, hw && { v: hw.v, s: hw.suggest, notes: r.notes });
+    // Write the suggested call into apache.te and build: the build allows it.
+    const tv = {};
+    let tplan = await c2.sendRequest('selinux/denialFix', { domain: 'httpd_t', call: `${top(hw)}(httpd_t)` });
+    check(tplan.path === path.join(tree, 'policy/modules/contrib/apache.te') || /\/apache\.te$/.test(tplan.path || ''), `tree fix plan: ${tplan.path && path.relative(tree, tplan.path)} line ${tplan.line + 1}`, tplan);
+    const tb2 = await applyPlan(c2, tplan, tv);
+    check(tb2.ok, `tree with the fix builds (${tb2.ms} ms)`, tb2.ok ? undefined : tb2.log && tb2.log.slice(-2000));
+    r = await c2.sendRequest('selinux/analyzeDenials', { text: avc('write', 'httpd_t', 'etc_t', 'file'), against: 'build' });
+    check(by('httpd_t', 'etc_t').v.verdict === 'allowed', `tree build after the fix: ${by('httpd_t', 'etc_t').v.title}`, r.notes);
     p2.kill();
+    fs.rmSync(tree, { recursive: true, force: true });
   } else console.log('SKIP tree part: no refpolicy tree or toolchain');
 
   console.log(failures ? `\n${failures} check(s) failed` : '\nall denial e2e checks passed');

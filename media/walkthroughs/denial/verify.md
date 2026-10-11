@@ -2,6 +2,10 @@
 
 An interface name is a promise. Before you ship, check what it delivers.
 
+**The denial assistant re-checks it.** After *Apply* in **SELinux:
+Analyze Denials…**, the module builds and the denial is checked against
+that build: *Resolved* means your build allows it now.
+
 **"Compiles to" hover.** Save (that builds), then hover the line you
 added: you see the exact rules it produced. If `files_manage_etc_files`
 shows write access to every file in `/etc`, that's more than "write my

@@ -396,6 +396,24 @@ there. Examples on Rocky 9: `chronyd_t` writing `etc_t` →
 `shadow_t` → `auth_read_shadow`; reading `/dev/urandom` →
 `dev_read_urand`. Click a call to open its definition, or copy it.
 
+**Applying the fix.** *Add to module…* on a suggestion (or on the plain
+rule for the domain's own types) shows exactly what goes where before
+anything changes: the file, the line and the inserted text. *Apply* writes
+it as one undoable edit and saves, so the module builds; when the build
+finishes, the panel checks the denial again against that build and marks
+it *Resolved* (or says what still denies it, or that the build failed). The
+call goes where refpolicy modules keep it: among the domain's
+one-argument interface calls next to its alphabetical neighbour, or, for an
+interface from a module that can be turned off (not a base module; outside
+the kernel and system layers without modules.conf), into that module's
+existing `optional_policy` block for the domain, else a new block placed
+alphabetically among the others; a plain rule goes after the domain's last
+`allow` rule. A call that is already there is reported instead. In a
+standalone workspace, a domain of the installed policy (e.g. `httpd_t`) gets
+a small module of its own, `local_httpd/local_httpd.te` (`gen_require` of the
+domain plus the call), built and checked linked with the installed policy;
+install it with *SELinux: Install Module*.
+
 **Building** (Linux)
 
 * **Build on save.** Saving a policy file compiles it in a private scratch
@@ -716,7 +734,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   first for 98% (exactly the original for 57%: often several grant the
   same), in the top 3 for 90%, top 5 for 98%. The e2e test checks
   suggestions with the devel headers, a linked module build and a CLIP
-  tree build.
+  tree build. Applying fixes (e2e on Rocky 9): `files_rw_etc_files` and an
+  `optional_policy`-wrapped `apache_read_sys_content` written into a
+  standalone module, a new `local_httpd` module for `httpd_t`, and
+  `files_rw_etc_files` written into a copy of CLIP's `apache.te` all build,
+  and the rebuilt policy then allows each denial; asking again reports the
+  call as already there.
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
   26 kinds of edits on each (capabilities, file types added, removed or
@@ -882,7 +905,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 **Denial assistant**
 
-* Fixes aren't written into modules yet (planned): copy the suggested call.
+* Verification uses your build: a fix is resolved there once it builds;
+  the host that logged the denial needs the module installed (and, for a
+  tree, the policy) before the denial goes away. In a tree, a domain not
+  declared in it can't be fixed from the panel.
 * Suggestions consider interfaces with one argument (the domain); patterns
   that take a second type (file type transitions, `*_pattern` macros) and
   combinations of two interfaces aren't suggested. In a tree they need a

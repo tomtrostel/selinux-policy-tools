@@ -30,24 +30,53 @@
   for (const [v, t] of SINCE) $('since').append(h('option', { value: v }, t));
   $('since').value = 'recent';
 
+  let last = null;            // last analysis result
+  const fixes = new Map();    // group key → { plan } | { applied: path } | { resolved } | { still: title } | { failed }
+  const opened = new Map();   // group key → open (cards the user toggled)
+  let verifying = false;      // an analysis against the build after a fix
+
   const saved = vscode.getState && vscode.getState();
   if (saved && saved.log) $('log').value = saved.log;
 
-  function analyze() {
+  function analyze(against) {
     const text = $('log').value;
     if (vscode.setState) vscode.setState({ log: text.length < 2e6 ? text : '' });
     if (!text.trim()) { $('status').textContent = 'Paste audit records, open a log file, or read them from this host.'; return; }
     $('status').textContent = 'Analyzing…';
-    vscode.postMessage({ cmd: 'analyze', text, against: $('against').value || null });
+    vscode.postMessage({ cmd: 'analyze', text, against: against || $('against').value || null });
   }
-  $('analyze').addEventListener('click', analyze);
+  $('analyze').addEventListener('click', () => analyze());
   $('host').addEventListener('click', () => vscode.postMessage({ cmd: 'ausearch', since: $('since').value }));
   $('openFile').addEventListener('click', () => vscode.postMessage({ cmd: 'openFile' }));
   $('against').addEventListener('change', () => { if ($('log').value.trim()) analyze(); });
+  const rerender = () => { if (last) render(last); };
 
   const fmtTime = (ms) => { try { return new Date(ms).toLocaleString(); } catch { return String(ms); } };
   const ruleText = (r) => `${r.rt} ${r.s} ${r.t}:${r.c} { ${r.perms.join(' ')} };${r.cond ? `   [when ${r.cond.replace(/:true$/, '').replace(/^(.*):false$/, 'not ($1)')}]` : ''}`;
   const typeLink = (name, loc) => (loc ? h('button', { class: 'link', title: `Open the declaration of ${name}${loc.m ? ` (module ${loc.m})` : ''}`, onclick: () => vscode.postMessage({ cmd: 'open', loc }) }, name) : h('code', {}, name));
+
+  const fixBtn = (g, what) => h('button', { title: 'Add this to the module of ' + g.source + ': shows exactly what will be inserted where, before anything changes',
+    onclick: () => { fixes.set(g.key, { planning: true }); rerender(); vscode.postMessage({ cmd: 'fix', key: g.key, domain: g.source, ...what }); } }, 'Add to module…');
+
+  /** What a planned / applied fix looks like in its card. */
+  function fixBox(g) {
+    const f = fixes.get(g.key);
+    if (!f) return null;
+    if (f.planning) return h('div', { class: 'fixbox muted' }, 'Working out where it goes…');
+    if (f.resolved) return h('div', { class: 'fixbox ok' }, `✓ Resolved: your build now allows this (${f.resolved}). Install the module on the host to fix the denial there.`);
+    if (f.still) return h('div', { class: 'fixbox warn' }, `Still not allowed by your build: ${f.still}.`);
+    if (f.failed) return h('div', { class: 'fixbox warn' }, 'The build failed: see the Problems view, fix the error and save again.');
+    if (f.applied) return h('div', { class: 'fixbox muted' }, `Added to ${f.applied}. Checking it against your build when the build finishes…`);
+    const p = f.plan;
+    if (p.unavailable || p.already) return h('div', { class: 'fixbox warn' }, p.unavailable || p.message, ' ', h('button', { onclick: () => { fixes.delete(g.key); rerender(); } }, 'OK'));
+    return h('div', { class: 'fixbox' },
+      h('div', {}, `${p.exists ? 'Adds to' : 'Creates'} `, h('code', {}, p.path), ` at line ${p.line + 1}${p.optional ? ' (in optional_policy: that module can be turned off)' : ''}:`),
+      h('pre', { class: 'rules add' }, p.inserted.join('\n')),
+      p.note ? h('div', { class: 'muted' }, p.note) : null,
+      h('div', { class: 'cmd' },
+        h('button', { class: 'primary', title: 'Write it (one undoable edit) and save: the module builds, and the denial is checked against the build', onclick: () => { vscode.postMessage({ cmd: 'applyFix', key: g.key, plan: p }); } }, 'Apply'),
+        h('button', { title: 'Leave the module as it is', onclick: () => { fixes.delete(g.key); rerender(); } }, 'Cancel')));
+  }
 
   const copyBtn = (text, what) => h('button', { title: `Copy ${what}`, onclick: () => vscode.postMessage({ cmd: 'copy', text }) }, 'Copy');
 
@@ -57,7 +86,7 @@
     if (!s) return null;
     if (s.own) {
       return [h('div', { class: 'sub', title: 'Both types belong to the same module, so a plain rule in that module is the normal way to allow it' }, `Fix: a rule in ${s.module ? `module ${s.module}` : 'the domain’s own module'}`),
-        h('div', { class: 'cmd' }, h('code', {}, s.rule), copyBtn(s.rule, 'the rule'))];
+        h('div', { class: 'cmd' }, h('code', {}, s.rule), copyBtn(s.rule, 'the rule'), fixBtn(g, { rule: s.rule }))];
     }
     const rows = (s.list || []).map((x, k) => {
       const call = `${x.name}(${g.source})`;
@@ -72,7 +101,7 @@
       return h('div', { class: 'iface' },
         h('div', { class: 'cmd' },
           h('button', { class: 'link', title: `Open the definition of ${x.name}${x.module ? ` (module ${x.module})` : ''}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, call),
-          copyBtn(call, 'the call'), tags),
+          copyBtn(call, 'the call'), x.covers ? fixBtn(g, { call }) : null, tags),
         x.summary ? h('div', { class: 'muted' }, x.summary) : null,
         x.grants && x.grants.length ? h('div', { class: 'grants', title: 'What the interface grants besides the denied access (largest first); attributes count all their member types' },
           h('span', { class: 'muted' }, 'also grants: '), x.grants.join('; ')) : h('div', { class: 'grants muted' }, 'grants nothing else'),
@@ -89,14 +118,15 @@
       h('span', { class: 'what' }, h('code', {}, g.source), ' → ', h('code', {}, g.target), ' ', h('span', { class: 'muted' }, `${g.tclass} { ${g.perms.join(' ')} }`)),
       h('span', { class: 'muted' }, `${g.count}×${g.comms && g.comms.length ? ` · ${g.comms.join(', ')}` : ''}`),
       h('span', { class: 'vtitle' }, v.title));
-    const fixes = (v.fixes || []).map(f => h('div', { class: 'fix' },
+    const fixRows = (v.fixes || []).map(f => h('div', { class: 'fix' },
       h('div', {}, f.text),
       f.command ? h('div', { class: 'cmd' }, h('code', {}, f.command),
         h('button', { title: 'Copy the command', onclick: () => vscode.postMessage({ cmd: 'copy', text: f.command }) }, 'Copy'),
         h('button', { title: 'Put the command (with sudo) into a terminal on this host; press Enter there to run it', onclick: () => vscode.postMessage({ cmd: 'run', command: `sudo ${f.command}` }) }, 'Send to terminal')) : null));
     const body = h('div', { class: 'body' },
+      fixBox(g),
       h('div', { class: 'detail' }, v.detail),
-      fixes.length ? h('div', { class: 'sub' }, 'Fix') : null, fixes,
+      fixRows.length ? h('div', { class: 'sub' }, 'Fix') : null, fixRows,
       v.rules && v.rules.length ? [h('div', { class: 'sub' }, 'Allowed by'), h('pre', { class: 'rules' }, v.rules.map(ruleText).join('\n'))] : null,
       suggestions(g),
       v.needed ? [h('div', { class: 'sub', title: 'What the denial asks for, written as one raw rule. Prefer an interface of the module that owns the target type' }, 'Access needed'), h('pre', { class: 'rules' }, v.needed)] : null,
@@ -108,10 +138,22 @@
         g.exes && g.exes.length ? h('div', {}, h('span', { class: 'lbl' }, 'Programs'), g.exes.join(', ')) : null,
         g.paths && g.paths.length ? h('div', {}, h('span', { class: 'lbl' }, 'Files'), h('span', {}, g.paths.slice(0, 8).join(', '), g.paths.length > 8 ? ` and ${g.paths.length - 8} more` : '')) : null,
         g.first ? h('div', {}, h('span', { class: 'lbl' }, 'When'), g.first === g.last ? fmtTime(g.first) : `${fmtTime(g.first)} – ${fmtTime(g.last)}`) : null));
-    return h('details', { class: `group ${v.verdict}`, open: i < 3 ? true : null }, head, body);
+    const open = opened.has(g.key) ? opened.get(g.key) : (i < 3 || fixes.has(g.key));
+    const d = h('details', { class: `group ${v.verdict}`, open: open ? true : null, ontoggle: (e) => opened.set(g.key, !!e.target.open) }, head, body);
+    return d;
   }
 
   function render(r) {
+    last = r;
+    if (verifying) {
+      verifying = false;
+      for (const [k, f] of fixes) {
+        if (!f.applied) continue;
+        const g = r.groups.find(x => x.key === k);
+        if (g && g.v.verdict === 'allowed') fixes.set(k, { resolved: r.policy ? r.policy.label : 'the build' });
+        else fixes.set(k, { still: g ? g.v.title.toLowerCase() : 'the denial is no longer in the log' });
+      }
+    }
     const list = $('list');
     list.replaceChildren();
     const n = r.groups.length;
@@ -140,6 +182,16 @@
     else if (m.cmd === 'result') { if (m.result.policies) setPolicies(m.result.policies, m.result.policy && m.result.policy.id); render(m.result); }
     else if (m.cmd === 'log') { $('log').value = m.text; analyze(); }
     else if (m.cmd === 'status') $('status').textContent = m.text;
+    else if (m.cmd === 'fixPlan') { fixes.set(m.key, { plan: m.plan }); opened.set(m.key, true); rerender(); }
+    else if (m.cmd === 'applied') { fixes.set(m.key, { applied: m.path }); rerender(); }
+    else if (m.cmd === 'built') {
+      const pending = [...fixes.values()].some(f => f.applied);
+      if (!pending) return;
+      if (!m.ok) { for (const [k, f] of fixes) if (f.applied) fixes.set(k, { failed: true }); rerender(); return; }
+      verifying = true;
+      $('status').textContent = 'Checking the fix against your build…';
+      analyze('build');
+    }
     else if (m.cmd === 'error') $('status').textContent = m.text;
   });
   vscode.postMessage({ cmd: 'ready' });

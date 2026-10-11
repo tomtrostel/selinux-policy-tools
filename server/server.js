@@ -2363,6 +2363,52 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
   log(`denial suggestions: ${calls.size} interface calls probed in ${ex.ms} ms, ${Date.now() - t0} ms total`);
 }
 
+/** The workspace .te that declares a domain (the active tree's, or a standalone module's), or null. */
+function domainModuleFile(domain) {
+  const inWs = (p) => roots.some(r => p.startsWith(r + path.sep)) && !inExcludedTree(p) && (!treeRoot || p.startsWith(treeRoot + path.sep));
+  const d = (idx.decls.get(domain) || []).find(x => x.kind === 'type' && /\.te$/.test(x.path) && inWs(x.path));
+  return d ? d.path : null;
+}
+
+/**
+ * Plan the fix for a denial: an interface call (or a plain rule for the
+ * domain's own types) inserted into the domain's module, wrapped in
+ * optional_policy when the interface's module can be off; for a domain only
+ * in the installed policy (standalone workspace), a new local module.
+ * → { path, exists, text, line, inserted, diff, optional } | { already } | { unavailable }.
+ */
+connection.onRequest('selinux/denialFix', async ({ domain, call, rule }) => {
+  await indexing;
+  if (!/^[A-Za-z_]\w*$/.test(domain || '') || (!call && !rule)) return { unavailable: 'Nothing to add.' };
+  const name = call ? call.slice(0, call.indexOf('(')) : null;
+  const te = domainModuleFile(domain);
+  if (te) {
+    const old = readSource(te);
+    if (old == null) return { unavailable: `Can't read ${rel(te)}.` };
+    const ifMod = name ? ((idx.files.get(((idx.defs.get(name) || [])[0] || {}).path) || {}).module || null) : null;
+    const domMod = (idx.files.get(te) || {}).module || path.basename(te, '.te');
+    const optional = !!(name && ifMod !== domMod && serviceCtx().optional(name));
+    const r = denials.insertFix(old, { domain, call, rule, optional, module: ifMod });
+    if (r.already) return { already: true, path: te, message: `${rel(te)} already has ${call || rule}; the denial should go away once the module is rebuilt and loaded.` };
+    return { path: te, exists: true, module: domMod, text: r.text, line: r.line, inserted: r.inserted, optional, diff: service.lineDiff(old, r.text) };
+  }
+  if (!usingDevel) return { unavailable: `${domain} isn't declared in ${treeRoot ? path.basename(treeRoot) : 'this workspace'}, so there is no module to add the fix to.` };
+  if (!call) return { unavailable: `${domain} isn't declared in this workspace; a plain rule on another module's type isn't offered (use an interface).` };
+  // A local module for a domain of the installed policy: local_<name>/local_<name>.te in the workspace.
+  if (!roots[0]) return { unavailable: 'Open a folder to put the local module in.' };
+  const base = `local_${domain.replace(/_t$/, '')}`;
+  const p = path.join(roots[0], base, `${base}.te`);
+  const old = readSource(p);
+  if (old != null) {
+    const r = denials.insertFix(old, { domain, call, optional: false });
+    if (r.already) return { already: true, path: p, message: `${rel(p)} already has ${call}.` };
+    return { path: p, exists: true, module: base, text: r.text, line: r.line, inserted: r.inserted, optional: false, diff: service.lineDiff(old, r.text) };
+  }
+  const text = denials.localModuleText(base, domain, call);
+  return { path: p, exists: false, module: base, text, line: text.split('\n').length - 2, inserted: [call], optional: false, diff: service.lineDiff('', text),
+    note: `${domain} belongs to the installed policy, so this creates a small module of its own (${base}) that adds the call. Install it with SELinux: Install Module.` };
+});
+
 connection.onRequest('selinux/denialPolicies', async () => {
   await indexing;
   const list = denialPolicies();

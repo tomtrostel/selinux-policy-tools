@@ -15,7 +15,12 @@
   it, narrowest first, each with what else it grants, worked out from what
   each one really expands to (m4 with the policy's own Makefile) and the
   compiled policy. A plain rule is suggested when both types are the
-  domain's own. Writing the fix into the module comes next.
+  domain's own.
+* **Applying the fix**: *Add to module…* shows the exact insertion (file,
+  line, text; `optional_policy` when the interface's module can be off),
+  *Apply* writes it and saves, and after the build the denial is checked
+  again against it (*Resolved*). Domains of the installed policy get a
+  small local module in a standalone workspace.
 
 **Tests**: `npm run test:denials` (in `npm test`), `npm run
 test:denials-e2e` (melody: installed policy, standalone module, CLIP tree),

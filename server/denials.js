@@ -402,6 +402,101 @@ const EXEC_PERMS = new Set(['execute', 'execute_no_trans', 'entrypoint', 'transi
 /** How much a granted permission weighs in the "extra rights" count: reads 1, writes 3, executes/transitions 5. */
 const permWeight = (p) => (EXEC_PERMS.has(p) ? 5 : WRITE_PERMS.has(p) ? 3 : 1);
 
+/* ---------- writing the fix ---------- */
+
+const LOCAL_HEADER = /^#\s*(\S.*\s)?local polic(y|ies)\s*$/i;
+
+/**
+ * Insert an interface call (or a plain allow rule) for `domain` into a .te
+ * text, the way refpolicy modules are laid out:
+ *   - a call: among the domain's top-level calls in alphabetical order, or,
+ *     when `optional`, inside the module's existing optional_policy block for
+ *     that interface's module (calls of `module`_*), else in a new block
+ *     placed alphabetically among the other optional blocks;
+ *   - a rule: after the domain's last top-level allow rule.
+ * Returns { text, line (first inserted line, 0-based), inserted: [lines] }
+ * or { already: true } when the call/rule is there already (top level or optional).
+ */
+function insertFix(text, { domain, call, rule, optional, module }) {
+  const service = require('./service');
+  const crlf = text.includes('\r\n');
+  const src = crlf ? text.replace(/\r\n/g, '\n') : text;
+  const lines = src.split('\n');
+  const sc = service.scanTe(src);
+  const indent = /^\t/m.test(src) || !/^ {2,}\S/m.test(src) ? '\t' : src.match(/^( +)\S/m)[1];
+  const local = Math.max(0, lines.findIndex(l => LOCAL_HEADER.test(l)));
+  const name = call ? call.slice(0, call.indexOf('(')) : null;
+  const mentions = sc.stmts.filter(s => s.top && s.l >= local && ((s.args && s.args.includes(domain)) || s.src === domain || s.name === domain || (s.text && new RegExp(`\\b${domain}\\b`).test(s.text))));
+  const afterMentions = () => (mentions.length ? Math.max(...mentions.map(s => s.endL)) + 1 : lines.length);
+  // After the call whose name comes right before this one alphabetically (modules are only roughly sorted).
+  const afterPredecessor = (list) => { const p = list.filter(x => x.name < name).sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : b.endL - a.endL))[0]; return p ? p.endL + 1 : null; };
+  let at, insert;
+  if (rule) {
+    const m = /^allow\s+(\S+)\s+(\S+):(\S+)\s+\{?\s*([^};]*?)\s*\}?\s*;$/.exec(rule.trim());
+    const want = m ? m[4].split(/\s+/) : [];
+    if (m && sc.stmts.some(s => s.kind === 'allow' && !s.bool && s.src === m[1] && s.tgt === m[2] && s.cls === m[3] && want.every(p => s.perms.includes(p)))) return { already: true };
+    const allows = sc.stmts.filter(s => s.top && (s.kind === 'allow' || s.kind === 'rule') && (s.src === domain || (s.text && new RegExp(`^allow\\s+${domain}\\b`).test(s.text))));
+    at = allows.length ? Math.max(...allows.map(s => s.endL)) + 1 : afterMentions();
+    insert = [rule.trim()];
+  } else {
+    if (sc.stmts.some(s => s.kind === 'call' && s.name === name && s.args[0] === domain && (s.top || s.opt) && !s.bool)) return { already: true };
+    const blocks = sc.blocks.filter(b => b.name === 'optional_policy' && b.l >= local && !sc.blocks.some(o => o !== b && o.l < b.l && o.endL >= b.endL));
+    const innerOf = (b) => sc.stmts.filter(s => s.kind === 'call' && s.opt === b);
+    if (optional) {
+      const prefix = module ? `${module}_` : name.slice(0, name.indexOf('_') + 1);
+      const mine = blocks.find(b => { const inner = innerOf(b); return inner.length && inner.every(s => s.name.startsWith(prefix)) && inner.some(s => s.args[0] === domain); });
+      if (mine) {
+        const inner = innerOf(mine).filter(s => s.args[0] === domain);
+        const p = afterPredecessor(inner);
+        at = p != null ? p : inner[0].l;
+        insert = [`${indent}${call}`];
+      } else {
+        const keyOf = (b) => (innerOf(b)[0] || { name: '~' }).name;
+        const before = blocks.filter(b => keyOf(b) < name);
+        if (before.length) { at = Math.max(...before.map(b => b.endL)) + 1; insert = ['', 'optional_policy(`', `${indent}${call}`, "')"]; }
+        else if (blocks.length) { at = blocks[0].l; insert = ['optional_policy(`', `${indent}${call}`, "')", '']; }
+        else { at = afterMentions(); insert = ['', 'optional_policy(`', `${indent}${call}`, "')"]; }
+      }
+    } else {
+      // The domain's one-argument interface calls (pattern macros and file type transitions stay where they are).
+      const calls = sc.stmts.filter(s => s.top && s.kind === 'call' && s.args.length === 1 && s.args[0] === domain && s.l >= local && local > 0);
+      const p = afterPredecessor(calls);
+      if (p != null) at = p;
+      else if (calls.length) at = calls[0].l;
+      else at = afterMentions();
+      insert = [call];
+      // A call after a blank-line group of rules reads better with a blank line before it.
+      if (!calls.length && at > 0 && lines[at - 1] && lines[at - 1].trim()) insert = ['', call];
+    }
+  }
+  // No doubled blank lines where the new lines meet the old ones (the rest of the file stays as it is).
+  const blank = (s) => s !== undefined && !s.trim();
+  if (insert[0] === '' && (at === 0 || blank(lines[at - 1]))) insert = insert.slice(1);
+  if (insert[insert.length - 1] === '' && blank(lines[at])) insert = insert.slice(0, -1);
+  if (insert[insert.length - 1] === "')" && lines[at] !== undefined && lines[at].trim()) insert = [...insert, ''];
+  const out = [...lines.slice(0, at), ...insert, ...lines.slice(at)];
+  let joined = out.join('\n');
+  if (crlf) joined = joined.replace(/\n/g, '\r\n');
+  return { text: joined, line: at + (insert[0] === '' ? 1 : 0), inserted: insert.filter(l => l !== '') };
+}
+
+/** A new standalone module that adds `call` for a domain of the installed policy. */
+function localModuleText(name, domain, call) {
+  return `policy_module(${name}, 1.0.0)
+
+########################################
+#
+# Local policy for ${domain}, added with the denial assistant
+#
+
+gen_require(\`
+\ttype ${domain};
+')
+
+${call}
+`;
+}
+
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };
+module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };

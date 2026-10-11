@@ -21,7 +21,7 @@ without modules.conf (make conf defaults); not yet tried interactively.
 0.9.0 adds the service editor with booleans, port types and helper
 domains (step 6 below; e2e-tested, the form not yet tried interactively)
 and tutorials (step 7; the user checked the walkthroughs in VS Code and
-they look good). Unreleased (after 0.9.0): the denial assistant, phases 1-2
+they look good). Unreleased (after 0.9.0): the denial assistant, phases 1-3
 (step 8).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -346,7 +346,8 @@ so far covered by the e2e tests only.
 8. **Denial assistant** (user picked it from suggested features; plan agreed
    2026-10-11): from an AVC denial to the smallest correct fix.
    Phases: 1 parse/group/verdicts (done, unreleased), 2 interface
-   suggestions (done, unreleased), 3 apply + verify after build, 4 later (no transition into
+   suggestions (done, unreleased), 3 apply + verify after build (done,
+   unreleased), 4 later (no transition into
    the domain, two-interface covers, new interface in the owner module,
    constraint/MLS explanations, a tutorial quick action).
    Phase 1: `server/denials.js` (pure): `records()` (audit.log /
@@ -414,6 +415,26 @@ so far covered by the e2e tests only.
    `iface(domain_t)` calls of other modules in RHEL 9 contrib .te, the
    interface's own (non-nested) rule with the most non-read perms → a denial;
    98% original-or-narrower first (57% exactly), 90% top 3, 98% top 5.
+   Phase 3: `denials.insertFix(text, {domain, call | rule, optional,
+   module})` on service.scanTe: calls among the domain's 1-arg top-level
+   calls after the local-policy header, after the closest alphabetical
+   predecessor (`afterPredecessor`; large modules are only roughly sorted);
+   optional → inside the top-level optional_policy whose inner calls all
+   start with `<module>_` and include the domain, else a new block placed by
+   its first inner call name; rules after the domain's last allow; already
+   present (top or optional, not under a boolean) → {already}; blank lines
+   fixed only at the seam; CRLF kept. `localModuleText()`. Server
+   `selinux/denialFix` {domain, call | rule}: `domainModuleFile()` (type decl
+   in a workspace .te of the active tree), optional = serviceCtx().optional
+   and interface module ≠ domain module; devel mode without a declaring
+   .te → `<root>/local_<domain minus _t>/local_<…>.te` (insert if it exists).
+   Client `applyDenialFix()` (WorkspaceEdit, save → build on save, select
+   the inserted lines) and forwards every final `selinux/build` to the
+   panel as `built`; webview `fixes` map (planning / plan / applied /
+   resolved / still / failed), on `built` with an applied fix re-analyzes
+   with against 'build' and marks verdict allowed as resolved; `opened`
+   keeps toggled cards. e2e: standalone call + optional call + local module
+   for httpd_t + CLIP copy apache.te, each rebuilt → allowed.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.

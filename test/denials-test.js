@@ -149,6 +149,59 @@ check(ranked.find(x => x.name === 'files_manage_etc_files').extra > ranked.find(
 const part = d.rankInterfaces({ domain: 'myd_t', target: 'etc_t', tclass: 'file', perms: ['write', 'execute'] }, [cand('files_rw_etc_files')], st, types);
 check(part.length === 1 && !part[0].covers && part[0].missing.join() === 'execute', 'partial cover reported with what it lacks');
 
+/* ---------- writing the fix ---------- */
+
+const TE = `policy_module(myd, 1.0.0)
+
+type myd_t;
+type myd_exec_t;
+init_daemon_domain(myd_t, myd_exec_t)
+
+type myd_data_t;
+files_type(myd_data_t)
+
+########################################
+#
+# myd local policy
+#
+
+allow myd_t self:process signal;
+allow myd_t myd_data_t:file read_file_perms;
+
+files_read_etc_files(myd_t)
+logging_send_syslog_msg(myd_t)
+
+optional_policy(\`
+	apache_read_sys_content(myd_t)
+')
+
+optional_policy(\`
+	dbus_system_bus_client(myd_t)
+')
+`;
+const linesAfter = (r, n = 3) => r.text.split('\n').slice(r.line - 1, r.line + n).join('|');
+let fx = d.insertFix(TE, { domain: 'myd_t', call: 'kernel_read_system_state(myd_t)', optional: false });
+check(linesAfter(fx) === 'files_read_etc_files(myd_t)|kernel_read_system_state(myd_t)|logging_send_syslog_msg(myd_t)|', 'call inserted among the domain\'s calls in alphabetical order', linesAfter(fx));
+check(fx.text.split('\n').length === TE.split('\n').length + 1, 'only one line added');
+fx = d.insertFix(TE, { domain: 'myd_t', call: 'apache_search_sys_content(myd_t)', optional: true, module: 'apache' });
+check(/apache_read_sys_content\(myd_t\)\n\tapache_search_sys_content\(myd_t\)\n'\)/.test(fx.text), 'optional call joins the module\'s existing optional_policy block');
+fx = d.insertFix(TE, { domain: 'myd_t', call: 'cron_system_entry(myd_t)', optional: true, module: 'cron' });
+check(/apache_read_sys_content\(myd_t\)\n'\)\n\noptional_policy\(`\n\tcron_system_entry\(myd_t\)\n'\)\n\noptional_policy\(`\n\tdbus/.test(fx.text), 'new optional block between apache and dbus, blank lines around it', fx.text.slice(-200));
+fx = d.insertFix(TE, { domain: 'myd_t', call: 'abrt_stream_connect(myd_t)', optional: true, module: 'abrt' });
+check(/logging_send_syslog_msg\(myd_t\)\n\noptional_policy\(`\n\tabrt_stream_connect\(myd_t\)\n'\)\n\noptional_policy\(`\n\tapache/.test(fx.text), 'new optional block before the first one');
+fx = d.insertFix(TE, { domain: 'myd_t', call: 'zebra_read_config(myd_t)', optional: true, module: 'zebra' });
+check(/dbus_system_bus_client\(myd_t\)\n'\)\n\noptional_policy\(`\n\tzebra_read_config\(myd_t\)\n'\)\n$/.test(fx.text), 'new optional block after the last one');
+fx = d.insertFix(TE, { domain: 'myd_t', rule: 'allow myd_t myd_data_t:file { write };' });
+check(linesAfter(fx, 1) === 'allow myd_t myd_data_t:file read_file_perms;|allow myd_t myd_data_t:file { write };', 'own rule after the domain\'s last allow rule');
+check(d.insertFix(TE, { domain: 'myd_t', call: 'files_read_etc_files(myd_t)' }).already && d.insertFix(TE, { domain: 'myd_t', call: 'apache_read_sys_content(myd_t)', optional: true }).already, 'calls already there (top level or optional) are reported');
+fx = d.insertFix(TE.replace(/\n/g, '\r\n'), { domain: 'myd_t', call: 'kernel_read_system_state(myd_t)' });
+check(!/[^\r]\n/.test(fx.text), 'CRLF files stay CRLF');
+const bare = 'policy_module(x, 1.0)\n\ntype x_t;\nallow x_t self:process signal;\n';
+fx = d.insertFix(bare, { domain: 'x_t', call: 'files_read_etc_files(x_t)' });
+check(fx.text === 'policy_module(x, 1.0)\n\ntype x_t;\nallow x_t self:process signal;\n\nfiles_read_etc_files(x_t)\n', 'module without calls or header: after its rules', fx.text);
+const lm = d.localModuleText('local_httpd', 'httpd_t', 'files_rw_etc_files(httpd_t)');
+check(/^policy_module\(local_httpd, 1\.0\.0\)/.test(lm) && /gen_require\(`\n\ttype httpd_t;\n'\)/.test(lm) && /\nfiles_rw_etc_files\(httpd_t\)\n$/.test(lm), 'local module: requires the domain, adds the call');
+
 /* ---------- webview ---------- */
 
 class El {
@@ -222,7 +275,30 @@ btn(ifaces[0], 'files_rw_etc_files(myd_t)').fire('click');
 check(last('open') && last('open').loc.p === '/t/files.if', 'interface opens its definition');
 btn(ifaces[0], 'Copy').fire('click');
 check(last('copy').text === 'files_rw_etc_files(myd_t)', 'interface call copied');
-check(/a rule in module myd/.test(cards[3].textContent) && /allow myd_t myd_data_t:file/.test(cards[3].textContent), "own types: a rule in the domain's module");
+// Add to module: plan, apply, verify against the build.
+btn(ifaces[0], 'Add to module…').fire('click');
+check(last('fix') && last('fix').call === 'files_rw_etc_files(myd_t)' && last('fix').domain === 'myd_t' && last('fix').key === 'c', 'Add to module asks for a plan');
+send({ cmd: 'fixPlan', key: 'c', plan: { path: '/t/myd.te', exists: true, line: 20, inserted: ['files_rw_etc_files(myd_t)'], optional: false, text: 'x' } });
+let card3 = () => find(e => (e.attrs.class || '').split(' ').includes('group'))[2];
+check(/Adds to \/t\/myd\.te at line 21/.test(card3().textContent) && /files_rw_etc_files\(myd_t\)/.test(card3().all(e => e.tag === 'pre')[0].textContent), 'the plan shows the file, line and inserted text');
+btn(card3(), 'Apply').fire('click');
+check(last('applyFix') && last('applyFix').plan.path === '/t/myd.te', 'Apply sends the plan');
+send({ cmd: 'applied', key: 'c', path: '/t/myd.te' });
+check(/Checking it against your build/.test(card3().textContent), 'applied: waiting for the build');
+const nAnalyze = posted.filter(m => m.cmd === 'analyze').length;
+send({ cmd: 'built', ok: true });
+check(posted.filter(m => m.cmd === 'analyze').length === nAnalyze + 1 && last('analyze').against === 'build', 'after the build: analyzed again against the build');
+send({ cmd: 'result', result: { ...result, policy: { id: 'build', label: 'Last build of t' }, groups: result.groups.map(g => (g.key === 'c' ? { ...g, v: { ...g.v, verdict: 'allowed', title: 'Already allowed' }, suggest: null } : g)) } });
+check(/Resolved: your build now allows this \(Last build of t\)/.test(card3().textContent), 'resolved by the build');
+btn(cards[3] || find(e => (e.attrs.class || '').split(' ').includes('group'))[3], 'Add to module…').fire('click');
+check(last('fix').rule === 'allow myd_t myd_data_t:file { write };', 'own rule: Add to module sends the rule');
+send({ cmd: 'fixPlan', key: 'd', plan: { already: true, message: 'myd.te already has it' } });
+check(/already has it/.test(find(e => (e.attrs.class || '').split(' ').includes('group'))[3].textContent), 'already there: said so');
+send({ cmd: 'fixPlan', key: 'd', plan: { path: '/t/myd.te', exists: true, line: 3, inserted: ['allow myd_t myd_data_t:file { write };'], text: 'y' } });
+send({ cmd: 'applied', key: 'd', path: '/t/myd.te' });
+send({ cmd: 'built', ok: false });
+check(/The build failed/.test(find(e => (e.attrs.class || '').split(' ').includes('group'))[3].textContent), 'failed build reported on the fix');
+check(/a rule in module myd/.test(find(e => (e.attrs.class || '').split(' ').includes('group'))[3].textContent) && /allow myd_t myd_data_t:file/.test(cards[3].textContent), "own types: a rule in the domain's module");
 btn(cards[0], 'httpd_t').fire('click');
 check(last('open') && last('open').loc.p === '/t/apache.te', 'type links open the declaration');
 check(!btn(cards[0], 'user_home_t'), 'no link for a type without a source location');
