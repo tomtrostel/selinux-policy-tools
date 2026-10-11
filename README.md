@@ -227,7 +227,17 @@ writes. It offers what the existing service modules use (taken from the
   `/tmp`, `/var/lib`, … get their type automatically (file type
   transitions).
 * **Network:** ports it listens on and ports it connects to (TCP/UDP, any
-  port type in the tree, shown with its port numbers, or any port).
+  port type in the tree, shown with its port numbers, or any port), and
+  **port types of its own** for port numbers no existing type covers. In a
+  tree a new port type is a `network_port(name, tcp,9999,s0, …)` line in
+  `corenetwork.te.in` (put in alphabetical place), so it gets the usual
+  `corenet_*` interfaces and its `portcon`; numbers already taken by
+  another port type are refused, overlaps with a range are pointed out.
+  Port types named after the module (`ntp_port_t` for `ntp`) show up when
+  editing it, and their numbers can be changed there. A standalone module
+  declares the type itself (`corenet_port()`); since a loadable module
+  can't carry port numbers, they are written as the `semanage port -a`
+  commands to run after installing.
 * **System access** in plain words: syslog, user/group/host lookups, DNS,
   `/proc` and `/sys`, random devices, locale data, certificates, running
   programs or shell scripts, D-Bus, sending mail, NoNewPrivileges starts, ….
@@ -596,12 +606,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   or description, grants added and removed, an existing boolean used)
   read back as the edited form and repeat as a no-op (7,172 edits). On
   CLIP, RHEL 9 and RHEL 10 a new service using every kind of setting
-  (booleans included) builds and links with the full tree, and so do an
-  edited `ntp` (a new boolean) and an edited `rsync` (its own boolean's
-  default and grants); grants conditional policy can't hold are refused
+  (booleans and a port type of its own included) builds and links with the
+  full tree, with `portcon` entries for its port type, and so do an edited
+  `ntp` (a new boolean, a number added to `ntp_port_t`) and an edited
+  `rsync` (its own boolean's default and grants); grants conditional
+  policy can't hold, and port numbers another port type has, are refused
   before building. None of the 766 calls Fedora's daemons make under a
-  boolean is refused. A standalone service builds against the devel
-  headers. The form itself is tested with a fake DOM; it hasn't had
+  boolean is refused. A standalone service with a port type of its own
+  builds against the devel headers. The form itself is tested with a fake DOM; it hasn't had
   interactive use yet.
 * Source diagnostics over the full upstream Fedora tree, the RHEL 9 source
   (selinux-policy 38.1.75, from the Rocky 9.8 source RPM) and CLIP for RHEL 9
@@ -749,8 +761,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Services only: a domain started by init with `init_daemon_domain()`.
   User applications, CGI scripts and helper domains of a service are edited
   in the `.te` as before (helpers show up under *Kept as is*).
-* Ports: only port types the tree already has. A new port number needs a
-  `network_port()` line in `corenetwork.te.in` (or `semanage port -a`).
+* Port types: a port type can't be removed or renamed from the form once
+  it is in `corenetwork.te.in` (other modules may use it); only port types
+  named after the module are shown as its own. A standalone module's port
+  numbers aren't in the policy at all: run the `semanage port -a` commands
+  it lists after installing.
 * Booleans: new ones are tunables (`gen_tunable`); `tunable_policy` on
   several booleans (`a && b`), with an else branch, or `if` statements
   on `gen_bool` booleans are kept but not editable in the form. File

@@ -308,6 +308,40 @@ function fileType(model, row, ctx) {
   return `${model.name}${alt[1]}`;
 }
 
+/*
+ * Port types of the service (model.ports: [{ name, nums: [{ proto, port, level }] }], name '' = the
+ * module name). In a tree they are network_port() lines in corenetwork.te.in, which generates the
+ * corenet_* interfaces for them; a standalone module declares the type itself (corenet_port) and,
+ * since a loadable module can't hold portcon statements, gets its numbers from semanage.
+ */
+const portName = (model, p) => sub((p.name || '').trim() || '%', model.name);
+const portNums = (p) => (p.nums || []).filter(x => String(x.port || '').trim()).map(x => ({ proto: x.proto || 'tcp', port: String(x.port).trim(), level: x.level || 's0' }));
+const SEMANAGE_RE = /^\s*#\s*semanage port -a -t (\w+) -p (tcp|udp|sctp|dccp) (\d+(?:-\d+)?)\s*$/;
+const PORT_HDR_RE = /^\s*#\s*Port numbers\b/;
+function portDeclText(P, nums) {
+  const head = nums.length ? ['# Port numbers: a module can\'t set them, so after installing run', ...nums.map(x => `#\tsemanage port -a -t ${P} -p ${x.proto} ${x.port}`)] : [];
+  return [...head, `type ${P};`, `corenet_port(${P})`].join('\n');
+}
+/** In a tree, the corenet_* interfaces of new port types exist once corenetwork is rebuilt: ctx.has says so. */
+function portCtx(model, ctx) {
+  if (!ctx.corenet || ctx.withPorts || !(model.ports || []).length) return ctx;
+  const mine = new Set(model.ports.map(p => portName(model, p)).filter(n => /^\w+$/.test(n)));
+  const re = /^(corenet_\w+?_)(\w+)(_port|_client_packets|_server_packets)$/;
+  const has = (n) => {
+    if (ctx.has(n)) return true;
+    const m = re.exec(n);
+    if (!m) return false;
+    for (const x of mine) {
+      if (!n.endsWith(`_${x}${m[3]}`)) continue;
+      const head = n.slice(0, n.length - x.length - m[3].length);
+      if (!ctx.portRef || ctx.has(head + ctx.portRef + m[3])) return true;
+    }
+    return false;
+  };
+  return { ...ctx, has, withPorts: true };
+}
+const allowKey = (src, tgt, cls, perms) => `allow:${src}:${tgt}:${cls}:${perms.slice().sort().join(' ')}`;
+
 // Statements inside tunable_policy(`b', ...) have keys of their own: the same call
 // at the top level and under a boolean are different statements.
 const scoped = (bool, key) => (bool ? `b:${bool}:${key}` : key);
@@ -330,6 +364,7 @@ function descFromDoc(lines) {
  * { key, kind: 'type'|'call'|'self'|'permissive'|'tunable', text, section: 'decl'|'local', opt, bool, group }.
  */
 function unitsOf(model, ctx) {
+  ctx = portCtx(model, ctx);
   const units = new Map();
   const { D, E } = names(model);
   const add = (key, sig, stmts) => units.set(key, { sig: JSON.stringify(sig), stmts });
@@ -359,6 +394,17 @@ function unitsOf(model, ctx) {
     add(`file:${T}`, { kind: row.kind, access: acc }, st.map(s => (s.opt ? { ...s, opt: false } : s)));
   }
 
+  // Port types declared in the module (standalone; in a tree they live in corenetwork.te.in).
+  const ownPorts = new Set();
+  if (!ctx.corenet) {
+    for (const p of model.ports || []) {
+      const P = `${portName(model, p)}_port_t`;
+      if (!/^\w+_port_t$/.test(P)) continue;
+      ownPorts.add(portName(model, p));
+      add(`port:${P}`, portNums(p), [{ key: `type:${P}`, kind: 'type', name: P, text: portDeclText(P, portNums(p)), section: 'decl' }]);
+    }
+  }
+
   grantUnits(model, '', null);
   // Booleans: the declaration (unless it is declared elsewhere, like use_nfs_home_dirs),
   // and what it grants inside tunable_policy.
@@ -379,6 +425,7 @@ function unitsOf(model, ctx) {
   function grantUnits(g, prefix, bool) {
     const self = (cls, perm) => ({ key: scoped(bool, `self:${cls}:${perm}`), kind: 'self', cls, perm, section: 'local', bool });
     const dcall = (name, group) => call(name, [D], 'local', group, bool);
+    const allow = (tgt, cls, perms) => ({ key: scoped(bool, allowKey(D, tgt, cls, perms)), kind: 'allow', name: 'allow', text: `allow ${D} ${tgt}:${cls} ${perms.length === 1 ? perms[0] : `{ ${perms.join(' ')} }`};`, section: 'local', group: 'net', bool });
     for (const id of g.self || []) {
       const s = SELF_BY[id];
       if (!s) continue;
@@ -399,7 +446,12 @@ function unitsOf(model, ctx) {
         st.push({ ...(proto === 'udp' ? self('udp_socket', 'create_socket_perms') : self('tcp_socket', 'create_stream_socket_perms')), bool: null, key: `self:${proto === 'udp' ? 'udp_socket:create_socket_perms' : 'tcp_socket:create_stream_socket_perms'}` });
         shared(`corenet_${proto}_sendrecv_generic_if`);
         shared(`corenet_${proto}_sendrecv_generic_node`);
-        if (port === 'all') {
+        if (ownPorts.has(port)) {
+          // A port type of the module's own: plain rules, there are no corenet interfaces for it.
+          if (dir === 'listen') shared(`corenet_${proto}_bind_generic_node`);
+          const cls = `${proto}_socket`;
+          st.push(allow(`${port}_port_t`, cls, dir === 'listen' ? ['name_bind'] : proto === 'tcp' ? ['name_connect'] : ['recv_msg', 'send_msg']));
+        } else if (port === 'all') {
           opt(dir === 'listen' ? `corenet_${proto}_bind_all_ports` : proto === 'tcp' ? 'corenet_tcp_connect_all_ports' : 'corenet_udp_sendrecv_all_ports');
         } else if (dir === 'listen') {
           shared(`corenet_${proto}_bind_generic_node`);
@@ -472,7 +524,8 @@ function scanTe(text) {
     else if ((m = /^permissive\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'permissive', name: m[1], key: `permissive:${m[1]}`, l, endL: l, ...where(l) });
     else if ((m = /^allow\s+(\w+)\s+([\w-]+)\s*:\s*(\w+)\s+(\{[^}]*\}|[\w-]+)\s*;$/.exec(code))) {
       const perms = m[4].replace(/[{}]/g, ' ').trim().split(/\s+/);
-      stmts.push({ kind: 'allow', src: m[1], tgt: m[2], cls: m[3], perms, l, endL: l, ...where(l) });
+      const w = where(l);
+      stmts.push({ kind: 'allow', src: m[1], tgt: m[2], cls: m[3], perms, key: scoped(w.bool, allowKey(m[1], m[2], m[3], perms)), l, endL: l, ...w });
     } else if (/^(allow|dontaudit|auditallow|type_transition|neverallow)\b/.test(code)) {
       let e = l;
       while (e < lines.length - 1 && !/;\s*(#.*)?$/.test(lines[e])) e++;
@@ -552,6 +605,28 @@ function recognize(texts, ctx, opts = {}) {
       else if (s.kind === 'allow' && s.src === D && s.tgt === T) ownAdd(u, s);
     }
   }
+
+  // Port types: in a tree the server passes the ones in corenetwork.te.in named after the module;
+  // a standalone module declares its own (type + corenet_port, numbers in the semanage comment above).
+  model.ports = (opts.ports || []).map(p => ({ name: p.name, nums: portNums(p) }));
+  if (!ctx.corenet) {
+    for (const t of editable.filter(s => s.kind === 'type' && s.top && /^\w+_port_t$/.test(s.name))) {
+      const decl = editable.find(s => s.kind === 'call' && s.top && s.name === 'corenet_port' && s.args[0] === t.name);
+      if (!decl) continue;
+      const P = t.name, u = `port:${P}`, nums = [];
+      let a = t.l;
+      while (a > 0 && (SEMANAGE_RE.test(te.lines[a - 1]) || PORT_HDR_RE.test(te.lines[a - 1]))) {
+        a--;
+        const m = SEMANAGE_RE.exec(te.lines[a]);
+        if (m && m[1] === P) nums.unshift({ proto: m[2], port: m[3], level: 's0' });
+      }
+      model.ports.push({ name: P.slice(0, -7), nums });
+      ownAdd(u, t);
+      if (a < t.l) ownAdd(u, { kind: 'comment', l: a, endL: t.l - 1 });
+      for (const s of editable) if (!claimed.has(s) && s.kind === 'call' && s.top && s.args.length === 1 && s.args[0] === P) ownAdd(u, s);
+    }
+  }
+  const ownPortTypes = new Set(ctx.corenet ? [] : model.ports.map(p => `${p.name}_port_t`));
 
   if (editable.some(s => s.kind === 'permissive' && s.name === D)) { model.permissive = true; claim(s => s.kind === 'permissive' && s.name === D); }
 
@@ -642,6 +717,23 @@ function recognize(texts, ctx, opts = {}) {
         if (!g.net[dir].some(x => x.proto === all[1] && x.port === 'all')) g.net[dir].push({ proto: all[1], port: 'all' });
       }
     }
+    // Upstream refpolicy generates no corenet_udp_sendrecv_X_port: there a UDP client of port X is just
+    // the generic rules plus the client packets of X (when nothing else of X claims those).
+    for (const s of domCalls) {
+      const m = /^corenet_sendrecv_(\w+)_client_packets$/.exec(s.name);
+      if (!m || m[1] === 'all' || ctx.has(`corenet_udp_sendrecv_${m[1]}_port`) || !ctx.has(`corenet_udp_bind_${m[1]}_port`)) continue;
+      if (g.net.connect.some(x => x.port === m[1])) continue;
+      g.net.connect.push({ proto: 'udp', port: m[1] });
+    }
+    // Rules on the module's own port types (standalone).
+    for (const s of editable) {
+      if (!inScope(s) || s.kind !== 'allow' || s.src !== D || !ownPortTypes.has(s.tgt) || claimed.has(s)) continue;
+      const proto = { tcp_socket: 'tcp', udp_socket: 'udp' }[s.cls];
+      const ps = s.perms.slice().sort().join(' ');
+      const dir = ps === 'name_bind' ? 'listen' : (proto === 'tcp' && ps === 'name_connect') || (proto === 'udp' && ps === 'recv_msg send_msg') ? 'connect' : null;
+      const port = s.tgt.slice(0, -7);
+      if (proto && dir && !g.net[dir].some(x => x.proto === proto && x.port === port)) g.net[dir].push({ proto, port });
+    }
     // Port rules that belong to a port item without being generated for it (older style sendrecv
     // and packet rules) are removed with it.
     for (const dir of ['listen', 'connect']) {
@@ -716,7 +808,7 @@ function renderTe(model, ctx) {
   declBlocks.unshift(...tunables);
   const local = uniq.filter(s => s.section === 'local' && !s.bool);
   const selfs = selfLines(D, local.filter(s => s.kind === 'self'));
-  const calls = local.filter(s => s.kind === 'call');
+  const calls = local.filter(s => s.kind === 'call' || s.kind === 'allow');
   const underBool = uniq.filter(s => s.section === 'local' && s.bool);
   const parts = [];
   parts.push(ctx.moduleArgs === 1 ? `policy_module(${model.name})\n` : `policy_module(${model.name}, 1.0.0)\n`);
@@ -731,7 +823,7 @@ function renderTe(model, ctx) {
   for (const b of model.booleans || []) {
     const name = sub(b.name, model.name);
     const mine = underBool.filter(s => s.bool === name);
-    const inner = [...selfLines(D, mine.filter(s => s.kind === 'self')), ...localBlocks(mine.filter(s => s.kind === 'call' && !s.opt)).flat()];
+    const inner = [...selfLines(D, mine.filter(s => s.kind === 'self')), ...localBlocks(mine.filter(s => (s.kind === 'call' || s.kind === 'allow') && !s.opt)).flat()];
     if (inner.length) body.push(tunableBlock(name, inner));
     for (const s of mine.filter(s => s.kind === 'call' && s.opt).sort((x, y) => x.name.localeCompare(y.name))) body.push(optTunableBlock(name, [s.text]));
   }
@@ -867,7 +959,7 @@ function editTe(text, rec, model, ctx) {
   const { D } = names(model);
   const genNew = new Set([...cur.values()].flatMap(u => u.stmts.map(s => s.key)));
   const editable = scan.stmts.filter(s => s.top || s.opt || s.bool);
-  const presentKey = (s) => (s.kind === 'call' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
+  const presentKey = (s) => (s.kind === 'call' || s.kind === 'allow' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
   const byKey = new Map();
   for (const s of editable) { const k = presentKey(s); if (k) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(s); } }
   // Self rules (top level, or directly under a boolean): perms per class with their lines.
@@ -880,11 +972,12 @@ function editTe(text, rec, model, ctx) {
   const delStmts = new Set(), delSelf = [], insStmts = [], insSelf = [];
   const queued = new Set();
   const edits = [];
-  // A boolean whose default or description changed is rewritten in place (description and gen_tunable line).
+  // A boolean whose default or description changed is rewritten in place (description and gen_tunable
+  // line), and so is a port type of the module's own whose numbers changed.
   const inPlace = new Set();
   for (const [k, u] of cur) {
     const o = old.get(k);
-    if (!k.startsWith('tunable:') || !o || o.sig === u.sig) continue;
+    if (!(k.startsWith('tunable:') || k.startsWith('port:')) || !o || o.sig === u.sig) continue;
     const own = rec.own.get(k) || [];
     const callSt = own.find(s => s.kind === 'call');
     if (!callSt) continue;
@@ -959,7 +1052,7 @@ function editTe(text, rec, model, ctx) {
 
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
-  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat(['init_daemon_domain', 'domain_type', 'init_domain', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute']));
+  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat(['init_daemon_domain', 'domain_type', 'init_domain', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port']));
   const firstLocal = top.find(s => (s.kind === 'allow' || s.kind === 'rule') || (s.kind === 'call' && !declHelpers.has(s.name) && !/^policy_module$/.test(s.name)));
   const localHeader = (() => {
     const lim = firstLocal ? firstLocal.l : lines.length;
@@ -1064,6 +1157,38 @@ function editFc(text, rec, model, ctx) {
   return out.join('\n');
 }
 
+/** corenetwork.te.in with the model's port types: changed ones rewritten, new ones added in alphabetical place. */
+function portLine(name, nums) {
+  return `network_port(${name}${nums.map(x => `, ${x.proto},${x.port},${x.level || 's0'}`).join('')})`;
+}
+function editCorenet(text, before, model) {
+  const lines = text.split('\n');
+  const edits = [];
+  const was = new Map((before || []).map(p => [p.name, p]));
+  const sig = (nums) => JSON.stringify(nums.map(x => [x.proto, x.port, x.level || 's0']));
+  const portAt = (l) => /^network_port\(\s*(\w+)\s*[,)]/.exec(lines[l]);
+  const inserts = [];
+  for (const p of model.ports || []) {
+    const n = portName(model, p);
+    if (!/^\w+$/.test(n)) continue;
+    const nums = portNums(p);
+    const b = was.get(n);
+    if (!b) { inserts.push([n, portLine(n, nums)]); continue; }
+    if (sig(portNums(b)) === sig(nums)) continue;
+    const l = lines.findIndex((_, i) => { const m = portAt(i); return m && m[1] === n; });
+    if (l < 0) continue;
+    const comment = /\s*#.*$/.exec(lines[l]);
+    edits.push({ rep: [l, portLine(n, nums) + (comment ? comment[0] : '')] });
+  }
+  const all = lines.map((_, i) => [i, portAt(i)]).filter(x => x[1]);
+  for (const [n, line] of inserts.sort((a, b) => a[0].localeCompare(b[0]))) {
+    const prev = all.filter(([, m]) => m[1] < n);
+    const at = prev.length ? prev[prev.length - 1][0] : all.length ? all[0][0] - 1 : lines.length - 1;
+    edits.push({ ins: [at, [line]] });
+  }
+  return applyLineEdits(lines, edits).join('\n');
+}
+
 function editIf(text, rec, model, ctx) {
   const have = new Set(rec.provided);
   const add = (model.provides || []).map(id => [id, sub(PROVIDES.find(p => p[0] === id)[1], model.name)]).filter(([, n]) => !have.has(n));
@@ -1093,9 +1218,41 @@ function validate(model, ctx, opts = {}) {
   for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []))) if (p.trim() && !p.trim().startsWith('/')) out.push(`Path "${p}" must be absolute.`);
   if (!(model.exec || []).some(p => p.trim())) out.push('Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
+  ctx = portCtx(model, ctx);
+  // Port types of the service.
+  const ownPorts = new Set();
+  const usedPorts = new Set([model, ...(model.booleans || []).map(b => b.grants || {})].flatMap(g => ['listen', 'connect'].flatMap(d => ((g.net || {})[d] || []).map(x => x.port))));
+  const numSeen = new Set();
+  let overlaps = 0;
+  for (const p of model.ports || []) {
+    const n = portName(model, p), P = `${n}_port_t`;
+    if (!/^[a-z][a-z0-9_]*$/.test(n)) { out.push(`Port type name "${n}" must start with a letter and use only lowercase letters, digits and _.`); continue; }
+    if (ownPorts.has(n)) out.push(`Port type ${P} is listed twice.`);
+    ownPorts.add(n);
+    if ((opts.isNew || p._new) && ctx.typeExists && ctx.typeExists(P)) out.push(`Type ${P} already exists: pick it under Listens on or Connects to, or choose another name.`);
+    const nums = portNums(p);
+    if (!nums.length && ctx.corenet) out.push(`Port type ${P} has no port numbers yet.`);
+    for (const x of nums) {
+      const m = /^(\d+)(?:-(\d+))?$/.exec(x.port);
+      if (!m) { out.push(`"${x.port}" (${P}) isn't a port number or a range like 8000-8010.`); continue; }
+      const lo = +m[1], hi = m[2] ? +m[2] : lo;
+      if (lo < 1 || hi > 65535 || lo > hi) { out.push(`${x.proto} ${x.port} (${P}) is outside 1-65535 or backwards.`); continue; }
+      const k = `${x.proto} ${lo}-${hi}`;
+      if (numSeen.has(k)) out.push(`${x.proto} ${x.port} is listed twice.`);
+      numSeen.add(k);
+      for (const q of ctx.portNums || []) {
+        if (q.name === n || q.proto !== x.proto || lo > q.hi || q.lo > hi) continue;
+        if (q.lo === lo && q.hi === hi) out.push(`${x.proto} ${x.port} already belongs to ${q.name}_port_t; a port number can have only one port type. Use ${q.name} under Listens on or Connects to instead.`);
+        else if (overlaps++ < 3) out.push(`Note: ${x.proto} ${x.port} (${P}) overlaps ${q.name}_port_t (${q.lo === q.hi ? q.lo : `${q.lo}-${q.hi}`}); the narrower entry wins for the ports in both.`);
+      }
+    }
+    if (!ctx.corenet && nums.length) out.push(`Note: a loadable module can't set port numbers; after installing it run ${nums.map(x => `semanage port -a -t ${P} -p ${x.proto} ${x.port}`).join('; ')}.`);
+    if (!usedPorts.has(n)) out.push(`Note: port type ${P} isn't used yet; pick ${n} under Listens on or Connects to.`);
+  }
   const grants = (g, where) => {
     for (const dir of ['listen', 'connect']) for (const it of (g.net || {})[dir] || []) {
-      if (it.port && it.port !== 'all' && !ctx.has(dir === 'listen' ? `corenet_${it.proto}_bind_${it.port}_port` : it.proto === 'tcp' ? `corenet_tcp_connect_${it.port}_port` : `corenet_udp_sendrecv_${it.port}_port`)) out.push(`No ${it.proto} port type ${it.port}_port_t in this policy (${dir}${where}).`);
+      if (!ctx.corenet && ownPorts.has(it.port)) continue;
+      if (it.port && it.port !== 'all' && !ctx.has(`corenet_${dir === 'listen' ? it.proto : 'tcp'}_bind_${it.port}_port`)) out.push(`No ${it.proto} port type ${it.port}_port_t in this policy (${dir}${where}).`);
     }
     for (const n of g.extra || []) if (!ctx.has(n)) out.push(`Interface ${n} doesn't exist in this policy${where}.`);
   };
@@ -1134,15 +1291,24 @@ function validate(model, ctx, opts = {}) {
   return out;
 }
 
-/** The new texts for a model: { te, if, fc } (null = unchanged / not needed). */
-function plan(model, ctx, existing) {
-  if (!existing) return { te: renderTe(model, ctx), if: renderIf(model, ctx), fc: renderFc(model, ctx) };
+/**
+ * The new texts for a model: { te, if, fc, net }. corenet = { text, ports } (corenetwork.te.in and
+ * the port types in it that belong to the module) in a tree; net is then its new text, else null.
+ */
+function plan(model, ctx, existing, corenet = null) {
+  let net = null;
+  if (corenet && ctx.corenet) {
+    const lf = corenet.text.replace(/\r\n/g, '\n');
+    const t = editCorenet(lf, corenet.ports, model);
+    net = t === lf ? corenet.text : corenet.text.includes('\r\n') ? t.replace(/\n/g, '\r\n') : t;
+  }
+  if (!existing) return { te: renderTe(model, ctx), if: renderIf(model, ctx), fc: renderFc(model, ctx), net };
   // Work on LF text; files with CRLF line endings get them back.
   const crlf = {}, lf = {};
   for (const k of ['te', 'if', 'fc']) { const t = existing[k] || ''; crlf[k] = t.includes('\r\n'); lf[k] = t.replace(/\r\n/g, '\n'); }
-  const rec = recognize(lf, ctx, { domain: model.domain });
+  const rec = recognize(lf, ctx, { domain: model.domain, ports: corenet ? corenet.ports : [] });
   if (rec.error) return { error: rec.error };
-  const out = { te: editTe(lf.te, rec, model, ctx), if: editIf(lf.if, rec, model, ctx), fc: editFc(lf.fc, rec, model, ctx) };
+  const out = { te: editTe(lf.te, rec, model, ctx), if: editIf(lf.if, rec, model, ctx), fc: editFc(lf.fc, rec, model, ctx), net };
   for (const k of ['te', 'if', 'fc']) out[k] = out[k] === lf[k] ? existing[k] || '' : crlf[k] ? out[k].replace(/\n/g, '\r\n') : out[k];
   return out;
 }
@@ -1180,7 +1346,7 @@ function newModel() {
     name: '', summary: '', exec: ['/usr/bin/%'],
     files: [{ kind: 'unit', paths: ['/usr/lib/systemd/system/%.service'], access: 'none' }, { kind: 'runtime', paths: ['/run/%/'], access: 'manage' }],
     self: ['fifo'], caps: [], net: { listen: [], connect: [] }, access: ['syslog', 'locale'], extra: [], permissive: false,
-    booleans: [], provides: ['domtrans', 'admin'],
+    booleans: [], ports: [], provides: ['domtrans', 'admin'],
   };
 }
 
@@ -1207,5 +1373,5 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  fcFromPath, pathFromFc, scanTe, fileType,
+  fcFromPath, pathFromFc, scanTe, fileType, editCorenet,
 };

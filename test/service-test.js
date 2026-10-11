@@ -24,7 +24,7 @@ manage_lnk_files_pattern list_dirs_pattern read_files_pattern read_lnk_files_pat
 logging_send_syslog_msg miscfiles_read_localization auth_use_nsswitch kernel_read_system_state dbus_system_bus_client mta_send_mail
 corenet_tcp_sendrecv_generic_if corenet_tcp_sendrecv_generic_node corenet_tcp_bind_generic_node corenet_tcp_bind_http_port corenet_sendrecv_http_server_packets
 corenet_tcp_connect_http_port corenet_udp_sendrecv_generic_if corenet_udp_sendrecv_generic_node corenet_udp_bind_generic_node corenet_udp_bind_ntp_port
-corenet_tcp_connect_all_ports corenet_tcp_connect_postgresql_port files_search_pids files_search_var_lib logging_search_logs files_search_etc
+corenet_tcp_connect_all_ports corenet_tcp_connect_postgresql_port corenet_tcp_bind_postgresql_port corenet_tcp_bind_ntp_portfiles_search_pids files_search_var_lib logging_search_logs files_search_etc
 admin_pattern init_labeled_script_domtrans signal_perms dev_read_urand nis_use_ypbind dev_read_sound corenet_tcp_bind_all_ports kernel_read_kernel_sysctls`.split(/\s+/));
 const OPTIONAL = new Set(['dbus_system_bus_client', 'mta_send_mail', 'nis_use_ypbind']);
 const ctx = { has: (n) => KNOWN.has(n), optional: (n) => OPTIONAL.has(n), moduleArgs: 2, moduleExists: (n) => n === 'rpcbind', typeExists: () => false,
@@ -214,6 +214,89 @@ check(pc.some(p => /"Use the D-Bus system bus" can't be granted under webby_x: d
 check(!svc.validate(mC, ctxC, { isNew: false, baseline: JSON.parse(JSON.stringify(mC)) }).some(p => /webby_x/.test(p) && !/Note/.test(p)), 'an existing module isn’t blamed for what it already has');
 check(svc.catalog(ctxC).access.flatMap(g => g.items).find(i => i.id === 'dbus').cond === false, 'catalog marks items that can’t be under a boolean');
 
+/* ---------- port types ---------- */
+
+const portsNorm = (m) => JSON.stringify((m.ports || []).map(p => [(p.name || '').trim() || m.name, (p.nums || []).filter(x => x.port).map(x => `${x.proto} ${x.port}`)]));
+{
+  // In a tree: network_port() lines in corenetwork.te.in; the generated corenet_* interfaces are used.
+  const ctxT = { ...ctx, corenet: true, portRef: 'http', typeExists: (t) => t === 'http_port_t',
+    portNums: [{ name: 'http', proto: 'tcp', lo: 80, hi: 80 }, { name: 'zebra', proto: 'tcp', lo: 2600, hi: 2604 }] };
+  const corenet = { text: 'network_port(afs, tcp,7000,s0)\nnetwork_port(http, tcp,80,s0, tcp,443,s0)\nnetwork_port(zope, tcp,8021,s0) # zope\n', ports: [] };
+  const mt = svc.newModel();
+  Object.assign(mt, { name: 'webby', summary: 'Web' });
+  mt.ports = [{ name: '', nums: [{ proto: 'tcp', port: '9999' }], _new: true }];
+  mt.net.listen.push({ proto: 'tcp', port: 'webby' });
+  const vt = svc.validate(mt, ctxT, { isNew: true });
+  check(!vt.some(p => !p.startsWith('Note:')), 'tree: a new port type validates and its interfaces count as present', vt);
+  const ot = svc.plan(mt, ctxT, null, corenet);
+  check(/corenet_tcp_bind_webby_port\(webby_t\)/.test(ot.te) && /corenet_sendrecv_webby_server_packets\(webby_t\)/.test(ot.te) && !/webby_port_t/.test(ot.te), 'tree: the .te uses the generated interfaces', ot.te);
+  check(JSON.stringify(changedLines(corenet.text, ot.net)) === JSON.stringify([['+', 'network_port(webby, tcp,9999,s0)']]) && ot.net.indexOf('webby') > ot.net.indexOf('http') && ot.net.indexOf('webby') < ot.net.indexOf('zope'),
+    'tree: network_port line added in alphabetical place', ot.net);
+  const bad = (nums, name = '') => svc.validate({ ...mt, ports: [{ name, nums, _new: true }] }, ctxT, { isNew: true }).filter(p => /port/i.test(p));
+  check(bad([{ proto: 'tcp', port: '80' }]).some(p => /already belongs to http_port_t/.test(p)) && bad([{ proto: 'tcp', port: '2601' }]).some(p => /^Note: .*overlaps zebra_port_t \(2600-2604\)/.test(p)) &&
+    bad([{ proto: 'udp', port: '80' }]).every(p => p.startsWith('Note:')), 'tree: a number another port type has is refused; overlapping a range is a note; protocols are separate');
+  check(bad([{ proto: 'tcp', port: '70000' }]).some(p => /outside/.test(p)) && bad([{ proto: 'tcp', port: '9-1' }]).some(p => /outside|backwards/.test(p)) && bad([{ proto: 'tcp', port: 'x' }]).some(p => /isn't a port number/.test(p)) &&
+    bad([]).some(p => /no port numbers/.test(p)) && bad([{ proto: 'tcp', port: '9999' }], 'http').some(p => /http_port_t already exists/.test(p)) && bad([{ proto: 'tcp', port: '9999' }], 'Bad-1').some(p => /must start/.test(p)),
+    'tree: bad numbers, no numbers, existing and malformed names');
+  check(svc.validate({ ...mt, net: { listen: [], connect: [] } }, ctxT, { isNew: true }).some(p => /^Note: port type webby_port_t isn't used yet/.test(p)), 'tree: an unused port type is a note');
+  // Editing: the module's port types come from corenetwork.te.in (the server passes them).
+  const existing = { te: ot.te, if: ot.if, fc: ot.fc };
+  const cn2 = { text: ot.net, ports: [{ name: 'webby', nums: [{ proto: 'tcp', port: '9999', level: 's0' }] }] };
+  const rt = svc.recognize(existing, ctxT, { ports: cn2.ports });
+  check(portsNorm(rt.model) === '[["webby",["tcp 9999"]]]' && rt.model.net.listen.some(x => x.port === 'webby') && rt.kept.length === 0, 'tree: the port type and its use read back', [portsNorm(rt.model), rt.kept]);
+  const same = svc.plan(JSON.parse(JSON.stringify(rt.model)), ctxT, existing, cn2);
+  check(same.te === existing.te && same.net === cn2.text, 'tree: unchanged model leaves the .te and corenetwork.te.in alone');
+  const m2 = JSON.parse(JSON.stringify(rt.model));
+  m2.ports[0].nums.push({ proto: 'udp', port: '9999' });
+  const e2 = svc.plan(m2, ctxT, existing, cn2);
+  check(e2.te === existing.te && JSON.stringify(changedLines(cn2.text, e2.net)) === JSON.stringify([['-', 'network_port(webby, tcp,9999,s0)'], ['+', 'network_port(webby, tcp,9999,s0, udp,9999,s0)']]),
+    'tree: changing the numbers rewrites only the network_port line', changedLines(cn2.text, e2.net));
+}
+{
+  // Standalone: the module declares the type; numbers become semanage commands.
+  const ms = svc.newModel();
+  Object.assign(ms, { name: 'webby', summary: 'Web' });
+  ms.ports = [{ name: '', nums: [{ proto: 'tcp', port: '9999' }, { proto: 'udp', port: '9999' }], _new: true }];
+  ms.net.listen.push({ proto: 'tcp', port: 'webby' });
+  ms.booleans = [{ name: 'webby_relay', desc: 'Let webby relay', default: false, grants: { net: { listen: [], connect: [{ proto: 'udp', port: 'webby' }] } } }];
+  const vs = svc.validate(ms, ctx, { isNew: true });
+  check(!vs.some(p => !p.startsWith('Note:')) && vs.some(p => /semanage port -a -t webby_port_t -p tcp 9999; semanage port -a -t webby_port_t -p udp 9999/.test(p)), 'standalone: validates, with the semanage commands as a note', vs);
+  const os = svc.plan(ms, ctx, null, null);
+  check(os.net === null && os.te.includes('# Port numbers: a module can\'t set them, so after installing run\n#\tsemanage port -a -t webby_port_t -p tcp 9999\n#\tsemanage port -a -t webby_port_t -p udp 9999\ntype webby_port_t;\ncorenet_port(webby_port_t)') &&
+    /^allow webby_t webby_port_t:tcp_socket name_bind;$/m.test(os.te) && /corenet_tcp_bind_generic_node\(webby_t\)/.test(os.te) &&
+    os.te.includes("tunable_policy(`webby_relay',`\n\tallow webby_t webby_port_t:udp_socket { recv_msg send_msg };\n')"), 'standalone: declaration, semanage comment, plain rules (also under a boolean)', os.te);
+  const rs = svc.recognize(os, ctx, {});
+  check(portsNorm(rs.model) === '[["webby",["tcp 9999","udp 9999"]]]' && norm(rs.model) === norm(ms) && rs.kept.length === 0, 'standalone: reads back as the same model', [portsNorm(rs.model), norm(rs.model), norm(ms), rs.kept]);
+  check(svc.plan(JSON.parse(JSON.stringify(rs.model)), ctx, os).te === os.te, 'standalone: unchanged model, identical .te');
+  const m3 = JSON.parse(JSON.stringify(rs.model));
+  m3.ports[0].nums = [{ proto: 'tcp', port: '9998' }];
+  const e3 = svc.plan(m3, ctx, os);
+  check(JSON.stringify(changedLines(os.te, e3.te)) === JSON.stringify([['-', '#\tsemanage port -a -t webby_port_t -p tcp 9999'], ['-', '#\tsemanage port -a -t webby_port_t -p udp 9999'], ['+', '#\tsemanage port -a -t webby_port_t -p tcp 9998']]),
+    'standalone: changing the numbers changes only the semanage comment', changedLines(os.te, e3.te));
+  const m4 = JSON.parse(JSON.stringify(rs.model));
+  m4.ports = []; m4.net.listen = []; m4.booleans[0].grants.net.connect = [];
+  const e4 = svc.plan(m4, ctx, os);
+  check(!/webby_port_t|corenet_port/.test(e4.te) && changedLines(os.te, e4.te).every(x => x[0] === '-'), 'standalone: removing the port type and its uses removes its declaration and rules', changedLines(os.te, e4.te));
+  const m5 = JSON.parse(JSON.stringify(rs.model));
+  m5.ports = [];
+  check(svc.validate(m5, ctx, {}).some(p => /No tcp port type webby_port_t/.test(p)), 'standalone: removing a port type still in use is refused');
+}
+
+{
+  // Upstream refpolicy has no corenet_udp_sendrecv_X_port: a UDP client of X is the generic rules + X's client packets.
+  const K = new Set(['init_daemon_domain', 'corenet_udp_bind_ntp_port', 'corenet_tcp_bind_ntp_port', 'corenet_sendrecv_ntp_client_packets', 'corenet_udp_sendrecv_generic_if', 'corenet_udp_sendrecv_generic_node']);
+  const ctxU = { ...ctx, has: (n) => K.has(n) };
+  const mu = svc.newModel();
+  Object.assign(mu, { name: 'upd', files: [], access: [] });
+  mu.booleans = [{ name: 'upd_b', desc: 'd', grants: { net: { listen: [], connect: [{ proto: 'udp', port: 'ntp' }] } } }];
+  const vu = svc.validate(mu, ctxU, { isNew: true });
+  const ou = svc.plan(mu, ctxU, null);
+  const ru = svc.recognize(ou, ctxU, {});
+  check(!vu.some(p => !p.startsWith('Note:')) && ou.te.includes("tunable_policy(`upd_b',`\n\tcorenet_sendrecv_ntp_client_packets(upd_t)\n')") &&
+    JSON.stringify(ru.model.booleans[0].grants.net.connect) === '[{"proto":"udp","port":"ntp"}]' && !ru.model.booleans[0].grants.extra.length,
+    'upstream trees: connecting to a UDP port validates, is written and reads back', [vu, ru.model.booleans[0].grants]);
+}
+
 /* ---------- paths ---------- */
 
 for (const [p, spec] of [['/var/lib/foo/', '/var/lib/foo(/.*)?'], ['/etc/foo.conf', '/etc/foo\\.conf'], ['/run/foo.*', '/run/foo.*'], ['/opt/a-b/c_d/', '/opt/a-b/c_d(/.*)?']]) {
@@ -303,6 +386,11 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   find(e => e.tag === 'button' && e.textContent === '+ Add' && e.parent && e.parent.attrs.class === 'adds')[0].fire('click');
   check(boolCard().length === 2 && /Kill|Signal processes of other users/.test(boolCard()[0].textContent) && /Connect to TCP any port/.test(boolCard()[0].textContent) && /existing boolean/.test(boolCard()[1].textContent),
     'booleans: new one with chips for its grants, existing one marked');
+  // A port type of its own, with a number.
+  buttonText('+ New port type').fire('click');
+  const pnum = find(e => e.tag === 'input' && e.attrs.placeholder === 'e.g. 8080')[0];
+  pnum.value = '9999'; pnum.fire('input');
+  check(find(e => e.tag === 'datalist' && e.attrs.id === 'ports')[0].children.some(o => o.value === 'webby' && /new port type/.test(o.textContent)), 'the new port type is offered in the port pickers');
   {
     const cat = svc.catalog(ctx);
     const noHelp = [...cat.fileKinds.map(k => ['file', k.id, k.help]), ...cat.access.flatMap(g => g.items).map(i => ['access', i.id, i.help]),
@@ -319,6 +407,7 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   const p = last('plan').model;
   check(p.name === 'webby' && p.files.some(f => f.kind === 'state' && f.paths[0] === '/var/lib/%/') && p.caps.includes('net_bind_service') && p.access.includes('dbus') &&
     p.net.listen[0].port === 'http' && p.extra.includes('dev_read_urand'), 'edits end up in the model sent for planning', p);
+  check(p.ports.length === 1 && p.ports[0]._new && p.ports[0].name === '' && p.ports[0].nums[0].port === '9999' && p.ports[0].nums[0].proto === 'tcp', 'new port type in the planned model', p.ports);
   check(p.booleans.length === 2 && p.booleans[0].name === 'webby_connect_any' && p.booleans[0]._new && p.booleans[0].grants.caps[0] === 'kill' && p.booleans[0].grants.net.connect[0].port === 'all' &&
     p.booleans[1].external && p.booleans[1].name === 'use_nfs_home_dirs', 'booleans in the planned model', p.booleans);
   const ws = svc.validate(p, ctx, { isNew: true });

@@ -1510,6 +1510,37 @@ function makeCondSafe() {
   return (name) => safe(name);
 }
 
+/** corenetwork.te.in of the tree (new port types go there), or null for standalone modules. */
+function corenetPath() {
+  if (!treeRoot || usingDevel) return null;
+  const p = path.join(treeRoot, 'policy', 'modules', 'kernel', 'corenetwork.te.in');
+  return idx.files.has(p) || fs.existsSync(p) ? p : null;
+}
+
+/** network_port() lines of corenetwork.te.in: [{ name, nums: [{ proto, port, level }], l, single }]. */
+function networkPorts() {
+  const p = corenetPath();
+  const f = p && idx.files.get(p);
+  if (!f) return [];
+  const out = [];
+  for (const c of f.calls || []) {
+    if (c.inDef || c.name !== 'network_port' || !c.args[0] || !idx.isActive(f, c.l, c.c)) continue;
+    const nums = [];
+    for (let i = 1; i + 2 < c.args.length + 1; i += 3) {
+      const proto = (c.args[i] || '').trim(), port = (c.args[i + 1] || '').trim();
+      if (/^(tcp|udp|sctp|dccp)$/.test(proto) && port) nums.push({ proto, port, level: (c.args[i + 2] || 's0').trim() });
+    }
+    out.push({ name: c.args[0].trim(), nums, l: c.l, single: c.c === 0 && c.l === c.endL });
+  }
+  return out;
+}
+
+/** The port types in corenetwork.te.in that belong to a module: named after it, on one line of their own. */
+function ownedPorts(mod) {
+  if (!mod) return [];
+  return networkPorts().filter(p => p.single && (p.name === mod || p.name.startsWith(mod + '_'))).map(p => ({ name: p.name, nums: p.nums }));
+}
+
 /** What the service model needs to know about this tree. */
 function serviceCtx() {
   const fileOf = (p) => idx.files.get(p);
@@ -1537,6 +1568,13 @@ function serviceCtx() {
     typeExists: (t) => idx.decls.has(t),
     boolExists: (n) => (idx.decls.get(n) || []).some(d => d.kind === 'bool'),
     condSafe: makeCondSafe(),
+    // New port types go into corenetwork.te.in (trees); its numbers for conflict checks.
+    corenet: !!corenetPath(),
+    portNums: networkPorts().flatMap(p => p.nums.map(x => {
+      const m = /^(\d+)(?:-(\d+))?$/.exec(x.port);
+      return m ? { name: p.name, proto: x.proto, lo: +m[1], hi: m[2] ? +m[2] : +m[1] } : null;
+    }).filter(Boolean)),
+    portRef: ['http', 'ssh', 'ntp'].find(n => idx.defs.has(`corenet_tcp_bind_${n}_port`)) || null,
   };
 }
 
@@ -1629,7 +1667,7 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain } = {})
   if (!mod) return { ...info, isNew: true, model: service.newModel() };
   const m = serviceModules().find(x => x.module === mod);
   if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
-  const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod });
+  const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod, ports: ownedPorts(mod) });
   if (rec.error) return { unavailable: rec.error };
   const prov = new Set(rec.provided);
   rec.model.provides = service.PROVIDES.map(p => p[0]).filter(id => prov.has(service.PROVIDES.find(p => p[0] === id)[1].replace(/%/g, mod)));
@@ -1646,7 +1684,7 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
     if (!m) return { problems: [`${mod} is no longer a service module.`], files: [] };
     paths = { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc') };
     before = serviceTexts(m.files);
-    rec = service.recognize(before, ctx, { domain: model.domain });
+    rec = service.recognize(before, ctx, { domain: model.domain, ports: ownedPorts(mod) });
   }
   // Checks on what the user adds (an existing module isn't blamed for what it already has).
   const problems = service.validate(model, ctx, { isNew, baseline: rec && !rec.error ? rec.model : null });
@@ -1673,13 +1711,17 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
       }
     }
   }
-  const out = service.plan(model, ctx, isNew ? null : before);
+  const cp = corenetPath();
+  const corenet = cp ? { text: readSource(cp) || '', ports: isNew ? [] : ownedPorts(mod) } : null;
+  const out = service.plan(model, ctx, isNew ? null : before, corenet);
   if (out.error) return { problems: [out.error], files: [] };
   const files = [];
   for (const k of ['te', 'if', 'fc']) {
     const old = before[k] || '';
     files.push({ path: paths[k], kind: k, exists: !isNew && fs.existsSync(paths[k]), text: out[k], changed: out[k] !== old, diff: service.lineDiff(old, out[k]) });
   }
+  // New or changed port types: corenetwork.te.in.
+  if (corenet && out.net != null && out.net !== corenet.text) files.push({ path: cp, kind: 'net', exists: true, text: out.net, changed: true, diff: service.lineDiff(corenet.text, out.net) });
   // A new module in a tree is built only when modules.conf lists it.
   if (isNew && treeRoot && !usingDevel) {
     const { conf, states } = moduleStates(treeRoot);

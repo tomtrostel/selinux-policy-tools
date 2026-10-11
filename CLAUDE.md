@@ -18,7 +18,7 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
-Unreleased (after 0.8.0): the service editor with booleans (step 6 below); e2e-tested,
+Unreleased (after 0.8.0): the service editor with booleans and port types (step 6 below); e2e-tested,
 not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -266,12 +266,31 @@ so far covered by the e2e tests only.
    a boolean still referenced elsewhere is refused. Tests: 22 mutation
    kinds, 7172 Fedora edits; e2e: new service with a boolean + an external
    one, ntp + new boolean, rsync's own boolean edited, all build.
+   Port types (done, unreleased): model.ports [{name ('' = module name),
+   nums: [{proto, port, level}], _new}]. Tree (`ctx.corenet`): server
+   `networkPorts()` parses network_port calls of corenetwork.te.in,
+   `ownedPorts(mod)` = those named mod or mod_* on one line (passed to
+   recognize as opts.ports and to plan as corenet.ports);
+   `service.editCorenet()` rewrites changed lines and inserts new ones
+   alphabetically; plan returns `net`, servicePlan adds a file of kind
+   'net'. `portCtx()` makes ctx.has true for the corenet_* names of new
+   ports (checked against `ctx.portRef`'s, e.g. http). validate: names,
+   numbers/ranges, exact duplicates of `ctx.portNums` (error), overlaps
+   (note), unused (note). Standalone: unit `port:<T>` = type + corenet_port
+   + "# Port numbers…/#\tsemanage port -a …" comment (read back from it,
+   rewritten in place like tunables), net items on own ports are plain
+   allow rules (scanTe now keys allow rules: `allow:src:tgt:cls:perms`).
+   Upstream refpolicy has no corenet_udp_sendrecv_X_port: UDP connect = the
+   generic rules + client packets (recognized when the tree lacks it); a
+   port type exists when corenet_tcp_bind_X_port does. e2e: svctest with a
+   port type (portcon checked in the built corenetwork.te), ntp_port_t +
+   tcp 47124, standalone develsvc_port_t; CLIP, RHEL 9, RHEL 10 pass.
    Hover help: `HELP` in server/service.js (file kinds with {T} = the
    type, access levels, access/self/caps/provides) goes out as `help` in
    `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
    module name on hover); service-test checks every catalog item has help
    and every button/field/checkbox in the form has a title.
-   Ideas not done: new port types, helper domains, file access under a
+   Ideas not done: helper domains, file access under a
    boolean, gen_bool.
 
 Open decision for the user: the GitHub repo

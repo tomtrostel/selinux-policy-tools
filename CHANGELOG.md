@@ -22,9 +22,23 @@
   hold (interfaces declaring attributes or containing `optional` blocks,
   e.g. `dbus_system_bus_client`) or that are already always allowed are
   refused before building.
+* **New port types in the service editor**: *+ New port type* in Network
+  for port numbers no existing type covers. In a tree it adds a
+  `network_port()` line to `corenetwork.te.in`, and the module uses the
+  generated `corenet_*` interfaces; port types named after the module are
+  editable when the module is opened again. A standalone module declares
+  the type itself and lists the `semanage port -a` commands to run after
+  installing. Numbers another port type already has are refused.
 * **Hover help in the service editor**: every option, add button (*+
   Temporary files*, *+ Add port*, *+ New boolean*, …) and field explains
   what it does when you hover over it, including the type it adds.
+
+**Fixes**
+
+* Service editor, upstream refpolicy trees (CLIP): connecting to a
+  specific UDP port was refused ("No udp port type"), because upstream
+  generates no per-port UDP send interface. It is now written as the
+  generic UDP rules plus the port's client packets, and read back.
 
 **Tests**: `npm run test:service` (in `npm test`; with a policy dir, every
 daemon module in it), `npm run test:service-e2e` (real builds on CLIP,

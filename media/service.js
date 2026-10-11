@@ -118,9 +118,43 @@
     return section('Files', hint, [h('div', { class: 'muted small' }, 'A path ending in / means the directory and everything in it. Types the service creates at run time (in /run, /tmp, …) get their label automatically.'), table, add]);
   }
 
+  /** The service's own port types (resolved names), which the port pickers offer too. */
+  const ownPortNames = () => (model.ports || []).map(p => sub((p.name || '').trim() || '%')).filter(n => /^\w+$/.test(n));
+
+  function portTypesBlock() {
+    model.ports = model.ports || [];
+    const tree = info.mode === 'tree';
+    const protoSel = (x) => h('select', { title: 'TCP or UDP', onchange: (e) => { x.proto = e.target.value; changed(); } },
+      [...new Set(['tcp', 'udp', x.proto || 'tcp'])].map(p => h('option', { value: p, selected: p === (x.proto || 'tcp') }, p.toUpperCase())));
+    const rows = model.ports.map((p, pi) => {
+      const fresh = p._new || info.isNew;
+      return h('div', { class: 'row' },
+        fresh ? h('input', { type: 'text', class: 'portname', value: p.name || '', placeholder: model.name || 'NAME', size: 18, spellcheck: 'false',
+          title: 'The port type’s name without _port_t; leave empty to use the module name. Pick it by this name under Listens on or Connects to',
+          onchange: (e) => { p.name = e.target.value.trim().replace(/_port_t$/, ''); render(); changed(); } }) : h('code', { title: tree ? 'Defined in corenetwork.te.in; its numbers can be changed here' : 'Declared in this module' }, p.name),
+        h('span', { class: 'muted' }, '_port_t '),
+        (p.nums = p.nums || []).map((x, xi) => h('span', { class: 'portnum' }, protoSel(x),
+          h('input', { type: 'text', value: x.port || '', size: 11, spellcheck: 'false', placeholder: 'e.g. 8080', title: 'A port number, or a range like 8000-8010',
+            oninput: (e) => { x.port = e.target.value.trim(); changed(); } }),
+          h('button', { class: 'icon', title: 'Remove this port number', onclick: () => { p.nums.splice(xi, 1); render(); changed(); } }, '✕'))),
+        h('button', { class: 'chip', title: 'Add another port number or range to this port type', onclick: () => { p.nums.push({ proto: (p.nums[p.nums.length - 1] || {}).proto || 'tcp', port: '' }); render(); } }, '+ Number'),
+        fresh ? h('button', { class: 'icon', title: 'Remove this new port type', onclick: () => { model.ports.splice(pi, 1); render(); changed(); } }, '✕') : null);
+    });
+    const newTip = tree
+      ? 'Define a new port type for this service in corenetwork.te.in (a network_port line), with the port numbers it covers. Then pick it under Listens on or Connects to'
+      : 'Declare a new port type in this module. A loadable module can’t set port numbers, so the numbers you enter become the semanage commands to run after installing. Then pick it under Listens on or Connects to';
+    return h('div', { class: 'netblock' },
+      h('div', { class: 'sub' }, 'Port types of this service', h('span', { class: 'muted' }, tree ? ' for port numbers no existing port type covers (written to corenetwork.te.in)' : ' declared in the module; numbers set with semanage after installing')),
+      rows,
+      h('button', { class: 'chip', title: newTip, onclick: () => { model.ports.push({ name: '', nums: [{ proto: 'tcp', port: '' }], _new: true }); render(); changed(); } }, '+ New port type'));
+  }
+
   function netSection() {
     const ports = info.ports;
-    const portList = h('datalist', { id: 'ports' }, h('option', { value: 'all' }, 'any port'), ports.map(p => h('option', { value: p.name }, p.nums ? `${p.name}_port_t: ${p.nums}` : `${p.name}_port_t`)));
+    const known = new Set(ports.map(p => p.name));
+    const own = ownPortNames().filter(n => !known.has(n));
+    const portList = h('datalist', { id: 'ports' }, h('option', { value: 'all' }, 'any port'), own.map(n => h('option', { value: n }, `${n}_port_t: this service’s new port type`)),
+      ports.map(p => h('option', { value: p.name }, p.nums ? `${p.name}_port_t: ${p.nums}` : `${p.name}_port_t`)));
     const block = (dir, title, help, addTip) => {
       const items = model.net[dir];
       return h('div', { class: 'netblock' }, h('div', { class: 'sub' }, title, h('span', { class: 'muted' }, ' ' + help)),
@@ -130,16 +164,17 @@
             h('select', { title: 'TCP or UDP', onchange: (e) => { it.proto = e.target.value; changed(); } }, ['tcp', 'udp'].map(x => h('option', { value: x, selected: x === it.proto }, x.toUpperCase()))),
             h('input', { type: 'text', list: 'ports', value: it.port, size: 22, spellcheck: 'false', placeholder: 'port type, e.g. http', title: PORT_TIP,
               onchange: (e) => { it.port = e.target.value.trim().replace(/_port_t$/, ''); render(); changed(); } }),
-            h('span', { class: 'muted' }, it.port === 'all' ? ' any port' : p ? ` ${p.name}_port_t${p.nums ? ': ' + p.nums : ''}` : it.port ? ' (no such port type)' : ''),
+            h('span', { class: 'muted' }, it.port === 'all' ? ' any port' : p ? ` ${p.name}_port_t${p.nums ? ': ' + p.nums : ''}` : ownPortNames().includes(it.port) ? ` ${it.port}_port_t (this service’s)` : it.port ? ' (no such port type)' : ''),
             h('button', { class: 'icon', title: 'Remove this port', onclick: () => { items.splice(i, 1); render(); changed(); } }, '✕'));
         }),
         h('button', { class: 'chip', title: addTip, onclick: () => { items.push({ proto: 'tcp', port: '' }); render(); } }, '+ Add port'));
     };
     const n = model.net.listen.length + model.net.connect.length;
     return section('Network', n ? `${n} port${n === 1 ? '' : 's'}` : 'none', [portList,
+      portTypesBlock(),
       block('listen', 'Listens on', 'ports clients connect to', 'Add a port the service accepts connections (or UDP packets) on: allows binding and listening on that port type, plus the socket rules for it'),
       block('connect', 'Connects to', 'ports of other servers', 'Add a port of another server the service connects (or sends UDP) to: allows connecting to that port type, plus the socket rules for it'),
-      h('div', { class: 'muted small' }, 'Port types come from corenetwork; a new port number needs a port type there (or semanage port -a).')], n > 0 || info.isNew);
+      h('div', { class: 'muted small' }, 'Port types come from corenetwork; for a port number no port type covers, add a port type of this service above.')], n > 0 || info.isNew || (model.ports || []).length > 0);
   }
 
   function accessSection() {
