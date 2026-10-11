@@ -237,6 +237,19 @@ writes. It offers what the existing service modules use (taken from the
   marked.
 * **Other interfaces:** any interface that takes just the domain, found by
   name or by words in its summary.
+* **Booleans:** rights an administrator switches on at run time
+  (`setsebool`). A new boolean gets a name, a description (what `semanage
+  boolean -l` shows) and a default; an existing one (`use_nfs_home_dirs`,
+  any boolean of the tree) can be used too. Under each you add what it
+  allows while on: system access, process rights, capabilities, ports,
+  interfaces. They are written as `gen_tunable` with its `## <desc>`
+  comment and `tunable_policy` blocks (inside `optional_policy` for
+  calls into modules that can be turned off). Anything conditional policy
+  can't hold is kept out: checkmodule allows only allow/dontaudit/type
+  rules under a boolean, so interfaces that declare attributes or contain
+  `optional` blocks (e.g. `dbus_system_bus_client`) are offered only as
+  always-on, and so is anything already allowed always (a domain
+  transition granted twice fails the build).
 * **Interfaces for other modules:** the usual ones in the `.if` (`_domtrans`,
   `_exec`, read config/logs/state, manage state, `_stream_connect`,
   `_admin`).
@@ -258,11 +271,15 @@ settings you change: turning a capability off rewrites just that
 `allow … self:capability` line (comments kept), removing a file type
 removes its declaration, its rules and its file contexts, a new file type
 goes next to the other declarations, a call left alone in an
-`optional_policy` block takes the block with it. Everything the form
-doesn't model (conditional rules, rules with other modules' types,
-`tunable_policy` blocks, …) stays exactly as it is and is listed under
-*Kept as is*, each line clickable. Removing a file type that the `.if` or
-another module still uses is refused, with the place that uses it.
+`optional_policy` block takes the block with it. Booleans read back with
+their description, default and grants; a new grant goes into the boolean's
+existing `tunable_policy` block, a changed default or description rewrites
+just the declaration. Everything the form doesn't model (`tunable_policy`
+on several booleans or with an else branch, `ifdef` blocks, rules with
+other modules' types, …) stays exactly as it is and is listed under *Kept
+as is*, each line clickable. Removing a file type or a boolean that the
+`.if` or another module still uses is refused, with the place that uses
+it.
 
 **Building** (Linux)
 
@@ -569,12 +586,17 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 * Service editor: every daemon module of the Fedora tree (326) reads back
   into the form, and saving it unchanged leaves all files byte-identical;
-  15 kinds of edits on each (capabilities, file types added, removed or
+  22 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
-  permissive, program paths) read back as the edited form and repeat as a
-  no-op. On CLIP, RHEL 9 and RHEL 10 a new service using every kind of
-  setting builds and links with the full tree, and so does an edited
-  existing service (`ntp`); a standalone service builds against the devel
+  permissive, program paths; booleans added, removed, with another default
+  or description, grants added and removed, an existing boolean used)
+  read back as the edited form and repeat as a no-op (7,172 edits). On
+  CLIP, RHEL 9 and RHEL 10 a new service using every kind of setting
+  (booleans included) builds and links with the full tree, and so do an
+  edited `ntp` (a new boolean) and an edited `rsync` (its own boolean's
+  default and grants); grants conditional policy can't hold are refused
+  before building. None of the 766 calls Fedora's daemons make under a
+  boolean is refused. A standalone service builds against the devel
   headers. The form itself is tested with a fake DOM; it hasn't had
   interactive use yet.
 * Source diagnostics over the full upstream Fedora tree, the RHEL 9 source
@@ -725,9 +747,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   in the `.te` as before (helpers show up under *Kept as is*).
 * Ports: only port types the tree already has. A new port number needs a
   `network_port()` line in `corenetwork.te.in` (or `semanage port -a`).
-* No booleans/tunables yet: everything selected is granted unconditionally;
-  conditional rules in an existing module are kept but not editable in the
-  form.
+* Booleans: new ones are tunables (`gen_tunable`); `tunable_policy` on
+  several booleans (`a && b`), with an else branch, or `if` statements
+  on `gen_bool` booleans are kept but not editable in the form. File
+  access can't be put under a boolean (use an interface).
 * Editing an existing module's description, or removing interfaces from
   its `.if`, is done in the files (other modules may call them).
 

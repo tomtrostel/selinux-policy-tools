@@ -660,6 +660,7 @@ function showServiceEditor(context, mod) {
   .results { max-height: 260px; overflow: auto; margin-top: 4px; }
   .hit { padding: 3px 6px; cursor: pointer; border-radius: 3px; }
   .hit:hover { background: var(--vscode-list-hoverBackground); }
+  .bool { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 4px 10px 8px; margin: 8px 0; }
   .kept { max-height: 300px; overflow: auto; }
   .keptline { cursor: pointer; padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .keptline:hover { background: var(--vscode-list-hoverBackground); }

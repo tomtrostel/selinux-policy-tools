@@ -18,7 +18,7 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
-Unreleased (after 0.8.0): the service editor (step 6 below); e2e-tested,
+Unreleased (after 0.8.0): the service editor with booleans (step 6 below); e2e-tested,
 not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
@@ -240,8 +240,34 @@ so far covered by the e2e tests only.
    + Create/Apply as one WorkspaceEdit, saved; stale banner when the files
    are saved elsewhere). Tests: test/service-test.js (+ every daemon module
    of a tree as argument: 326/326 no-op identical, 4890/4890 edits), test/
-   service-e2e.js (CLIP, RHEL 9, RHEL 10 builds + standalone). Ideas not
-   done: booleans/tunables in the form, new port types, helper domains.
+   service-e2e.js (CLIP, RHEL 9, RHEL 10 builds + standalone).
+   Booleans (done, unreleased): model.booleans [{name, desc, default,
+   external, _new (UI), grants: {self, caps, net, access, extra}}].
+   Statement keys under a boolean are `b:<name>:<key>` (`scoped()`);
+   scanTe marks statements in a plain `tunable_policy(\`b', ...)` (one
+   name, no else) as {bool, tun}, also inside optional_policy (opt +
+   bool); combos/else/`if` stay kept. Units `tunable:<name>` (gen_tunable
+   + `## <desc>` comment, own = call + comment range; a changed default or
+   description is rewritten in place) and `b:<name>:...` grant units
+   (`grantUnits(g, prefix, bool)`; port items under a boolean put their
+   socket perms and generic corenet calls at the top level). editTe inserts
+   into the boolean's existing top-level tunable block (or optional >
+   tunable for optional calls), else new blocks after the domain's last
+   rule; emptied tunable/optional blocks go, inner first. Validation (only
+   for grants new against `opts.baseline` = recognized model): already
+   always allowed (duplicate type_transition fails expand, found with
+   mta_send_mail), and `ctx.condSafe` (server `makeCondSafe()`: interface
+   body minus gen_require, recursively through bodyCalls, has no
+   typeattribute/attribute/type/role/optional_policy/tunable_policy/if/
+   role allow — checkmodule refuses those in conditionals; found with
+   dbus_system_bus_client). 0 of 766 Fedora in-tunable calls flagged;
+   981/7427 interfaces unsafe (UI hides/disables them under booleans).
+   Server: `serviceBools()` (existing booleans for the picker), removing
+   a boolean still referenced elsewhere is refused. Tests: 22 mutation
+   kinds, 7172 Fedora edits; e2e: new service with a boolean + an external
+   one, ntp + new boolean, rsync's own boolean edited, all build.
+   Ideas not done: new port types, helper domains, file access under a
+   boolean, gen_bool.
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release

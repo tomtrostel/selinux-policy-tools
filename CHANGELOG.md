@@ -13,6 +13,15 @@
   `modules.conf` line in the tree's own conventions. Existing service
   modules open in the same form; only the lines of changed settings are
   edited, everything else is kept and listed.
+* **Booleans in the service editor**: new tunables (name, description,
+  default) or existing booleans, each with what it allows while on
+  (system access, process rights, capabilities, ports, interfaces),
+  written as `gen_tunable` + `tunable_policy` (`optional_policy` outside
+  for calls into modules that can be off). Booleans of existing modules
+  are read back and edited in place. Grants that conditional policy can't
+  hold (interfaces declaring attributes or containing `optional` blocks,
+  e.g. `dbus_system_bus_client`) or that are already always allowed are
+  refused before building.
 
 **Tests**: `npm run test:service` (in `npm test`; with a policy dir, every
 daemon module in it), `npm run test:service-e2e` (real builds on CLIP,

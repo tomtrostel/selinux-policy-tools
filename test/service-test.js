@@ -4,7 +4,7 @@
 //    and an unchanged model leaves the files byte-identical;
 //  - the webview runs a session against a fake DOM.
 // With a policy dir, also every daemon module in it: unchanged round trip and
-// 15 kinds of edits each (`node test/service-test.js ../selinux-policy/policy`).
+// 22 kinds of edits each (`node test/service-test.js ../selinux-policy/policy`).
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -25,15 +25,19 @@ logging_send_syslog_msg miscfiles_read_localization auth_use_nsswitch kernel_rea
 corenet_tcp_sendrecv_generic_if corenet_tcp_sendrecv_generic_node corenet_tcp_bind_generic_node corenet_tcp_bind_http_port corenet_sendrecv_http_server_packets
 corenet_tcp_connect_http_port corenet_udp_sendrecv_generic_if corenet_udp_sendrecv_generic_node corenet_udp_bind_generic_node corenet_udp_bind_ntp_port
 corenet_tcp_connect_all_ports corenet_tcp_connect_postgresql_port files_search_pids files_search_var_lib logging_search_logs files_search_etc
-admin_pattern init_labeled_script_domtrans signal_perms dev_read_urand nis_use_ypbind dev_read_sound`.split(/\s+/));
+admin_pattern init_labeled_script_domtrans signal_perms dev_read_urand nis_use_ypbind dev_read_sound corenet_tcp_bind_all_ports kernel_read_kernel_sysctls`.split(/\s+/));
 const OPTIONAL = new Set(['dbus_system_bus_client', 'mta_send_mail', 'nis_use_ypbind']);
-const ctx = { has: (n) => KNOWN.has(n), optional: (n) => OPTIONAL.has(n), moduleArgs: 2, moduleExists: (n) => n === 'rpcbind', typeExists: () => false };
+const ctx = { has: (n) => KNOWN.has(n), optional: (n) => OPTIONAL.has(n), moduleArgs: 2, moduleExists: (n) => n === 'rpcbind', typeExists: () => false,
+  boolExists: (n) => ['use_nfs_home_dirs', 'legacyd_something'].includes(n) };
 
+const grantsNorm = (g) => ({ self: [...(g.self || [])].sort(), caps: [...(g.caps || [])].sort(),
+  listen: ((g.net || {}).listen || []).map(x => x.proto + x.port).sort(), connect: ((g.net || {}).connect || []).map(x => x.proto + x.port).sort(),
+  access: [...(g.access || [])].sort(), extra: [...(g.extra || [])].sort() });
+const boolsNorm = (m) => (m.booleans || []).map(b => [b.name.replace(/%/g, m.name), !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), grantsNorm(b.grants || {})])
+  .sort((a, b) => a[0].localeCompare(b[0]));
 const norm = (m) => JSON.stringify({
   files: m.files.map(f => [f.kind, svc.fileType(m, f, ctx), f.access, (f.paths || []).map(p => p.replace(/%/g, m.name)).sort()]).sort(),
-  self: [...m.self].sort(), caps: [...m.caps].sort(),
-  listen: m.net.listen.map(x => x.proto + x.port).sort(), connect: m.net.connect.map(x => x.proto + x.port).sort(),
-  access: [...m.access].sort(), extra: [...m.extra].sort(), permissive: !!m.permissive, exec: m.exec.map(p => p.replace(/%/g, m.name)).sort(),
+  ...grantsNorm(m), permissive: !!m.permissive, exec: m.exec.map(p => p.replace(/%/g, m.name)).sort(), booleans: boolsNorm(m),
 });
 
 /* ---------- new module ---------- */
@@ -47,6 +51,10 @@ model.net.connect.push({ proto: 'tcp', port: 'postgresql' });
 model.access.push('nsswitch', 'dbus');
 model.extra.push('dev_read_sound');
 model.provides = ['domtrans', 'read_config', 'read_log', 'admin'];
+model.booleans = [
+  { name: '%_connect_any', desc: 'Allow webby to connect to any TCP port', default: false, grants: { self: ['rlimit'], net: { listen: [], connect: [{ proto: 'tcp', port: 'all' }] } } },
+  { name: 'use_nfs_home_dirs', external: true, grants: { extra: ['nis_use_ypbind'] } },
+];
 check(svc.validate(model, ctx, { isNew: true }).length === 0, 'new model validates', svc.validate(model, ctx, { isNew: true }));
 check(svc.validate({ ...model, name: 'rpcbind' }, ctx, { isNew: true }).some(p => /already exists/.test(p)) &&
   svc.validate({ ...model, name: 'Web-1' }, ctx, { isNew: true }).some(p => /name must/.test(p)), 'name checks: existing module, bad characters');
@@ -57,7 +65,14 @@ for (const line of ['type webby_t;', 'type webby_exec_t;', 'init_daemon_domain(w
   'files_pid_filetrans(webby_t, webby_var_run_t, { dir file sock_file })', 'append_files_pattern(webby_t, webby_log_t, webby_log_t)', 'read_files_pattern(webby_t, webby_conf_t, webby_conf_t)',
   'corenet_tcp_bind_http_port(webby_t)', 'corenet_tcp_connect_postgresql_port(webby_t)', 'auth_use_nsswitch(webby_t)', 'dev_read_sound(webby_t)',
   "optional_policy(`\n\tdbus_system_bus_client(webby_t)\n')"]) check(out.te.includes(line), `.te has ${line.split('\n')[0]}`, out.te);
-check(!/corenet_tcp_connect_postgresql_port[\s\S]*optional_policy[\s\S]*corenet/.test(out.te) && out.te.indexOf('corenet_tcp_sendrecv_generic_if') === out.te.lastIndexOf('corenet_tcp_sendrecv_generic_if'), 'shared network rules appear once');
+check(out.te.includes('## <desc>\n##\t<p>\n##\tAllow webby to connect to any TCP port\n##\t</p>\n## </desc>\ngen_tunable(webby_connect_any, false)') &&
+  out.te.indexOf('gen_tunable(webby_connect_any') < out.te.indexOf('type webby_t;'), 'boolean declared with its description, before the types', out.te);
+check(out.te.includes("tunable_policy(`webby_connect_any',`\n\tallow webby_t self:process setrlimit;\n\tcorenet_tcp_connect_all_ports(webby_t)\n')"), 'boolean grants inside tunable_policy', out.te);
+check(out.te.includes("optional_policy(`\n\ttunable_policy(`use_nfs_home_dirs',`\n\t\tnis_use_ypbind(webby_t)\n\t')\n')") && !/gen_tunable\(use_nfs_home_dirs/.test(out.te),
+  'existing boolean: not declared; optional call wrapped optional_policy > tunable_policy', out.te);
+check(svc.validate({ ...model, booleans: [{ name: 'Bad-Name', grants: {} }, { name: 'no_such_bool', external: true, grants: { caps: ['kill'] } }, { name: 'legacyd_something', grants: { caps: ['kill'] } }] }, ctx, { isNew: true }).filter(p => /Boolean name|no boolean no_such_bool|already exists: add it/.test(p)).length === 3,
+  'boolean checks: bad name, unknown existing boolean, new name taken');
+check(out.te.indexOf('corenet_tcp_sendrecv_generic_if') === out.te.lastIndexOf('corenet_tcp_sendrecv_generic_if'), 'shared network rules appear once');
 check(out.fc.includes('/usr/bin/webby\t--\tgen_context(system_u:object_r:webby_exec_t,s0)') && out.fc.includes('/var/lib/webby(/.*)?\t\tgen_context(system_u:object_r:webby_var_lib_t,s0)') &&
   out.fc.includes('/etc/webby\\.conf\t--\tgen_context(system_u:object_r:webby_conf_t,s0)') && out.fc.includes('/usr/lib/systemd/system/webby\\.service\t--'), '.fc: program, directory tree, single file, unit', out.fc);
 check(/^## <summary>A small web service<\/summary>/.test(out.if) && /interface\(`webby_domtrans'/.test(out.if) && /interface\(`webby_read_config'/.test(out.if) && /interface\(`webby_admin'/.test(out.if) &&
@@ -83,7 +98,7 @@ e = edit(out, m => { m.net.listen = []; });
 check(!/corenet_tcp_bind_http_port|corenet_tcp_bind_generic_node/.test(e.out.te) && /corenet_tcp_sendrecv_generic_if/.test(e.out.te) && /self:tcp_socket/.test(e.out.te),
   'removing the listening port keeps rules the outgoing connection still needs', changedLines(out.te, e.out.te));
 e = edit(out, m => { m.access = m.access.filter(a => a !== 'dbus'); m.extra.push('nis_use_ypbind'); });
-check(!/dbus_system_bus_client/.test(e.out.te) && /optional_policy\(`\n\tnis_use_ypbind\(webby_t\)\n'\)/.test(e.out.te) && (e.out.te.match(/optional_policy/g) || []).length === 1,
+check(!/dbus_system_bus_client/.test(e.out.te) && /optional_policy\(`\n\tnis_use_ypbind\(webby_t\)\n'\)/.test(e.out.te) && (e.out.te.match(/optional_policy/g) || []).length === 2,
   'empty optional_policy block removed; new optional call wrapped', e.out.te.slice(-200));
 e = edit(out, m => { m.files.find(f => f.kind === 'state').paths.push('/srv/webby/'); m.exec.push('/usr/libexec/webby-helper'); });
 check(changedLines(out.fc, e.out.fc).length === 2 && e.out.te === out.te &&
@@ -146,7 +161,8 @@ const lr = svc.recognize(legacy, ctx, {});
 check(!lr.error && lr.model.summary === 'Legacy daemon' && lr.model.caps.join() === 'setuid,chown' && lr.model.self.join() === 'fifo' && lr.model.access.includes('mail') &&
   lr.model.extra.includes('nis_use_ypbind') && lr.model.files[0].access === 'manage' && lr.model.files[0].paths[0] === '/var/run/legacyd.pid',
   'legacy module recognized (caps, self, optional calls, file type)', lr.model);
-check(lr.kept.length === 2 && lr.kept.some(k => /dev_read_urand/.test(k.text)) && lr.kept.some(k => /self:process signal/.test(k.text)), 'conditional and partial rules are kept as is', lr.kept);
+check(lr.kept.length === 1 && lr.kept.some(k => /self:process signal/.test(k.text)), 'partial self rules are kept as is', lr.kept);
+check(JSON.stringify(boolsNorm(lr.model)) === JSON.stringify([['legacyd_something', false, false, 'Allow legacyd to do something.', grantsNorm({ access: ['urandom'] })]]), 'boolean recognized: name, default, description, grants', boolsNorm(lr.model));
 check(svc.plan(JSON.parse(JSON.stringify(lr.model)), ctx, legacy).te === legacy.te, 'legacy: unchanged model, identical .te');
 e = edit(legacy, m => { m.caps = ['setuid']; m.access = m.access.filter(a => a !== 'mail'); m.self.push('signal'); m.files[0].access = 'read'; });
 check(/allow legacyd_t self:capability setuid;  # trailing comment/.test(e.out.te), 'capability line rewritten, comment kept', e.out.te);
@@ -160,6 +176,43 @@ const at = (s) => e.out.te.split('\n').findIndex(l => l.includes(s));
 check(dl.every(x => x[0] === '+') && at('type legacyd_var_lib_t;') > at('files_pid_file(') && at('type legacyd_var_lib_t;') < at('# Local policy') &&
   at('manage_files_pattern(legacyd_t, legacyd_var_lib_t') > at('logging_send_syslog_msg') && at('manage_files_pattern(legacyd_t, legacyd_var_lib_t') < at('tunable_policy'),
   'new file type: declaration with the others, rules after the domain’s last top-level rule', dl);
+
+/* ---------- booleans ---------- */
+
+const bool = (m, n) => m.booleans.find(b => b.name === n);
+e = edit(out, m => { bool(m, 'use_nfs_home_dirs').grants.extra = []; });
+check(!/use_nfs_home_dirs/.test(e.out.te) && changedLines(out.te, e.out.te).every(x => x[0] === '-'), 'last grant of a boolean removed: the nested optional_policy > tunable_policy goes', changedLines(out.te, e.out.te));
+e = edit(out, m => { bool(m, 'webby_connect_any').grants.caps = ['kill']; bool(m, 'webby_connect_any').grants.access = ['mail']; });
+check(e.out.te.includes("tunable_policy(`webby_connect_any',`\n\tallow webby_t self:process setrlimit;\n\tcorenet_tcp_connect_all_ports(webby_t)\n\tallow webby_t self:capability kill;\n')") &&
+  e.out.te.includes("optional_policy(`\n\ttunable_policy(`webby_connect_any',`\n\t\tmta_send_mail(webby_t)\n\t')\n')"), 'new grants go into the boolean’s block; an optional one gets its own nested block', e.out.te);
+e = edit(out, m => { bool(m, 'webby_connect_any').default = true; });
+check(JSON.stringify(changedLines(out.te, e.out.te)) === JSON.stringify([['-', 'gen_tunable(webby_connect_any, false)'], ['+', 'gen_tunable(webby_connect_any, true)']]), 'changing the default changes only the gen_tunable line', changedLines(out.te, e.out.te));
+e = edit(out, m => { bool(m, 'webby_connect_any').desc = 'Allow webby to connect to every TCP port'; });
+check(changedLines(out.te, e.out.te).length === 2 && /every TCP port/.test(e.out.te), 'changing the description changes only its line', changedLines(out.te, e.out.te));
+e = edit(out, m => { m.booleans = m.booleans.filter(b => b.name !== 'webby_connect_any'); });
+check(!/webby_connect_any|<desc>|corenet_tcp_connect_all_ports/.test(e.out.te) && changedLines(out.te, e.out.te).every(x => x[0] === '-'), 'removing a boolean removes its declaration, description and block', changedLines(out.te, e.out.te));
+e = edit(legacy, m => { m.booleans.push({ name: 'legacyd_extra', desc: 'Allow legacyd extra things.', default: false, external: false, _new: true, grants: { extra: ['dev_read_sound'], caps: ['kill'] } }); });
+const lat = (s) => e.out.te.split('\n').findIndex(l => l.includes(s));
+check(changedLines(legacy.te, e.out.te).every(x => x[0] === '+') && lat('gen_tunable(legacyd_extra') > lat('gen_tunable(legacyd_something') && lat('gen_tunable(legacyd_extra') < lat('type legacyd_t;') &&
+  lat("tunable_policy(`legacyd_extra'") > lat('nis_use_ypbind') && e.out.te.includes("tunable_policy(`legacyd_extra',`\n\tallow legacyd_t self:capability kill;\n\tdev_read_sound(legacyd_t)\n')"),
+  'new boolean in a hand-written module: declared next to the other, block after the domain’s rules', changedLines(legacy.te, e.out.te));
+e = edit(legacy, m => { bool(m, 'legacyd_something').grants.caps = ['kill']; });
+check(e.out.te.includes("tunable_policy(`legacyd_something',`\n\tdev_read_urand(legacyd_t)\n\tallow legacyd_t self:capability kill;\n')"), 'grant added inside the existing block', e.out.te);
+e = edit(legacy, m => { bool(m, 'legacyd_something').grants.access = []; });
+check(!/tunable_policy/.test(e.out.te) && /gen_tunable\(legacyd_something, false\)/.test(e.out.te), 'block emptied: removed; the declaration stays', changedLines(legacy.te, e.out.te));
+const added = svc.recognize(edit(legacy, m => { m.booleans.push({ name: 'use_nfs_home_dirs', external: true, grants: { access: ['mail'] } }); }).out, ctx, {});
+check(JSON.stringify(boolsNorm(added.model).map(b => [b[0], b[1]])) === JSON.stringify([['legacyd_something', false], ['use_nfs_home_dirs', true]]), 'an existing boolean used here reads back as existing (not declared here)', boolsNorm(added.model));
+
+// Conditional policy can't hold everything, and the same grant always and under a boolean is refused.
+const ctxC = { ...ctx, condSafe: (n) => n !== 'dbus_system_bus_client' };
+const mC = JSON.parse(JSON.stringify(model));
+mC.access = mC.access.filter(a => a !== 'dbus');
+mC.booleans = [{ name: 'webby_x', desc: 'x', default: false, _new: true, grants: { access: ['dbus'], caps: ['setuid'], extra: [], self: [], net: { listen: [], connect: [] } } }];
+const pc = svc.validate(mC, ctxC, { isNew: true });
+check(pc.some(p => /"Use the D-Bus system bus" can't be granted under webby_x: dbus_system_bus_client\(\)/.test(p)) && pc.some(p => /capability setuid under webby_x is already always allowed/.test(p)),
+  'under a boolean: interfaces conditional policy refuses, and grants that are already always there, are refused', pc);
+check(!svc.validate(mC, ctxC, { isNew: false, baseline: JSON.parse(JSON.stringify(mC)) }).some(p => /webby_x/.test(p) && !/Note/.test(p)), 'an existing module isn’t blamed for what it already has');
+check(svc.catalog(ctxC).access.flatMap(g => g.items).find(i => i.id === 'dbus').cond === false, 'catalog marks items that can’t be under a boolean');
 
 /* ---------- paths ---------- */
 
@@ -232,10 +285,30 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   const hit = find(e => e.attrs.class === 'hit');
   check(hit.length === 1 && hit[0].textContent.includes('dev_read_urand'), 'interface search matches words in the summary');
   hit[0].fire('click');
+  // A new boolean with a capability, a port and an interface; and an existing boolean.
+  buttonText('+ New boolean').fire('click');
+  const boolCard = () => find(e => e.attrs.class === 'bool');
+  const bname = boolCard()[0].all(e => e.tag === 'input' && /connect_any/.test(e.attrs.placeholder || ''))[0];
+  bname.value = 'webby_connect_any'; bname.fire('input');
+  const menu = boolCard()[0].all(e => e.tag === 'select' && e.children.some(c => c.tag === 'option' && /Add system access/.test(c.textContent)))[0];
+  menu.value = 'cap:kill'; menu.fire('change');
+  const bport = boolCard()[0].all(e => e.tag === 'input' && e.attrs.list === 'ports')[0];
+  bport.value = 'all'; bport.fire('input');
+  // (a real <select> starts on its first option; the fake one doesn't)
+  const [bdir, bproto] = bport.parent.children.filter(e => e.tag === 'select');
+  bdir.value = 'connect'; bproto.value = 'tcp';
+  boolCard()[0].all(e => e.tag === 'button' && e.textContent === '+ Add')[0].fire('click');
+  const existing = find(e => e.tag === 'input' && e.attrs.list === 'bools')[0];
+  existing.value = 'use_nfs_home_dirs';
+  find(e => e.tag === 'button' && e.textContent === '+ Add' && e.parent && e.parent.attrs.class === 'adds')[0].fire('click');
+  check(boolCard().length === 2 && /Kill|Signal processes of other users/.test(boolCard()[0].textContent) && /Connect to TCP any port/.test(boolCard()[0].textContent) && /existing boolean/.test(boolCard()[1].textContent),
+    'booleans: new one with chips for its grants, existing one marked');
   await wait(400);
   const p = last('plan').model;
   check(p.name === 'webby' && p.files.some(f => f.kind === 'state' && f.paths[0] === '/var/lib/%/') && p.caps.includes('net_bind_service') && p.access.includes('dbus') &&
     p.net.listen[0].port === 'http' && p.extra.includes('dev_read_urand'), 'edits end up in the model sent for planning', p);
+  check(p.booleans.length === 2 && p.booleans[0].name === 'webby_connect_any' && p.booleans[0]._new && p.booleans[0].grants.caps[0] === 'kill' && p.booleans[0].grants.net.connect[0].port === 'all' &&
+    p.booleans[1].external && p.booleans[1].name === 'use_nfs_home_dirs', 'booleans in the planned model', p.booleans);
   const ws = svc.validate(p, ctx, { isNew: true });
   send({ cmd: 'plan', plan: { problems: ws, files: [{ kind: 'te', path: '/t/webby.te', exists: false, changed: true, text: svc.plan(p, ctx, null).te, diff: [] }, { kind: 'conf', path: '/t/modules.conf', exists: true, changed: true, text: 'x = module\nwebby = module', diff: [[' ', 'x = module'], ['+', 'webby = module']] }] } });
   check(!byId.apply.disabled && byId.apply.textContent === 'Create module' && /2 files to create/.test(byId.status.textContent), `apply enabled: ${byId.status.textContent}`);
@@ -247,7 +320,7 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   // Existing module: kept statements, existing interfaces disabled.
   const r2 = svc.recognize(legacy, ctx, {});
   send({ cmd: 'init', info: { ...info, isNew: false, module: 'legacyd', layer: 'contrib', files: { te: '/t/legacyd.te' }, model: { ...r2.model, provides: [] }, kept: r2.kept, provided: ['legacyd_domtrans'], domains: r2.domains } });
-  check(byId.title.textContent === 'Service: legacyd' && find(e => e.attrs.class === 'keptline').length === 2, 'existing module: title, kept statements listed');
+  check(byId.title.textContent === 'Service: legacyd' && find(e => e.attrs.class === 'keptline').length === 1, 'existing module: title, kept statements listed');
   const dom = checkbox('Run the service’s program in its domain');
   check(dom && dom.checked && dom.attrs.disabled !== undefined, 'existing interfaces are checked and cannot be unchecked');
   find(e => e.attrs.class === 'keptline')[0].fire('click');
@@ -283,9 +356,19 @@ async function survey(root) {
     m => { if (!m.extra.includes('dev_read_sound')) m.extra.push('dev_read_sound'); },
     m => { m.permissive = !m.permissive; },
     m => { m.exec.push('/usr/sbin/' + m.name + 'x'); },
+    // Booleans.
+    m => { m.booleans.push({ name: m.name.replace(/-/g, '_') + '_e2e_extra', desc: 'Test boolean.', default: false, _new: true, grants: { caps: ['kill'], extra: ['dev_read_sound'], access: ['dbus'], net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] } } }); },
+    m => { const b = m.booleans.find(x => !x.external); if (b) b.default = !b.default; },
+    m => { const b = m.booleans.find(x => !x.external); if (b) b.desc = 'Changed description.'; },
+    m => { const b = m.booleans.find(x => !x.external); if (b) m.booleans.splice(m.booleans.indexOf(b), 1); },
+    m => { const b = m.booleans[0]; if (b && !b.grants.caps.includes('kill')) b.grants.caps.push('kill'); },
+    m => { for (const b of m.booleans) for (const k of ['extra', 'access', 'caps', 'self']) if (b.grants[k].length) { b.grants[k].splice(0, 1); return; } },
+    m => { if (m.booleans.some(b => b.name === 'use_nfs_home_dirs')) return; m.booleans.push({ name: 'use_nfs_home_dirs', external: true, grants: { access: ['mail'], extra: [], caps: [], self: [], net: { listen: [], connect: [] } } }); },
   ];
+  const bnorm = (m) => (m.booleans || []).filter(b => !b.external || Object.values(b.grants).some(v => (Array.isArray(v) ? v.length : v.listen.length + v.connect.length)))
+    .map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : b.desc, JSON.stringify(grantsNorm(b.grants))]).sort((a, b) => a[0].localeCompare(b[0]));
   const tnorm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), [...m.self].sort(), [...m.caps].sort(),
-    m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort()]);
+    m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m)]);
   let mods = 0, same = 0, edits = 0, good = 0;
   const bad = [];
   for (const f of idx.files.values()) {

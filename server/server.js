@@ -1484,6 +1484,32 @@ connection.onRequest('selinux/modulePreview', async ({ module: mod, to }) => {
  */
 const service = require('./service');
 
+// Statements checkmodule refuses inside a conditional (if / tunable_policy): declarations,
+// attributes, roles, optional and nested conditional blocks. type_transition is fine.
+const COND_BAD_RE = /^\s*(typeattribute|attribute|attribute_role|typealias|type|role|roleattribute|role_transition|range_transition|neverallow|if)\b|^\s*allow\s+[^:;]+;|\b(optional_policy|tunable_policy|gen_tunable|gen_bool)\s*\(/m;
+const COND_SKIP = new Set(['gen_require', 'require', 'ifdef', 'ifndef', 'ifelse', 'refpolicywarn', 'refpolicyerr']);
+
+/** name -> whether a call to it may go under a boolean (its body and everything it calls). */
+function makeCondSafe() {
+  const memo = new Map();
+  const texts = new Map();
+  const linesOf = (p) => { if (!texts.has(p)) texts.set(p, (readSource(p) || '').split('\n')); return texts.get(p); };
+  const safe = (name, depth = 0) => {
+    if (memo.has(name)) return memo.get(name);
+    if (name === 'optional_policy' || name === 'tunable_policy') return false;
+    const d = (idx.defs.get(name) || [])[0];
+    if (!d || d.generated || !d.bodyStart || !d.bodyEnd || depth > 8) return true;
+    memo.set(name, true); // cycles
+    const body = linesOf(d.path).slice(d.bodyStart.l, d.bodyEnd.l + 1);
+    for (const r of d.reqBlocks || []) for (let l = r.l; l <= r.endL; l++) body[l - d.bodyStart.l] = '';
+    let ok = !COND_BAD_RE.test(body.join('\n').replace(/#.*$/gm, ''));
+    for (const bc of d.bodyCalls || []) if (ok && !COND_SKIP.has(bc.name) && !safe(bc.name, depth + 1)) ok = false;
+    memo.set(name, ok);
+    return ok;
+  };
+  return (name) => safe(name);
+}
+
 /** What the service model needs to know about this tree. */
 function serviceCtx() {
   const fileOf = (p) => idx.files.get(p);
@@ -1509,7 +1535,22 @@ function serviceCtx() {
     moduleArgs,
     moduleExists: (n) => mods.has(n),
     typeExists: (t) => idx.decls.has(t),
+    boolExists: (n) => (idx.decls.get(n) || []).some(d => d.kind === 'bool'),
+    condSafe: makeCondSafe(),
   };
+}
+
+/** Booleans and tunables declared in the tree (outside module `except`), for "use an existing boolean". */
+function serviceBools(except) {
+  const out = [];
+  for (const [n, list] of idx.decls) {
+    const d = list.find(x => x.kind === 'bool');
+    if (!d || d.generated) continue;
+    const f = idx.files.get(d.path);
+    if (f && except && f.module === except) continue;
+    out.push({ n, s: ((d.doc && (d.doc.desc || d.doc.summary)) || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '', def: d.default || '' });
+  }
+  return out.sort((a, b) => a.n.localeCompare(b.n));
 }
 
 /** The workspace's modules that the editor can open: a .te with init_daemon_domain. */
@@ -1549,7 +1590,7 @@ function servicePorts() {
 }
 
 /** Interfaces taking just a domain, for the "other interfaces" picker. */
-function serviceInterfaces() {
+function serviceInterfaces(condSafe) {
   const out = [];
   for (const [n, list] of idx.defs) {
     const d = list[0];
@@ -1557,7 +1598,9 @@ function serviceInterfaces() {
     const ps = d.doc && d.doc.params;
     if (!(ps ? ps.length === 1 : d.maxArg === 1)) continue;
     const f = idx.files.get(d.path);
-    out.push({ n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '' });
+    const it = { n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '' };
+    if (condSafe && !condSafe(n)) it.u = 1; // not allowed under a boolean
+    out.push(it);
   }
   return out.sort((a, b) => a.n.localeCompare(b.n));
 }
@@ -1576,12 +1619,13 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain } = {})
   if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree or a standalone module folder first.' };
   const ctx = serviceCtx();
   const info = {
-    catalog: service.catalog(ctx), ports: servicePorts(), interfaces: serviceInterfaces(),
+    catalog: service.catalog(ctx), ports: servicePorts(), interfaces: serviceInterfaces(ctx.condSafe),
     mode: treeRoot && !usingDevel ? 'tree' : 'module',
     layers: treeRoot && !usingDevel ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
     folder: roots[0] || null,
   };
   if (info.layers) info.defaultLayer = ['contrib', 'services'].find(l => info.layers.includes(l)) || info.layers[0];
+  info.bools = serviceBools(mod);
   if (!mod) return { ...info, isNew: true, model: service.newModel() };
   const m = serviceModules().find(x => x.module === mod);
   if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
@@ -1596,25 +1640,36 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where }
   await indexing;
   const ctx = serviceCtx();
   const isNew = !mod;
-  const problems = service.validate(model, ctx, { isNew });
-  if (isNew && problems.some(p => /name must|already exists/.test(p))) return { problems, files: [] };
-  let paths, before;
-  if (isNew) {
-    paths = newServicePaths(model.name, where);
-    before = { te: null, if: null, fc: null };
-  } else {
+  let paths, before, rec = null;
+  if (!isNew) {
     const m = serviceModules().find(x => x.module === mod);
     if (!m) return { problems: [`${mod} is no longer a service module.`], files: [] };
     paths = { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc') };
     before = serviceTexts(m.files);
+    rec = service.recognize(before, ctx, { domain: model.domain });
+  }
+  // Checks on what the user adds (an existing module isn't blamed for what it already has).
+  const problems = service.validate(model, ctx, { isNew, baseline: rec && !rec.error ? rec.model : null });
+  if (isNew && problems.some(p => /name must|already exists/.test(p))) return { problems, files: [] };
+  if (isNew) {
+    paths = newServicePaths(model.name, where);
+    before = { te: null, if: null, fc: null };
+  } else {
     // Removing a file type that the .if or other modules still use would break the build.
-    const rec = service.recognize(before, ctx, { domain: model.domain });
     if (!rec.error) {
       const keep = new Set((model.files || []).map(r => service.fileType(model, r, ctx)));
       for (const r of rec.model.files) {
         if (keep.has(r.type)) continue;
         const uses = idx.referencesOf(r.type).filter(u => u.path !== paths.te && u.path !== paths.fc);
         if (uses.length) problems.push(`${r.type} is still used in ${rel(uses[0].path)}:${uses[0].l + 1}${uses.length > 1 ? ` and ${uses.length - 1} more place${uses.length > 2 ? 's' : ''}` : ''}; remove those uses first, or keep the type.`);
+      }
+      // Likewise a boolean declared here that other modules or the rules kept as they are still test.
+      const keepB = new Set((model.booleans || []).filter(b => !b.external).map(b => b.name));
+      for (const b of rec.model.booleans.filter(x => !x.external && !keepB.has(x.name))) {
+        const uses = idx.referencesOf(b.name).filter(u => u.path !== paths.te);
+        const keptUse = rec.kept.find(k => new RegExp(`\\b${b.name}\\b`).test(k.text));
+        if (uses.length) problems.push(`Boolean ${b.name} is still used in ${rel(uses[0].path)}:${uses[0].l + 1}; remove that use first, or keep the boolean.`);
+        else if (keptUse) problems.push(`Boolean ${b.name} is still used on line ${keptUse.l + 1} of ${path.basename(paths.te)} (kept as is); remove that use first, or keep the boolean.`);
       }
     }
   }

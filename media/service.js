@@ -22,7 +22,7 @@
       else if (k === 'checked') e.checked = !!v;
       else e.setAttribute(k, v === true ? '' : v);
     }
-    for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+    for (const c of kids.flat(Infinity)) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
     return e;
   }
   const kindOf = (id) => info.catalog.fileKinds.find(k => k.id === id) || { id, label: id, access: ['none'], suffix: '_t' };
@@ -148,6 +148,20 @@
     ]);
   }
 
+  /** Search box over the interfaces taking just a domain; onPick(name). */
+  function ifaceSearch(exclude, onPick, keep = () => true) {
+    const results = h('div', { class: 'results' });
+    const search = h('input', { type: 'text', size: 40, spellcheck: 'false', placeholder: 'Search interfaces: name or words from the summary', oninput: () => {
+      const q = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      results.textContent = '';
+      if (!q.length) return;
+      const hits = info.interfaces.filter(i => !exclude.includes(i.n) && keep(i) && q.every(w => i.n.includes(w) || i.s.toLowerCase().includes(w))).slice(0, 40);
+      for (const it of hits) results.append(h('div', { class: 'hit', onclick: () => { search.value = ''; onPick(it.n); } }, h('code', {}, it.n), h('span', { class: 'muted' }, ` ${it.m} — ${it.s}`)));
+      if (!hits.length) results.append(h('div', { class: 'muted' }, 'No interface taking just a domain matches.'));
+    } });
+    return [search, results];
+  }
+
   function extraSection() {
     const byName = new Map(info.interfaces.map(i => [i.n, i]));
     const chips = h('div', { class: 'chips' }, model.extra.map((n, i) => {
@@ -155,16 +169,79 @@
       return h('span', { class: 'chip on', title: d ? d.s : '' }, h('code', {}, n), d && d.s ? h('span', { class: 'muted' }, ' ' + d.s.slice(0, 70)) : null,
         h('button', { class: 'icon', title: 'Remove', onclick: () => { model.extra.splice(i, 1); render(); changed(); } }, '✕'));
     }));
-    const results = h('div', { class: 'results' });
-    const search = h('input', { type: 'text', size: 40, spellcheck: 'false', placeholder: 'Search interfaces: name or words from the summary', oninput: () => {
-      const q = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-      results.textContent = '';
-      if (!q.length) return;
-      const hits = info.interfaces.filter(i => !model.extra.includes(i.n) && q.every(w => i.n.includes(w) || i.s.toLowerCase().includes(w))).slice(0, 40);
-      for (const it of hits) results.append(h('div', { class: 'hit', onclick: () => { model.extra.push(it.n); search.value = ''; render(); changed(); } }, h('code', {}, it.n), h('span', { class: 'muted' }, ` ${it.m} — ${it.s}`)));
-      if (!hits.length) results.append(h('div', { class: 'muted' }, 'No interface taking just a domain matches.'));
-    } });
-    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy.'), chips, search, results], model.extra.length > 0 || info.isNew);
+    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy.'), chips,
+      ...ifaceSearch(model.extra, (n) => { model.extra.push(n); render(); changed(); })], model.extra.length > 0 || info.isNew);
+  }
+
+  const emptyGrants = () => ({ self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] });
+
+  function boolsSection() {
+    model.booleans = model.booleans || [];
+    const accessBy = new Map(info.catalog.access.flatMap(g => g.items).map(i => [i.id, i]));
+    const selfBy = new Map(info.catalog.self.map(s => [s.id, s]));
+    const capBy = new Map(info.catalog.caps.map(c => [c.name, c]));
+    const boolBy = new Map((info.bools || []).map(b => [b.n, b]));
+    const cards = model.booleans.map((b, bi) => {
+      const g = b.grants = Object.assign(emptyGrants(), b.grants || {});
+      g.net = Object.assign({ listen: [], connect: [] }, g.net || {});
+      const fresh = b._new || info.isNew;
+      const ext = boolBy.get(b.name);
+      const head = h('div', { class: 'row' },
+        b.external
+          ? h('span', {}, h('code', {}, b.name), h('span', { class: 'muted' }, ext ? ` existing boolean (${ext.m}${ext.def ? `, default ${ext.def}` : ''})` : ' existing boolean'))
+          : fresh ? h('input', { type: 'text', value: b.name, size: 30, spellcheck: 'false', placeholder: `e.g. ${model.name || 'NAME'}_connect_any`, oninput: (e) => { b.name = e.target.value.trim(); changed(); } })
+            : h('code', {}, b.name),
+        b.external ? null : h('label', {}, ' default ', h('select', { onchange: (e) => { b.default = e.target.value === 'on'; changed(); } },
+          h('option', { value: 'off', selected: !b.default }, 'off'), h('option', { value: 'on', selected: !!b.default }, 'on'))),
+        h('button', { class: 'icon', title: 'Remove this boolean and what it allows', onclick: () => { model.booleans.splice(bi, 1); render(); changed(); } }, '✕'));
+      const desc = b.external
+        ? (ext && ext.s ? h('div', { class: 'muted small' }, ext.s) : null)
+        : h('textarea', { rows: 2, spellcheck: 'true', placeholder: 'What switching it on allows (semanage boolean -l shows this)', oninput: (e) => { b.desc = e.target.value; changed(); } }, b.desc || '');
+      // What it grants, as removable chips.
+      const chip = (label, code, remove) => h('span', { class: 'chip on' }, label, code ? h('code', { class: 'code' }, code) : null,
+        h('button', { class: 'icon', title: 'Remove', onclick: () => { remove(); render(); changed(); } }, '✕'));
+      const chips = h('div', { class: 'chips' },
+        g.access.map((id, i) => chip((accessBy.get(id) || { label: id }).label, '', () => g.access.splice(i, 1))),
+        g.self.map((id, i) => chip((selfBy.get(id) || { label: id }).label, '', () => g.self.splice(i, 1))),
+        g.caps.map((c, i) => chip((capBy.get(c) || { label: c }).label, c, () => g.caps.splice(i, 1))),
+        ['listen', 'connect'].flatMap(dir => g.net[dir].map((it, i) => chip(`${dir === 'listen' ? 'Listen on' : 'Connect to'} ${it.proto.toUpperCase()} ${it.port === 'all' ? 'any port' : it.port + '_port_t'}`, '', () => g.net[dir].splice(i, 1)))),
+        g.extra.map((n, i) => chip('', n, () => g.extra.splice(i, 1))));
+      // Adding: one menu for the catalog, a port row, an interface search.
+      const menu = h('select', { onchange: (e) => {
+        const [kind, id] = e.target.value.split(':');
+        if (kind === 'access') g.access.push(id); else if (kind === 'self') g.self.push(id); else if (kind === 'cap') g.caps.push(id);
+        render(); changed();
+      } }, h('option', { value: '' }, 'Add system access, process right or capability…'),
+        // Not what is already always allowed; items whose interfaces conditional policy refuses are shown disabled.
+        info.catalog.access.map(gr => h('optgroup', { label: gr.group }, gr.items.filter(i => !g.access.includes(i.id) && !model.access.includes(i.id)).map(i => h('option', { value: `access:${i.id}`, disabled: i.cond === false }, i.cond === false ? `${i.label} (can't be under a boolean)` : i.label)))),
+        h('optgroup', { label: 'Its own processes' }, info.catalog.self.filter(s => !g.self.includes(s.id) && !model.self.includes(s.id)).map(s => h('option', { value: `self:${s.id}` }, s.label))),
+        h('optgroup', { label: 'Capabilities' }, info.catalog.caps.filter(c => !g.caps.includes(c.name) && !model.caps.includes(c.name)).map(c => h('option', { value: `cap:${c.name}` }, `${c.name}: ${c.label}${c.risky ? ' ⚠' : ''}`))));
+      const dir = h('select', {}, h('option', { value: 'connect' }, 'connect to'), h('option', { value: 'listen' }, 'listen on'));
+      const proto = h('select', {}, h('option', { value: 'tcp' }, 'TCP'), h('option', { value: 'udp' }, 'UDP'));
+      const port = h('input', { type: 'text', list: 'ports', size: 18, spellcheck: 'false', placeholder: 'port type or all' });
+      const portRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Port:'), dir, proto, port, h('button', { class: 'chip', onclick: () => {
+        const p = port.value.trim().replace(/_port_t$/, '');
+        if (!p) return;
+        g.net[dir.value].push({ proto: proto.value, port: p });
+        render(); changed();
+      } }, '+ Add'));
+      const [search, results] = ifaceSearch([...g.extra, ...model.extra], (n) => { g.extra.push(n); render(); changed(); }, (i) => !i.u);
+      return h('div', { class: 'bool' }, head, desc, h('div', { class: 'sub small' }, 'When on, also allow'), chips, h('div', { class: 'row' }, menu), portRow, h('div', { class: 'row' }, search), results);
+    });
+    const existing = h('input', { type: 'text', list: 'bools', size: 30, spellcheck: 'false', placeholder: 'e.g. use_nfs_home_dirs' });
+    const add = h('div', { class: 'adds' },
+      h('button', { class: 'chip', onclick: () => { model.booleans.push({ name: '', desc: '', default: false, external: false, _new: true, grants: emptyGrants() }); render(); changed(); } }, '+ New boolean'),
+      h('span', { class: 'muted' }, '  or use an existing one: '), existing,
+      h('datalist', { id: 'bools' }, (info.bools || []).map(b => h('option', { value: b.n }, `${b.m}: ${b.s.slice(0, 80)}`))),
+      h('button', { class: 'chip', onclick: () => {
+        const n = existing.value.trim();
+        if (!n || model.booleans.some(b => b.name === n)) return;
+        model.booleans.push({ name: n, external: true, grants: emptyGrants() });
+        render(); changed();
+      } }, '+ Add'));
+    return section('Booleans', `${model.booleans.length}`, [
+      h('div', { class: 'muted small' }, 'Rights an administrator can switch on at run time (setsebool). Everything above is always allowed; what you add here only while the boolean is on.'),
+      cards, add], model.booleans.length > 0 || info.isNew);
   }
 
   function providesSection() {
@@ -246,7 +323,7 @@
     const scroll = form.scrollTop;
     const open = [...form.querySelectorAll('details')].map(d => d.open);
     form.textContent = '';
-    const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     $('title').textContent = info.isNew ? 'New service' : `Service: ${model.name}`;

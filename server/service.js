@@ -204,17 +204,33 @@ function fileType(model, row, ctx) {
   return `${model.name}${alt[1]}`;
 }
 
+// Statements inside tunable_policy(`b', ...) have keys of their own: the same call
+// at the top level and under a boolean are different statements.
+const scoped = (bool, key) => (bool ? `b:${bool}:${key}` : key);
+
+/** The doc comment refpolicy puts above gen_tunable() (shown by semanage boolean -l). */
+function tunableDoc(desc) {
+  const words = (desc || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) { if (cur && (cur + ' ' + w).length > 66) { lines.push(cur); cur = w; } else cur = cur ? `${cur} ${w}` : w; }
+  if (cur) lines.push(cur);
+  return ['## <desc>', '##\t<p>', ...(lines.length ? lines : ['(no description)']).map(l => `##\t${l}`), '##\t</p>', '## </desc>'];
+}
+function descFromDoc(lines) {
+  return lines.map(l => l.replace(/^\s*#+\s?/, '')).join(' ').replace(/<\/?(desc|p)>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Units of a model: key -> { sig, stmts }. A statement is
- * { key, kind: 'type'|'call'|'self'|'permissive', text, section: 'decl'|'local', opt, group }.
+ * { key, kind: 'type'|'call'|'self'|'permissive'|'tunable', text, section: 'decl'|'local', opt, bool, group }.
  */
 function unitsOf(model, ctx) {
   const units = new Map();
   const { D, E } = names(model);
   const add = (key, sig, stmts) => units.set(key, { sig: JSON.stringify(sig), stmts });
-  const call = (name, args, section = 'local', group = null) => ({ key: callKey(name, args), kind: 'call', name, args, text: callText(name, args), section, opt: section === 'local' && ctx.optional(name), group });
+  const call = (name, args, section = 'local', group = null, bool = null) => ({ key: scoped(bool, callKey(name, args)), kind: 'call', name, args, text: callText(name, args), section, opt: section === 'local' && ctx.optional(name), group, bool });
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
-  const self = (cls, perm) => ({ key: `self:${cls}:${perm}`, kind: 'self', cls, perm, section: 'local' });
 
   add('domain', { D, E }, [type(D), type(E), call('init_daemon_domain', [D, E], 'decl')]);
   if (model.permissive) add('permissive', 1, [{ key: 'permissive', kind: 'permissive', text: `permissive ${D};`, section: 'decl' }]);
@@ -239,56 +255,81 @@ function unitsOf(model, ctx) {
     add(`file:${T}`, { kind: row.kind, access: acc }, st.map(s => (s.opt ? { ...s, opt: false } : s)));
   }
 
-  for (const id of model.self || []) {
-    const s = SELF_BY[id];
-    if (!s) continue;
-    add(`self:${id}`, 1, Object.entries(s.perms).flatMap(([cls, ps]) => ps.map(p => self(cls, p))));
-  }
-  for (const c of model.caps || []) add(`cap:${c}`, 1, [self(CAP_CLASS[c] || 'capability', c)]);
-
-  // Network: generic node/interface rules are shared, so they stay while any port needs them.
-  const net = model.net || {};
-  for (const dir of ['listen', 'connect']) {
-    for (const it of net[dir] || []) {
-      const { proto, port } = it;
-      if (!port) continue; // a row still being filled in
-      const st = [];
-      const opt = (n, ...more) => { const name = [n, ...more].find(x => ctx.has(x)); if (name) st.push(call(name, [D], 'local', 'net')); };
-      st.push(proto === 'udp' ? self('udp_socket', 'create_socket_perms') : self('tcp_socket', 'create_stream_socket_perms'));
-      opt(`corenet_${proto}_sendrecv_generic_if`);
-      opt(`corenet_${proto}_sendrecv_generic_node`);
-      if (port === 'all') {
-        opt(dir === 'listen' ? `corenet_${proto}_bind_all_ports` : proto === 'tcp' ? 'corenet_tcp_connect_all_ports' : 'corenet_udp_sendrecv_all_ports');
-      } else if (dir === 'listen') {
-        opt(`corenet_${proto}_bind_generic_node`);
-        opt(`corenet_${proto}_bind_${port}_port`);
-        opt(`corenet_sendrecv_${port}_server_packets`);
-      } else {
-        opt(proto === 'tcp' ? `corenet_tcp_connect_${port}_port` : `corenet_udp_sendrecv_${port}_port`);
-        opt(`corenet_sendrecv_${port}_client_packets`);
-      }
-      add(`net:${dir}:${proto}:${port}`, 1, st);
+  grantUnits(model, '', null);
+  // Booleans: the declaration (unless it is declared elsewhere, like use_nfs_home_dirs),
+  // and what it grants inside tunable_policy.
+  for (const b of model.booleans || []) {
+    if (!b.name) continue;
+    const name = sub(b.name, model.name);
+    if (!b.external) {
+      const def = b.default ? 'true' : 'false';
+      add(`tunable:${name}`, { def, desc: (b.desc || '').replace(/\s+/g, ' ').trim() }, [{
+        key: callKey('gen_tunable', [name, def]), kind: 'tunable', name, text: [...tunableDoc(b.desc), callText('gen_tunable', [name, def])].join('\n'), section: 'decl',
+      }]);
     }
+    grantUnits(b.grants || {}, `b:${name}:`, name);
   }
-
-  for (const id of model.access || []) {
-    const a = ACCESS[id];
-    if (!a) continue;
-    const st = a.calls.map(alts => pick(ctx, alts)).filter(Boolean).map(n => call(n, [D]));
-    add(`access:${id}`, 1, st);
-  }
-  for (const n of model.extra || []) add(`extra:${n}`, 1, [call(n, [D])]);
   return units;
+
+  /** Units for what the domain is granted, at the top level (bool null) or under a boolean. */
+  function grantUnits(g, prefix, bool) {
+    const self = (cls, perm) => ({ key: scoped(bool, `self:${cls}:${perm}`), kind: 'self', cls, perm, section: 'local', bool });
+    const dcall = (name, group) => call(name, [D], 'local', group, bool);
+    for (const id of g.self || []) {
+      const s = SELF_BY[id];
+      if (!s) continue;
+      add(`${prefix}self:${id}`, 1, Object.entries(s.perms).flatMap(([cls, ps]) => ps.map(p => self(cls, p))));
+    }
+    for (const c of g.caps || []) add(`${prefix}cap:${c}`, 1, [self(CAP_CLASS[c] || 'capability', c)]);
+
+    // Network: generic node/interface rules are shared, so they stay while any port needs them.
+    const net = g.net || {};
+    for (const dir of ['listen', 'connect']) {
+      for (const it of net[dir] || []) {
+        const { proto, port } = it;
+        if (!port) continue; // a row still being filled in
+        const st = [];
+        const opt = (n) => { if (ctx.has(n)) st.push(dcall(n, 'net')); };
+        // Sockets and generic node/interface rules stay at the top level even for a port under a boolean.
+        const shared = (n) => { if (ctx.has(n)) st.push(call(n, [D], 'local', 'net', null)); };
+        st.push({ ...(proto === 'udp' ? self('udp_socket', 'create_socket_perms') : self('tcp_socket', 'create_stream_socket_perms')), bool: null, key: `self:${proto === 'udp' ? 'udp_socket:create_socket_perms' : 'tcp_socket:create_stream_socket_perms'}` });
+        shared(`corenet_${proto}_sendrecv_generic_if`);
+        shared(`corenet_${proto}_sendrecv_generic_node`);
+        if (port === 'all') {
+          opt(dir === 'listen' ? `corenet_${proto}_bind_all_ports` : proto === 'tcp' ? 'corenet_tcp_connect_all_ports' : 'corenet_udp_sendrecv_all_ports');
+        } else if (dir === 'listen') {
+          shared(`corenet_${proto}_bind_generic_node`);
+          opt(`corenet_${proto}_bind_${port}_port`);
+          opt(`corenet_sendrecv_${port}_server_packets`);
+        } else {
+          opt(proto === 'tcp' ? `corenet_tcp_connect_${port}_port` : `corenet_udp_sendrecv_${port}_port`);
+          opt(`corenet_sendrecv_${port}_client_packets`);
+        }
+        add(`${prefix}net:${dir}:${proto}:${port}`, 1, st);
+      }
+    }
+
+    for (const id of g.access || []) {
+      const a = ACCESS[id];
+      if (!a) continue;
+      add(`${prefix}access:${id}`, 1, a.calls.map(alts => pick(ctx, alts)).filter(Boolean).map(n => dcall(n)));
+    }
+    for (const n of g.extra || []) add(`${prefix}extra:${n}`, 1, [dcall(n)]);
+  }
 }
 
 /* ---------- reading an existing .te ---------- */
 
 const BLOCK_CALLS = new Set(['optional_policy', 'tunable_policy', 'ifdef', 'ifndef', 'ifelse', 'gen_require', 'interface', 'template', 'define', 'require']);
 
+/** tunable_policy(`b', `...') on one boolean, without an else branch: its body is editable. */
+const plainTunable = (b) => b.name === 'tunable_policy' && b.args.length === 2 && /^\w+$/.test(b.args[0]);
+
 /**
- * Statements of a .te, with where they are. Only statements at the top level
- * or directly inside one optional_policy block are editable; the rest are
- * reported as kept-as-is.
+ * Statements of a .te, with where they are. Editable statements are at the
+ * top level, directly inside one optional_policy block (opt), directly inside
+ * a plain tunable_policy block (bool, tun), or in optional_policy >
+ * tunable_policy (both). The rest are reported as kept-as-is.
  */
 function scanTe(text) {
   const p = parsePolicy(text);
@@ -304,17 +345,20 @@ function scanTe(text) {
   const blocks = p.calls.filter(c => BLOCK_CALLS.has(c.name));
   const inside = (b, l) => l > b.l && l <= b.endL;
   const where = (l) => {
-    const around = blocks.filter(b => inside(b, l));
+    const around = blocks.filter(b => inside(b, l)).sort((a, b) => a.l - b.l); // outermost first
     if (depth[l] > 0 && !around.length) return { top: false };
     if (!around.length) return { top: true };
-    if (around.length === 1 && around[0].name === 'optional_policy') return { top: false, opt: around[0] };
+    const [a, b] = around;
+    if (around.length === 1 && a.name === 'optional_policy') return { top: false, opt: a };
+    if (around.length === 1 && plainTunable(a)) return { top: false, bool: a.args[0], tun: a };
+    if (around.length === 2 && a.name === 'optional_policy' && plainTunable(b)) return { top: false, opt: a, bool: b.args[0], tun: b };
     return { top: false };
   };
   const stmts = [];
   for (const c of p.calls) {
     if (BLOCK_CALLS.has(c.name) || c.inDef) continue;
     const w = where(c.l);
-    stmts.push({ kind: 'call', name: c.name, args: c.args, key: callKey(c.name, c.args), l: c.l, endL: c.endL, ...w });
+    stmts.push({ kind: 'call', name: c.name, args: c.args, key: scoped(w.bool, callKey(c.name, c.args)), l: c.l, endL: c.endL, ...w });
   }
   // Rules and declarations written in the policy language.
   lines.forEach((ln, l) => {
@@ -362,7 +406,7 @@ function recognize(texts, ctx, opts = {}) {
   if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() call, so it isn't a service module the editor understands.` };
   const dom = domains.find(x => x.domain === opts.domain) || domains.find(x => x.domain === `${mod}_t`) || domains[0];
   const D = dom.domain, E = dom.exec;
-  const editable = te.stmts.filter(s => s.top || s.opt);
+  const editable = te.stmts.filter(s => s.top || s.opt || s.bool);
   const claimed = new Set();
   const own = new Map();
   const ownAdd = (u, s) => { if (!own.has(u)) own.set(u, []); own.get(u).push(s); claimed.add(s); };
@@ -389,7 +433,7 @@ function recognize(texts, ctx, opts = {}) {
     const cands = helperKinds.get(helper.name);
     const k = (cands.find(c => t.name.endsWith(c.suffix)) || cands.find(c => c.k.id === 'other') || cands[0]).k;
     const T = t.name, u = `file:${T}`;
-    const pats = new Set(editable.filter(s => s.kind === 'call' && s.args[0] === D && s.args[1] === T && s.args[2] === T).map(s => s.name));
+    const pats = new Set(editable.filter(s => s.kind === 'call' && !s.bool && s.args[0] === D && s.args[1] === T && s.args[2] === T).map(s => s.name));
     let access = 'none';
     if (pats.has('manage_files_pattern')) access = 'manage';
     else if (pats.has('append_files_pattern')) access = 'append';
@@ -398,58 +442,38 @@ function recognize(texts, ctx, opts = {}) {
     ownAdd(u, t);
     // Declaration helpers on the type, rules from the domain to it.
     for (const s of editable) {
-      if (claimed.has(s)) continue;
+      if (claimed.has(s) || s.bool) continue; // rules under a boolean stay with the boolean
       if (s.kind === 'call' && s.top && s.args[0] === T) ownAdd(u, s);
       else if (s.kind === 'call' && s.args[0] === D && s.args.slice(1).includes(T) && /(_pattern|filetrans)$/.test(s.name)) ownAdd(u, s);
       else if (s.kind === 'allow' && s.src === D && s.tgt === T) ownAdd(u, s);
     }
   }
 
-  // Rules on itself.
-  const selfPerms = new Map(); // cls -> Set
-  for (const s of editable) {
-    if (s.kind !== 'allow' || s.src !== D || s.tgt !== 'self' || !s.top) continue;
-    if (!selfPerms.has(s.cls)) selfPerms.set(s.cls, new Set());
-    for (const p of s.perms) selfPerms.get(s.cls).add(p);
-    claimed.add(s);
-  }
-  const hasSelf = (cls, p) => selfPerms.has(cls) && selfPerms.get(cls).has(p);
-  for (const [id, , perms] of SELF) if (Object.entries(perms).every(([cls, ps]) => ps.every(p => hasSelf(cls, p)))) model.self.push(id);
-  for (const [c, cls] of CAPS) if (hasSelf(cls, c)) model.caps.push(c);
-
-  // Calls taking only the domain.
-  const domCalls = editable.filter(s => s.kind === 'call' && s.args.length === 1 && s.args[0] === D && !claimed.has(s));
-  const present = new Set(domCalls.map(s => s.name));
-  const take = (n) => { for (const s of domCalls) if (s.name === n) claimed.add(s); };
-  for (const s of domCalls) {
-    const r = /^corenet_(tcp|udp)_(bind|connect|sendrecv)_(\w+?)_port$/.exec(s.name);
-    const all = /^corenet_(tcp|udp)_(bind|connect|sendrecv)_all_ports$/.exec(s.name);
-    if (r && r[3] !== 'generic') {
-      const [, proto, verb, port] = r;
-      if (verb === 'sendrecv' && present.has(`corenet_udp_bind_${port}_port`)) continue;
-      if (verb === 'sendrecv' && proto === 'tcp') continue;
-      const dir = verb === 'bind' ? 'listen' : 'connect';
-      if (!model.net[dir].some(x => x.proto === proto && x.port === port)) model.net[dir].push({ proto, port });
-    } else if (all && (all[2] === 'connect' || all[2] === 'bind' || (all[1] === 'udp' && !present.has('corenet_udp_bind_all_ports')))) {
-      // UDP has no connect: "connects to any UDP port" is sendrecv on all ports.
-      const dir = all[2] === 'bind' ? 'listen' : 'connect';
-      if (!model.net[dir].some(x => x.proto === all[1] && x.port === 'all')) model.net[dir].push({ proto: all[1], port: 'all' });
-    }
-  }
-  // Port rules that belong to a port item without being generated for it (older style sendrecv
-  // and packet rules) are removed with it.
-  for (const dir of ['listen', 'connect']) {
-    for (const { proto, port } of model.net[dir]) {
-      if (port === 'all') continue;
-      const related = [`corenet_${proto}_sendrecv_${port}_port`, `corenet_sendrecv_${port}_${dir === 'listen' ? 'server' : 'client'}_packets`];
-      for (const s of domCalls) if (related.includes(s.name)) ownAdd(`net:${dir}:${proto}:${port}`, s);
-    }
-  }
-  for (const a of Object.values(ACCESS)) {
-    const got = a.calls.map(alts => alts.find(n => present.has(n)));
-    if (got.every(Boolean)) { model.access.push(a.id); got.forEach(take); }
-  }
   if (editable.some(s => s.kind === 'permissive' && s.name === D)) { model.permissive = true; claim(s => s.kind === 'permissive' && s.name === D); }
+
+  // Booleans declared here (gen_tunable with its doc comment above), then those only used here.
+  model.booleans = [];
+  const boolOf = new Map();
+  for (const s of editable.filter(x => x.kind === 'call' && x.top && x.name === 'gen_tunable' && /^\w+$/.test(x.args[0] || ''))) {
+    let a = s.l;
+    // The ## doc lines, also across a lone "#" right below them (zebra.te), but not a section header.
+    while (a > 0 && (/^\s*##/.test(te.lines[a - 1]) || (/^\s*#\s*$/.test(te.lines[a - 1]) && /^\s*##/.test(te.lines[a - 2] || '')))) a--;
+    const b = { name: s.args[0], desc: descFromDoc(te.lines.slice(a, s.l)), default: s.args[1] === 'true', external: false, grants: emptyGrants() };
+    model.booleans.push(b);
+    boolOf.set(b.name, b);
+    ownAdd(`tunable:${b.name}`, s);
+    if (a < s.l) ownAdd(`tunable:${b.name}`, { kind: 'comment', l: a, endL: s.l - 1 });
+  }
+  for (const s of editable) {
+    if (!s.bool || boolOf.has(s.bool) || !mentionsD(s)) continue;
+    const b = { name: s.bool, desc: '', default: false, external: true, grants: emptyGrants() };
+    model.booleans.push(b);
+    boolOf.set(b.name, b);
+  }
+
+  // What the domain is granted, at the top level and under each boolean.
+  grantsIn(model, null, '');
+  for (const b of model.booleans) grantsIn(b.grants, b.name, `b:${b.name}:`);
 
   // Network statements the model generates are claimed through the units; the rest of the single-argument calls are "other interfaces".
   const gen = new Set();
@@ -457,26 +481,77 @@ function recognize(texts, ctx, opts = {}) {
   claim(s => gen.has(s.key) || (s.kind === 'type' && gen.has(`type:${s.name}`)));
   // Generic network rules are shared by all port items; without a port item that generates them they stay as they are.
   const generic = (n) => /^corenet_(tcp|udp)_(sendrecv_generic_(if|node)|bind_generic_node)$/.test(n);
-  for (const s of domCalls) if (!claimed.has(s) && !generic(s.name)) { if (!model.extra.includes(s.name)) model.extra.push(s.name); claimed.add(s); }
+  for (const s of editable) {
+    if (claimed.has(s) || s.kind !== 'call' || s.args.length !== 1 || s.args[0] !== D || generic(s.name)) continue;
+    const g = s.bool ? boolOf.get(s.bool).grants : model;
+    if (!g.extra.includes(s.name)) g.extra.push(s.name);
+    claimed.add(s);
+  }
 
   // Everything else that mentions the domain stays as it is.
   const kept = [];
-  const mentions = (s) => {
-    const t = te.lines.slice(s.l, s.endL + 1).join('\n');
-    return new RegExp(`\\b${D}\\b`).test(t);
-  };
   // Rules on itself with permissions no setting stands for: shown, and never touched.
   const modelled = new Set();
-  for (const id of model.self) for (const [cls, ps] of Object.entries(SELF_BY[id].perms)) for (const p of ps) modelled.add(`${cls}:${p}`);
-  for (const c of model.caps) modelled.add(`${CAP_CLASS[c]}:${c}`);
-  for (const u of unitsOf(model, ctx).values()) for (const s of u.stmts) if (s.kind === 'self') modelled.add(`${s.cls}:${s.perm}`);
+  for (const u of unitsOf(model, ctx).values()) for (const s of u.stmts) if (s.kind === 'self') modelled.add(scoped(s.bool, `${s.cls}:${s.perm}`));
   for (const s of editable) {
-    if (s.kind === 'allow' && s.src === D && s.tgt === 'self' && s.top && s.perms.some(p => !modelled.has(`${s.cls}:${p}`))) claimed.delete(s);
+    if (isSelf(s) && s.perms.some(p => !modelled.has(scoped(s.bool, `${s.cls}:${p}`)))) claimed.delete(s);
   }
-  for (const s of te.stmts) if (!claimed.has(s) && mentions(s)) kept.push({ l: s.l, endL: s.endL, text: te.lines.slice(s.l, s.endL + 1).map(x => x.trim()).join(' ') });
+  for (const s of te.stmts) if (!claimed.has(s) && mentionsD(s)) kept.push({ l: s.l, endL: s.endL, text: te.lines.slice(s.l, s.endL + 1).map(x => x.trim()).join(' ') });
   kept.sort((a, b) => a.l - b.l);
   const provided = (texts.if ? parsePolicy(texts.if).defs.map(d => d.name) : []);
   return { model, own, kept, domains, provided, scan: te };
+
+  function emptyGrants() { return { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] }; }
+  function mentionsD(s) { return new RegExp(`\\b${D}\\b`).test(te.lines.slice(s.l, s.endL + 1).join('\n')); }
+  function isSelf(s) { return s.kind === 'allow' && s.src === D && s.tgt === 'self' && (s.top || (s.bool && !s.opt)); }
+
+  /** Self rules, port items, catalog items in one scope (top level: bool null). */
+  function grantsIn(g, bool, prefix) {
+    const inScope = (s) => (bool ? s.bool === bool : !s.bool);
+    const selfPerms = new Map(); // cls -> Set
+    for (const s of editable) {
+      if (!isSelf(s) || !inScope(s)) continue;
+      if (!selfPerms.has(s.cls)) selfPerms.set(s.cls, new Set());
+      for (const p of s.perms) selfPerms.get(s.cls).add(p);
+      claimed.add(s);
+    }
+    const hasSelf = (cls, p) => selfPerms.has(cls) && selfPerms.get(cls).has(p);
+    for (const [id, , perms] of SELF) if (Object.entries(perms).every(([cls, ps]) => ps.every(p => hasSelf(cls, p)))) g.self.push(id);
+    for (const [c, cls] of CAPS) if (hasSelf(cls, c)) g.caps.push(c);
+
+    // Calls taking only the domain.
+    const domCalls = editable.filter(s => inScope(s) && s.kind === 'call' && s.args.length === 1 && s.args[0] === D && !claimed.has(s));
+    const present = new Set(domCalls.map(s => s.name));
+    const take = (n) => { for (const s of domCalls) if (s.name === n) claimed.add(s); };
+    for (const s of domCalls) {
+      const r = /^corenet_(tcp|udp)_(bind|connect|sendrecv)_(\w+?)_port$/.exec(s.name);
+      const all = /^corenet_(tcp|udp)_(bind|connect|sendrecv)_all_ports$/.exec(s.name);
+      if (r && r[3] !== 'generic') {
+        const [, proto, verb, port] = r;
+        if (verb === 'sendrecv' && present.has(`corenet_udp_bind_${port}_port`)) continue;
+        if (verb === 'sendrecv' && proto === 'tcp') continue;
+        const dir = verb === 'bind' ? 'listen' : 'connect';
+        if (!g.net[dir].some(x => x.proto === proto && x.port === port)) g.net[dir].push({ proto, port });
+      } else if (all && (all[2] === 'connect' || all[2] === 'bind' || (all[1] === 'udp' && !present.has('corenet_udp_bind_all_ports')))) {
+        // UDP has no connect: "connects to any UDP port" is sendrecv on all ports.
+        const dir = all[2] === 'bind' ? 'listen' : 'connect';
+        if (!g.net[dir].some(x => x.proto === all[1] && x.port === 'all')) g.net[dir].push({ proto: all[1], port: 'all' });
+      }
+    }
+    // Port rules that belong to a port item without being generated for it (older style sendrecv
+    // and packet rules) are removed with it.
+    for (const dir of ['listen', 'connect']) {
+      for (const { proto, port } of g.net[dir]) {
+        if (port === 'all') continue;
+        const related = [`corenet_${proto}_sendrecv_${port}_port`, `corenet_sendrecv_${port}_${dir === 'listen' ? 'server' : 'client'}_packets`];
+        for (const s of domCalls) if (related.includes(s.name)) ownAdd(`${prefix}net:${dir}:${proto}:${port}`, s);
+      }
+    }
+    for (const a of Object.values(ACCESS)) {
+      const got = a.calls.map(alts => alts.find(n => present.has(n)));
+      if (got.every(Boolean)) { g.access.push(a.id); got.forEach(take); }
+    }
+  }
 }
 
 /* ---------- rendering ---------- */
@@ -504,6 +579,9 @@ function localBlocks(stmts) {
   return blocks;
 }
 const optBlock = (s) => `optional_policy(\`\n\t${s.text}\n')`;
+const tunableBlock = (bool, body) => [`tunable_policy(\`${bool}',\``, ...body.map(t => `\t${t}`), "')"].join('\n');
+// Calls into modules that may be off: optional_policy outside, tunable_policy inside (refpolicy's convention).
+const optTunableBlock = (bool, body) => ['optional_policy(`', `\ttunable_policy(\`${bool}',\``, ...body.map(t => `\t\t${t}`), "\t')", "')"].join('\n');
 function selfLine(D, cls, perms) {
   return `allow ${D} self:${cls} ${perms.length === 1 ? perms[0] : `{ ${perms.join(' ')} }`};`;
 }
@@ -524,16 +602,18 @@ function renderTe(model, ctx) {
   const all = [...units.values()].flatMap(u => u.stmts);
   const seen = new Set();
   const uniq = all.filter(s => (seen.has(s.key) ? false : seen.add(s.key)));
-  const declBlocks = [];
+  const declBlocks = [], tunables = [];
   for (const [key, u] of units) {
     const ds = u.stmts.filter(s => s.section === 'decl');
     if (!ds.length) continue;
     if (key === 'permissive') continue;
-    declBlocks.push(ds.map(s => s.text).join('\n'));
+    (ds[0].kind === 'tunable' ? tunables : declBlocks).push(ds.map(s => s.text).join('\n'));
   }
-  const local = uniq.filter(s => s.section === 'local');
+  declBlocks.unshift(...tunables);
+  const local = uniq.filter(s => s.section === 'local' && !s.bool);
   const selfs = selfLines(D, local.filter(s => s.kind === 'self'));
   const calls = local.filter(s => s.kind === 'call');
+  const underBool = uniq.filter(s => s.section === 'local' && s.bool);
   const parts = [];
   parts.push(ctx.moduleArgs === 1 ? `policy_module(${model.name})\n` : `policy_module(${model.name}, 1.0.0)\n`);
   parts.push(HEADER('Declarations'));
@@ -544,6 +624,13 @@ function renderTe(model, ctx) {
   if (selfs.length) body.push(selfs.join('\n'));
   for (const b of localBlocks(calls.filter(s => !s.opt))) body.push(b.join('\n'));
   for (const s of calls.filter(s => s.opt).sort((a, b) => a.name.localeCompare(b.name))) body.push(optBlock(s));
+  for (const b of model.booleans || []) {
+    const name = sub(b.name, model.name);
+    const mine = underBool.filter(s => s.bool === name);
+    const inner = [...selfLines(D, mine.filter(s => s.kind === 'self')), ...localBlocks(mine.filter(s => s.kind === 'call' && !s.opt)).flat()];
+    if (inner.length) body.push(tunableBlock(name, inner));
+    for (const s of mine.filter(s => s.kind === 'call' && s.opt).sort((x, y) => x.name.localeCompare(y.name))) body.push(optTunableBlock(name, [s.text]));
+  }
   if (body.length) parts.push(body.join('\n\n') + '\n');
   return parts.join('\n');
 }
@@ -669,86 +756,102 @@ function applyLineEdits(lines, edits) {
 
 /** New .te text for an edited model of an existing module. */
 function editTe(text, rec, model, ctx) {
-  const scan = scanTe(text); // fresh positions
+  const scan = rec.scan; // recognize() read this same text, so its statements are this text's
+  const lines = scan.lines;
   const old = unitsOf(rec.model, ctx);
   const cur = unitsOf(model, ctx);
   const { D } = names(model);
   const genNew = new Set([...cur.values()].flatMap(u => u.stmts.map(s => s.key)));
-  const editable = scan.stmts.filter(s => s.top || s.opt);
+  const editable = scan.stmts.filter(s => s.top || s.opt || s.bool);
   const presentKey = (s) => (s.kind === 'call' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
   const byKey = new Map();
   for (const s of editable) { const k = presentKey(s); if (k) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(s); } }
-  // Self rules: perms per class with their lines.
-  const selfStmts = editable.filter(s => s.kind === 'allow' && s.src === D && s.tgt === 'self' && s.top);
-  const selfHas = (cls, p) => selfStmts.some(s => s.cls === cls && s.perms.includes(p));
-  const isPresent = (st) => (st.kind === 'self' ? selfHas(st.cls, st.perm) : byKey.has(st.key));
+  // Self rules (top level, or directly under a boolean): perms per class with their lines.
+  const selfStmts = editable.filter(s => s.kind === 'allow' && s.src === D && s.tgt === 'self' && (s.top || (s.bool && !s.opt)));
+  const sameScope = (s, bool) => (s.bool || null) === (bool || null);
+  const selfHas = (bool, cls, p) => selfStmts.some(s => sameScope(s, bool) && s.cls === cls && s.perms.includes(p));
+  const isPresent = (st) => (st.kind === 'self' ? selfHas(st.bool, st.cls, st.perm) : byKey.has(st.key));
 
+  // Units whose settings changed: delete what they had, insert what they need now.
   const delStmts = new Set(), delSelf = [], insStmts = [], insSelf = [];
   const queued = new Set();
-  const ownOf = (u) => (rec.own.get(u) || []);
+  const edits = [];
+  // A boolean whose default or description changed is rewritten in place (description and gen_tunable line).
+  const inPlace = new Set();
+  for (const [k, u] of cur) {
+    const o = old.get(k);
+    if (!k.startsWith('tunable:') || !o || o.sig === u.sig) continue;
+    const own = rec.own.get(k) || [];
+    const callSt = own.find(s => s.kind === 'call');
+    if (!callSt) continue;
+    for (const s of own) delStmts.add(s);
+    edits.push({ ins: [callSt.endL, u.stmts[0].text.split('\n')] });
+    inPlace.add(k);
+  }
   for (const [k, u] of old) {
     const n = cur.get(k);
-    if (n && n.sig === u.sig) continue;
+    if (inPlace.has(k) || (n && n.sig === u.sig)) continue;
     for (const st of u.stmts) {
       if (genNew.has(st.key)) continue;
-      if (st.kind === 'self') { if (selfHas(st.cls, st.perm)) delSelf.push(st); continue; }
+      if (st.kind === 'self') { if (selfHas(st.bool, st.cls, st.perm)) delSelf.push(st); continue; }
       for (const s of byKey.get(st.key) || []) delStmts.add(s);
     }
-    for (const o of ownOf(k)) {
-      const s = editable.find(x => x.l === o.l && x.kind === o.kind);
-      if (!s) continue;
-      const pk = presentKey(s);
+    for (const o of rec.own.get(k) || []) {
+      const pk = presentKey(o);
       if (pk && genNew.has(pk)) continue;
-      delStmts.add(s);
+      delStmts.add(o);
     }
   }
   for (const [k, u] of cur) {
     const o = old.get(k);
-    if (o && o.sig === u.sig) continue;
+    if (inPlace.has(k) || (o && o.sig === u.sig)) continue;
     for (const st of u.stmts) {
-      const qk = st.kind === 'self' ? `${st.key}` : st.key;
-      if (queued.has(qk)) continue;
-      const removed = st.kind === 'self' ? false : (byKey.get(st.key) || []).every(s => delStmts.has(s)) && byKey.has(st.key);
-      if (isPresent(st) && !removed) continue;
-      if (removed) { for (const s of byKey.get(st.key)) delStmts.delete(s); continue; }
-      queued.add(qk);
+      if (queued.has(st.key)) continue;
+      const have = st.kind === 'self' ? [] : byKey.get(st.key) || [];
+      if (have.length && have.every(s => delStmts.has(s))) { for (const s of have) delStmts.delete(s); continue; } // still needed
+      if (isPresent(st)) continue;
+      queued.add(st.key);
       (st.kind === 'self' ? insSelf : insStmts).push(st);
     }
   }
 
-  const edits = [];
-  const lines = scan.lines;
-  // Deleting statements; an optional_policy block left empty goes too.
+  // Deleting statements; an optional_policy or tunable_policy block left empty goes too (inner blocks first).
   const delLines = new Set();
   for (const s of delStmts) for (let l = s.l; l <= s.endL; l++) delLines.add(l);
-  for (const b of scan.blocks.filter(b => b.name === 'optional_policy')) {
-    let empty = true;
-    for (let l = b.l + 1; l < b.endL; l++) if (lines[l].trim() && !delLines.has(l)) { empty = false; break; }
-    const closing = lines[b.endL].replace(/'\s*\)\s*$/, '').trim();
-    if (empty && !closing && [...delStmts].some(s => s.opt === b)) for (let l = b.l; l <= b.endL; l++) delLines.add(l);
-  }
-  for (const l of delLines) edits.push({ del: [l, l] });
-
-  // Self rules: drop perms from their lines, add new perms to the class's first line.
-  const newPerms = new Map();
-  for (const st of insSelf) { if (!newPerms.has(st.cls)) newPerms.set(st.cls, []); newPerms.get(st.cls).push(st.perm); }
-  const touched = new Map(); // line -> perms
-  for (const s of selfStmts) touched.set(s.l, s.perms.slice());
-  for (const st of delSelf) for (const s of selfStmts) if (s.cls === st.cls) touched.set(s.l, touched.get(s.l).filter(p => p !== st.perm));
-  const newClassLines = [];
-  for (const [cls, ps] of newPerms) {
-    const first = selfStmts.find(s => s.cls === cls && touched.get(s.l).length);
-    if (first) touched.set(first.l, [...touched.get(first.l), ...ps]);
-    else newClassLines.push(...selfLines(D, ps.map(perm => ({ cls, perm }))));
+  // Self rules: drop perms from their lines, add new perms to the class's first line in the same scope.
+  const newPerms = new Map(); // scope \0 cls -> perms
+  for (const st of insSelf) { const k = `${st.bool || ''}\0${st.cls}`; if (!newPerms.has(k)) newPerms.set(k, []); newPerms.get(k).push(st.perm); }
+  const perms = new Map(); // line -> perms
+  for (const s of selfStmts) perms.set(s.l, s.perms.slice());
+  for (const st of delSelf) for (const s of selfStmts) if (sameScope(s, st.bool) && s.cls === st.cls) perms.set(s.l, perms.get(s.l).filter(p => p !== st.perm));
+  const newClassLines = new Map(); // scope -> lines
+  for (const [k, ps] of newPerms) {
+    const [bool, cls] = k.split('\0');
+    const first = selfStmts.find(s => sameScope(s, bool) && s.cls === cls && perms.get(s.l).length && !delLines.has(s.l));
+    if (first) perms.set(first.l, [...perms.get(first.l), ...ps]);
+    else { if (!newClassLines.has(bool)) newClassLines.set(bool, []); newClassLines.get(bool).push(...selfLines(D, ps.map(perm => ({ cls, perm })))); }
   }
   for (const s of selfStmts) {
-    const ps = touched.get(s.l);
+    if (delLines.has(s.l)) continue;
+    const ps = perms.get(s.l);
     if (ps.join(' ') === s.perms.join(' ')) continue;
-    if (!ps.length) { edits.push({ del: [s.l, s.l] }); continue; }
+    if (!ps.length) { delLines.add(s.l); continue; }
     const indent = /^\s*/.exec(lines[s.l])[0];
     const comment = /\s*#.*$/.exec(lines[s.l]);
     edits.push({ rep: [s.l, indent + selfLine(D, s.cls, ps) + (comment ? comment[0] : '')] });
   }
+  const containers = scan.blocks.filter(b => b.name === 'optional_policy' || b.name === 'tunable_policy').sort((a, b) => (a.endL - a.l) - (b.endL - b.l));
+  for (const b of containers) {
+    if (!/`\s*(#.*)?$/.test(lines[b.l]) || !/^\s*'\s*\)\s*(#.*)?$/.test(lines[b.endL])) continue;
+    let touched = false, empty = true;
+    for (let l = b.l + 1; l < b.endL; l++) {
+      if (delLines.has(l)) touched = true;
+      else if (lines[l].trim()) { empty = false; break; }
+    }
+    if (touched && empty) for (let l = b.l; l <= b.endL; l++) delLines.add(l);
+  }
+
+  for (const l of delLines) edits.push({ del: [l, l] });
 
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
@@ -763,27 +866,65 @@ function editTe(text, rec, model, ctx) {
   const policyModule = top.find(s => s.kind === 'call' && s.name === 'policy_module');
   const declAfter = declEnd >= 0 ? declEnd : policyModule ? policyModule.endL : -1;
   const domTop = top.filter(s => (s.kind === 'call' && s.args[0] === D && s.name !== 'init_daemon_domain') || (s.kind === 'allow' && s.src === D));
-  const lastSelf = selfStmts.filter(s => !delLines.has(s.l)).map(s => s.l);
+  const lastSelf = selfStmts.filter(s => s.top && !delLines.has(s.l)).map(s => s.l);
   const localAfter = domTop.length ? Math.max(...domTop.map(s => s.endL)) : (lastSelf.length ? Math.max(...lastSelf) : lines.length - 1);
-  const optBlocksOfD = scan.blocks.filter(b => b.name === 'optional_policy' && editable.some(s => s.opt === b && s.kind === 'call' && s.args[0] === D) && !delLines.has(b.l));
+  const optBlocksOfD = scan.blocks.filter(b => b.name === 'optional_policy' && editable.some(s => s.opt === b && !s.bool && s.kind === 'call' && s.args[0] === D) && !delLines.has(b.l));
   const optAfter = optBlocksOfD.length ? Math.max(localAfter, ...optBlocksOfD.map(b => b.endL)) : localAfter;
   const selfAfter = lastSelf.length ? Math.max(...lastSelf) : (localHeader != null ? localHeader + 4 : localAfter);
+  // Boolean blocks go after the domain's last rule or block.
+  const outerEnd = (s) => (s.opt ? s.opt.endL : s.tun ? s.tun.endL : s.endL);
+  const domAll = editable.filter(s => (s.kind === 'call' && s.args[0] === D && s.name !== 'init_daemon_domain') || (s.kind === 'allow' && s.src === D));
+  const boolAfter = Math.max(optAfter, ...domAll.map(outerEnd));
 
-  const declIns = [];
+  // Declarations: booleans with the other gen_tunable lines (or above the domain's type), the rest after the last declaration.
+  const declIns = [], tunIns = [];
   for (const [k, u] of cur) {
     const o = old.get(k);
     if (o && o.sig === u.sig) continue;
     const ds = u.stmts.filter(s => s.section === 'decl' && insStmts.includes(s));
     if (!ds.length) continue;
-    if (k === 'permissive') declIns.push(['', ...ds.map(s => s.text)]);
+    if (ds[0].kind === 'tunable') tunIns.push(...ds.map(s => s.text.split('\n')));
     else declIns.push(['', ...ds.map(s => s.text)]);
   }
+  if (tunIns.length) {
+    const tuns = top.filter(s => s.kind === 'call' && s.name === 'gen_tunable');
+    const typeD = top.find(s => s.kind === 'type' && s.name === D);
+    if (tuns.length) edits.push({ ins: [Math.max(...tuns.map(s => s.endL)), tunIns.flatMap(t => ['', ...t])] });
+    else if (typeD) {
+      let at = typeD.l;
+      while (at > 0 && /^\s*##/.test(lines[at - 1])) at--;
+      edits.push({ ins: [at - 1, tunIns.flatMap(t => [...t, ''])] });
+    } else edits.push({ ins: [declAfter, tunIns.flatMap(t => ['', ...t])] });
+  }
   if (declIns.length) edits.push({ ins: [declAfter, declIns.flat()] });
-  if (newClassLines.length) edits.push({ ins: [selfAfter, lastSelf.length ? newClassLines : ['', ...newClassLines]] });
-  const localNew = insStmts.filter(s => s.section === 'local' && !s.opt);
+  const topNew = newClassLines.get('') || [];
+  if (topNew.length) edits.push({ ins: [selfAfter, lastSelf.length ? topNew : ['', ...topNew]] });
+  const localNew = insStmts.filter(s => s.section === 'local' && !s.opt && !s.bool);
   if (localNew.length) edits.push({ ins: [localAfter, localBlocks(localNew).flatMap(b => ['', ...b])] });
-  const optNew = insStmts.filter(s => s.section === 'local' && s.opt).sort((a, b) => a.name.localeCompare(b.name));
+  const optNew = insStmts.filter(s => s.section === 'local' && s.opt && !s.bool).sort((a, b) => a.name.localeCompare(b.name));
   if (optNew.length) edits.push({ ins: [optAfter, optNew.flatMap(s => ['', ...optBlock(s).split('\n')])] });
+
+  // Under booleans: into the boolean's existing tunable_policy block, else a new one.
+  const bools = new Set([...insStmts.filter(s => s.bool).map(s => s.bool), ...[...newClassLines.keys()].filter(Boolean)]);
+  const indentOf = (l) => /^\s*/.exec(lines[l])[0];
+  const closes = (b) => /^\s*'\s*\)\s*(#.*)?$/.test(lines[b.endL]) && !delLines.has(b.l);
+  const outside = (b) => !scan.blocks.some(o => o !== b && o.l < b.l && o.endL >= b.endL);
+  const optAround = (b) => scan.blocks.filter(o => o !== b && o.l < b.l && o.endL >= b.endL);
+  const boolEdits = [];
+  for (const bool of [...bools].sort()) {
+    const content = [...(newClassLines.get(bool) || []), ...localBlocks(insStmts.filter(s => s.bool === bool && !s.opt)).flat()];
+    if (content.length) {
+      const blk = scan.blocks.find(b => plainTunable(b) && b.args[0] === bool && outside(b) && closes(b));
+      if (blk) edits.push({ ins: [blk.endL - 1, content.map(t => indentOf(blk.l) + '\t' + t)] });
+      else boolEdits.push('', `tunable_policy(\`${bool}',\``, ...content.map(t => '\t' + t), "')");
+    }
+    for (const s of insStmts.filter(x => x.bool === bool && x.opt).sort((a, b) => a.name.localeCompare(b.name))) {
+      const blk = scan.blocks.find(b => plainTunable(b) && b.args[0] === bool && closes(b) && optAround(b).length === 1 && optAround(b)[0].name === 'optional_policy');
+      if (blk) edits.push({ ins: [blk.endL - 1, [indentOf(blk.l) + '\t' + s.text]] });
+      else boolEdits.push('', ...optTunableBlock(bool, [s.text]).split('\n'));
+    }
+  }
+  if (boolEdits.length) edits.push({ ins: [boolAfter, boolEdits] });
 
   return applyLineEdits(lines, edits).join('\n');
 }
@@ -848,10 +989,44 @@ function validate(model, ctx, opts = {}) {
   for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []))) if (p.trim() && !p.trim().startsWith('/')) out.push(`Path "${p}" must be absolute.`);
   if (!(model.exec || []).some(p => p.trim())) out.push('Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
-  for (const dir of ['listen', 'connect']) for (const it of (model.net || {})[dir] || []) {
-    if (it.port && it.port !== 'all' && !ctx.has(dir === 'listen' ? `corenet_${it.proto}_bind_${it.port}_port` : it.proto === 'tcp' ? `corenet_tcp_connect_${it.port}_port` : `corenet_udp_sendrecv_${it.port}_port`)) out.push(`No ${it.proto} port type ${it.port}_port_t in this policy (${dir}).`);
+  const grants = (g, where) => {
+    for (const dir of ['listen', 'connect']) for (const it of (g.net || {})[dir] || []) {
+      if (it.port && it.port !== 'all' && !ctx.has(dir === 'listen' ? `corenet_${it.proto}_bind_${it.port}_port` : it.proto === 'tcp' ? `corenet_tcp_connect_${it.port}_port` : `corenet_udp_sendrecv_${it.port}_port`)) out.push(`No ${it.proto} port type ${it.port}_port_t in this policy (${dir}${where}).`);
+    }
+    for (const n of g.extra || []) if (!ctx.has(n)) out.push(`Interface ${n} doesn't exist in this policy${where}.`);
+  };
+  grants(model, '');
+  const bools = new Set();
+  for (const b of model.booleans || []) {
+    const n = sub(b.name || '', model.name);
+    if (!/^[a-z][a-z0-9_]*$/.test(n)) { out.push(`Boolean name "${n}" must start with a letter and use only lowercase letters, digits and _.`); continue; }
+    if (bools.has(n)) out.push(`Boolean ${n} is listed twice.`);
+    bools.add(n);
+    if (b.external && ctx.boolExists && !ctx.boolExists(n)) out.push(`There is no boolean ${n} in this policy.`);
+    if (!b.external && (opts.isNew || b._new) && ctx.boolExists && ctx.boolExists(n)) out.push(`A boolean named ${n} already exists: add it as an existing boolean, or choose another name.`);
+    const g = b.grants || {};
+    if (![...(g.self || []), ...(g.caps || []), ...(g.access || []), ...(g.extra || []), ...((g.net || {}).listen || []).filter(x => x.port), ...((g.net || {}).connect || []).filter(x => x.port)].length) out.push(`Note: boolean ${n} doesn't allow anything yet.`);
+    grants(g, ` under ${n}`);
+    // Only what is being added now: an existing module isn't blamed for what it already has.
+    const base = opts.baseline && (opts.baseline.booleans || []).find(x => x.name === n);
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const added = (kind, v) => !base || !(kind === 'listen' || kind === 'connect' ? (base.grants.net || {})[kind] || [] : base.grants[kind] || []).some(x => same(x, v));
+    const always = (kind, v) => (kind === 'listen' || kind === 'connect' ? (model.net || {})[kind] || [] : model[kind] || []).some(x => same(x, v));
+    const label = { access: (id) => (ACCESS[id] ? `"${ACCESS[id].label}"` : id), extra: (x) => x, caps: (x) => `capability ${x}`, self: (id) => (SELF_BY[id] ? `"${SELF_BY[id].label}"` : id),
+      listen: (x) => `listening on ${x.proto} ${x.port}`, connect: (x) => `connecting to ${x.proto} ${x.port}` };
+    for (const kind of ['access', 'extra', 'caps', 'self', 'listen', 'connect']) {
+      for (const v of (kind === 'listen' || kind === 'connect' ? (g.net || {})[kind] || [] : g[kind] || [])) {
+        if (!added(kind, v)) continue;
+        // Granting it both always and under the boolean: harmless for allow rules, but type rules
+        // (a domain transition, e.g. mta_send_mail) would be duplicates the build refuses.
+        if (always(kind, v)) out.push(`${label[kind](v)} under ${n} is already always allowed; remove it from one of the two places.`);
+        // checkmodule allows only allow/dontaudit/type rules inside a conditional.
+        const calls = kind === 'access' ? (ACCESS[v] ? ACCESS[v].calls.map(a => pick(ctx, a)).filter(Boolean) : []) : kind === 'extra' ? [v] : [];
+        const bad = calls.find(c => ctx.condSafe && !ctx.condSafe(c));
+        if (bad) out.push(`${label[kind](v)} can't be granted under ${n}: ${bad}() declares attributes or contains blocks that conditional policy doesn't allow. Grant it always, or leave it out.`);
+      }
+    }
   }
-  for (const n of model.extra || []) if (!ctx.has(n)) out.push(`Interface ${n} doesn't exist in this policy.`);
   return out;
 }
 
@@ -901,7 +1076,7 @@ function newModel() {
     name: '', summary: '', exec: ['/usr/bin/%'],
     files: [{ kind: 'unit', paths: ['/usr/lib/systemd/system/%.service'], access: 'none' }, { kind: 'runtime', paths: ['/run/%/'], access: 'manage' }],
     self: ['fifo'], caps: [], net: { listen: [], connect: [] }, access: ['syslog', 'locale'], extra: [], permissive: false,
-    provides: ['domtrans', 'admin'],
+    booleans: [], provides: ['domtrans', 'admin'],
   };
 }
 
@@ -914,7 +1089,10 @@ function catalog(ctx) {
       suffix: (k.decl.find(([h]) => ctx.has(h)) || k.decl[0])[1],
     })),
     accessLabels: ACCESS_LABELS,
-    access: ACCESS_GROUPS.map(([g, items]) => ({ group: g, items: items.filter(([, , calls]) => avail(calls)).map(([id, label, calls]) => ({ id, label, calls: calls.map(a => pick(ctx, a)).filter(Boolean), optional: calls.some(a => ctx.optional(pick(ctx, a) || a[0])) })) })).filter(g => g.items.length),
+    access: ACCESS_GROUPS.map(([g, items]) => ({ group: g, items: items.filter(([, , calls]) => avail(calls)).map(([id, label, calls]) => {
+      const names = calls.map(a => pick(ctx, a)).filter(Boolean);
+      return { id, label, calls: names, optional: calls.some(a => ctx.optional(pick(ctx, a) || a[0])), cond: names.every(n => !ctx.condSafe || ctx.condSafe(n)) };
+    }) })).filter(g => g.items.length),
     self: SELF.map(([id, label, perms, risky]) => ({ id, label, risky: !!risky, rule: Object.entries(perms).map(([c, ps]) => `${c} ${ps.join(' ')}`).join('; ') })),
     caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, risky: !!risky })),
     provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, needs: needs || null })),
