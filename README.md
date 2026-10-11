@@ -798,12 +798,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   worked as designed. The 0.5.0 and 0.6.0 additions (the `.te` require
   check, RHEL 10, the static link check, `corenetwork.te.in` errors,
   booleans, `ifelse`, monolithic builds) are covered by the automated tests
-  above but haven't had interactive use yet.
+  above but haven't had interactive use yet. The tutorials (0.9.0) were
+  checked in VS Code over Remote-SSH: the walkthrough pages render as
+  intended.
 
 ## Limitations
 
 **Tutorials**
 
+* The line under a walkthrough saying that Code collects usage data is VS
+  Code's own telemetry notice, not this extension's (it collects nothing);
+  it goes away with `"telemetry.telemetryLevel": "off"` in your user
+  settings.
 * The walkthroughs' pages render in VS Code's Welcome editor; the practice
   module's build and checks steps need a Linux host with
   `selinux-policy-devel` (and an installed policy for the checks).

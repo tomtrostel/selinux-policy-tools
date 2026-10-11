@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-10: **v0.8.0 released** (GitHub release `v0.8.0`;
+Status as of 2026-10-11: **v0.9.0 released** (GitHub release `v0.9.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -18,8 +18,10 @@ workspace (the last item under 5, confirmed interactively). Roadmap steps
 ideas from the user. 0.8.0 decides ifdef on names that aren't build flags
 from the sources (see Key design decisions) and runs the .te require check
 without modules.conf (make conf defaults); not yet tried interactively.
-Unreleased (after 0.8.0): the service editor with booleans, port types and helper domains (step 6 below), tutorials (step 7); e2e-tested,
-not yet tried interactively.
+0.9.0 adds the service editor with booleans, port types and helper
+domains (step 6 below; e2e-tested, the form not yet tried interactively)
+and tutorials (step 7; the user checked the walkthroughs in VS Code and
+they look good).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -204,7 +206,7 @@ so far covered by the e2e tests only.
    `build.trees[key]`. Test: test/multi-tree-e2e.js. Confirmed working
    interactively by the user (VS Code over Remote-SSH).
 
-6. **Service editor** (done, unreleased; user request: "set up new
+6. **Service editor** (done, 0.9.0; user request: "set up new
    services … a nice interface … restrict its rights properly … edit /
    modify existing services"). `server/service.js` (pure): a model
    {name, summary, domain, execType, exec[], files[{kind, type, paths,
@@ -241,7 +243,7 @@ so far covered by the e2e tests only.
    are saved elsewhere). Tests: test/service-test.js (+ every daemon module
    of a tree as argument: 326/326 no-op identical, 4890/4890 edits), test/
    service-e2e.js (CLIP, RHEL 9, RHEL 10 builds + standalone).
-   Booleans (done, unreleased): model.booleans [{name, desc, default,
+   Booleans (done, 0.9.0): model.booleans [{name, desc, default,
    external, _new (UI), grants: {self, caps, net, access, extra}}].
    Statement keys under a boolean are `b:<name>:<key>` (`scoped()`);
    scanTe marks statements in a plain `tunable_policy(\`b', ...)` (one
@@ -266,7 +268,7 @@ so far covered by the e2e tests only.
    a boolean still referenced elsewhere is refused. Tests: 22 mutation
    kinds, 7172 Fedora edits; e2e: new service with a boolean + an external
    one, ntp + new boolean, rsync's own boolean edited, all build.
-   Port types (done, unreleased): model.ports [{name ('' = module name),
+   Port types (done, 0.9.0): model.ports [{name ('' = module name),
    nums: [{proto, port, level}], _new}]. Tree (`ctx.corenet`): server
    `networkPorts()` parses network_port calls of corenetwork.te.in,
    `ownedPorts(mod)` = those named mod or mod_* on one line (passed to
@@ -285,7 +287,7 @@ so far covered by the e2e tests only.
    port type exists when corenet_tcp_bind_X_port does. e2e: svctest with a
    port type (portcon checked in the built corenetwork.te), ntp_port_t +
    tcp 47124, standalone develsvc_port_t; CLIP, RHEL 9, RHEL 10 pass.
-   Helper domains (done, unreleased): model.helpers [{name ('' =
+   Helper domains (done, 0.9.0): model.helpers [{name ('' =
    %_helper), domain?/execType? (recognized names not NAME_t/NAME_exec_t),
    exec[], signal, decl ('domain_type' | 'application_domain' as read),
    files [{type, access}] (the service's file types), self, caps, net,
@@ -314,7 +316,7 @@ so far covered by the e2e tests only.
    Ideas not done: file access under a
    boolean, gen_bool.
 
-7. **Tutorials** (done, unreleased; user request: "tutorials … integrate
+7. **Tutorials** (done, 0.9.0; user request: "tutorials … integrate
    them into the vsix … how to use the add-on and how it can help them
    making and maintaining SELinux policies"). package.json
    `contributes.walkthroughs`: getStarted (8 steps), services (9), denials
@@ -336,7 +338,9 @@ so far covered by the e2e tests only.
    buttons, completion events, "SELinux: …" names, settings, every
    contributed command registered), test/tutorial-e2e.js (melody: the
    mistakes, quick fixes applied, build, Compiles-to hover, checks hold).
-   Not yet seen rendered in VS Code.
+   The user checked the walkthroughs in VS Code (2026-10-11): fine. The
+   "Code collects usage data" line under them is VS Code's telemetry
+   notice (gone with telemetry.telemetryLevel off), not ours.
 
 Open decision for the user: the GitHub repo
 (github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
