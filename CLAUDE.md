@@ -342,9 +342,8 @@ so far covered by the e2e tests only.
    "Code collects usage data" line under them is VS Code's telemetry
    notice (gone with telemetry.telemetryLevel off), not ours.
 
-Open decision for the user: the GitHub repo
-(github.com/tomtrostel/selinux-policy-tools) is **private**, so the release
-is only visible to collaborators; making it public is the user's call.
+The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
+**public**; releases are visible to everyone.
 
 ## Working setup (how this project is developed and tested)
 
