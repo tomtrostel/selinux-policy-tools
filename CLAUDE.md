@@ -16,7 +16,8 @@ checks, booleans in the .te check, ifelse decisions, all build variants
 workspace (the last item under 5, confirmed interactively). Roadmap steps
 1-5 are done; next: interactive use of the 0.5.0/0.6.0 features, or new
 ideas from the user. Unreleased since 0.7.0: ifdef on names that aren't
-build flags is decided from the sources (see Key design decisions).
+build flags is decided from the sources (see Key design decisions); the
+.te require check works without modules.conf (make conf defaults).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -152,9 +153,15 @@ so far covered by the e2e tests only.
    → scope uncertain → silent; uses in undecided ifdef branches skipped.
    Loadable = `idx.isLoadable(module)`: `idx.allLoadable` in devel mode,
    else `idx.moduleKinds` from modules.conf + APPS_MODS
-   (`updateModuleKinds()` in server). Devel mode has no decls, so kinds
+   (`updateModuleKinds()` in server; without modules.conf (after 0.7.0)
+   `idx.defaultModuleKinds(root)` = what `make conf`/sedoctool writes:
+   base if the module's .if has `## <required val="true">` (parser
+   `f.required`), else module; identical to real make conf on upstream
+   refpolicy (416 modules); MONOLITHIC=y (makeArgs, else build.conf) →
+   all base, nothing checked; test/conf-defaults-e2e.js). Devel mode has no decls, so kinds
    come from `idx.requiredKind()` (interfaces' requires). Quick fix
-   `teRequireEdit`. Survey: `--modules <conf>` / `--loadable`.)
+   `teRequireEdit`. Survey: `--modules <conf>` / `--loadable` /
+   `--conf-defaults`.)
    RHEL 10 (done, 0.5.0): see Known limitations.
    Link errors (done, 0.6.0): diagnostics.js `globalRequirements(f)`
    = require entries + `callRequires(..., mandatory=true)` of top-level calls
@@ -413,6 +420,10 @@ is only visible to collaborators; making it public is the user's call.
 - `test/ifdef-names-test.js` (in `npm test`, any OS): ifdef decisions on
   non-flag names over an in-memory index (guards, define order, inactive
   defines, patterns, .fc, interface bodies, no flags).
+- `test/conf-defaults-e2e.js` (`npm run test:confdefaults`): upstream
+  refpolicy copy without modules.conf over LSP: ssh.te (loadable by
+  default) gets missing-te-require, terminal.te (required → base) doesn't,
+  MONOLITHIC=y gets none.
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 
@@ -497,7 +508,8 @@ Package: `npx @vscode/vsce package`.
   Changes view: any git ref, two refs, a saved build, or the installed
   policy.
 - `.te` require check only for modules known to be loadable (devel mode,
-  or `module` in modules.conf / APPS_MODS); none without modules.conf.
+  `module` in modules.conf / APPS_MODS, or make conf defaults without a
+  modules.conf); upstream refpolicy surveys clean with the defaults.
 - ifdef on names defined dynamically (macro bodies, pushdef, generated
   names) or in another .te stays all-active; without make (Windows local)
   nothing is decided. `ifelse` only occurs inside

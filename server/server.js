@@ -168,15 +168,32 @@ function scheduleRebuild() {
  * Which modules are built as loadable modules, for the .te require check:
  * standalone modules always; in a tree, `module` in the effective
  * modules.conf, plus APPS_MODS (built as modules whatever modules.conf says).
+ * Without a modules.conf, what `make conf` would write; in a monolithic
+ * build nothing is loadable.
  */
 function updateModuleKinds() {
   idx.allLoadable = usingDevel;
   idx.moduleKinds = null;
   if (usingDevel || !treeRoot) return;
-  const { conf, states, apps } = moduleStates(treeRoot);
-  if (!conf) return;
+  let { conf, states, apps } = moduleStates(treeRoot);
+  if (!conf) states = idx.defaultModuleKinds(treeRoot);
   for (const m of apps) states.set(m, 'module');
+  if (isMonolithic(treeRoot)) for (const [m, k] of states) if (k === 'module') states.set(m, 'base');
+  if (!conf && moduleKindsNote !== treeRoot) {
+    moduleKindsNote = treeRoot;
+    const n = [...states.values()].filter(k => k === 'module').length;
+    log(`no ${MODULES_CONF}: module kinds as make conf would write them (${states.size - n} base, ${n} loadable)`);
+  }
   idx.moduleKinds = states;
+}
+let moduleKindsNote = null;
+
+/** MONOLITHIC=y in the build's make arguments, else in build.conf. */
+function isMonolithic(root) {
+  const arg = (treeCfg().makeArgs || []).map(a => /^MONOLITHIC=(\S*)/.exec(a)).filter(Boolean).pop();
+  if (arg) return arg[1] === 'y';
+  const m = /^\s*MONOLITHIC\s*\??=\s*(\S+)/m.exec(readSource(path.join(root, 'build.conf')) || '');
+  return !!(m && m[1] === 'y');
 }
 
 documents.onDidChangeContent((e) => {

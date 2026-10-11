@@ -106,6 +106,21 @@ class PolicyIndex {
   }
 
   /**
+   * The modules.conf `make conf` would write for the tree at `root` when it
+   * has none (support/sedoctool.py): base for modules whose .if says
+   * `<required val="true">`, module for the rest.
+   */
+  defaultModuleKinds(root) {
+    const states = new Map();
+    const prefix = root ? root + path.sep : '';
+    for (const f of this.files.values()) {
+      if (!f.module || !/\.if(\.in)?$/.test(f.path) || !f.path.startsWith(prefix)) continue;
+      states.set(f.module, f.required ? 'base' : 'module');
+    }
+    return states;
+  }
+
+  /**
    * Whether a definition's ifelse branches (parser `when`: [{ a, b, then }])
    * apply for a call with these arguments. A comparison counts only when
    * both sides become plain text (no unresolved $N, no macro calls such as

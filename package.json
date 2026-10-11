@@ -525,7 +525,8 @@
     "survey": "node test/diag-survey.js",
     "package": "vsce package",
     "test:ifelse": "node test/ifelse-test.js",
-    "test:multi": "node test/multi-tree-e2e.js"
+    "test:multi": "node test/multi-tree-e2e.js",
+    "test:confdefaults": "node test/conf-defaults-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

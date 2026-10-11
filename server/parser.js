@@ -344,6 +344,8 @@ function parsePolicy(text) {
     }
   }
 
+  // Module XML: `## <required val="true">` puts the module in base when `make conf` writes modules.conf.
+  if (/^##\s*<required\s+val="true"\s*>/m.test(text)) out.required = true;
   for (const f of stack) {
     if (f.k === 'call') out.problems.push({ l: f.tok.l, c: f.tok.c, msg: `Unterminated call to '${f.name}' (missing ')')` });
   }

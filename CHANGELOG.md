@@ -13,7 +13,14 @@
   compiled and why. Dynamically defined names stay undecided (9 branches
   on RHEL and CLIP, down from 85 and 12).
 
-**Tests**: `test/ifdef-names-test.js` (in `npm test`).
+* **`.te` require check in trees without `modules.conf`** (a bare
+  upstream refpolicy checkout): modules are checked the way `make conf`
+  would set them up (base when the `.if` says `<required val="true">`,
+  otherwise loadable). With `MONOLITHIC=y` nothing is checked, since no
+  module is loadable.
+
+**Tests**: `test/ifdef-names-test.js` (in `npm test`), `npm run
+test:confdefaults` (upstream refpolicy without modules.conf).
 
 ## 0.7.0 (2026-10-04)
 

@@ -1,8 +1,9 @@
 // Run all diagnostics across a policy tree and summarize, to measure false positives.
-//   node test/diag-survey.js <policy-dir> [--make "NAME=targeted TYPE=mcs DISTRO=redhat ..."] [--modules <modules.conf>] [--loadable]
+//   node test/diag-survey.js <policy-dir> [--make "NAME=targeted TYPE=mcs DISTRO=redhat ..."] [--modules <modules.conf>] [--loadable | --conf-defaults]
 // --modules: which modules are base / loadable (enables the .te require check
 // for loadable ones), e.g. dist/targeted/modules.conf; --loadable: treat every
-// module as loadable (as standalone modules are).
+// module as loadable (as standalone modules are); --conf-defaults: the kinds
+// `make conf` would write (base when the .if says <required val="true">).
 // With --make, ifdef/ifndef branches on build flags are decided the way that
 // build configuration would (flags asked from the tree's Makefile; Linux only).
 const path = require('path');
@@ -34,6 +35,10 @@ const { diagnose } = require('../server/diagnostics');
     console.log(`modules: ${[...idx.moduleKinds.values()].filter(v => v === 'module').length} loadable, ${[...idx.moduleKinds.values()].filter(v => v === 'base').length} base`);
   }
   if (process.argv.includes('--loadable')) idx.allLoadable = true;
+  if (process.argv.includes('--conf-defaults')) {
+    idx.moduleKinds = idx.defaultModuleKinds(path.resolve(root));
+    console.log(`modules (make conf defaults): ${[...idx.moduleKinds.values()].filter(v => v === 'module').length} loadable, ${[...idx.moduleKinds.values()].filter(v => v === 'base').length} base`);
+  }
   const byCode = {}; const samples = {};
   const names = {};
   for (const f of idx.files.values()) {

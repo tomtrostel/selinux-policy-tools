@@ -175,7 +175,11 @@ Open one of these as the workspace folder:
     to a require block in the right scope (or creates one). Standalone
     modules are always loadable; in a tree, modules marked `module` in
     `modules.conf` (and `APPS_MODS`) are checked, base modules aren't (they
-    are compiled together and need no requires);
+    are compiled together and need no requires). A tree without
+    `modules.conf` (a bare upstream checkout) is checked the way `make
+    conf` would set it up: modules whose `.if` says
+    `<required val="true">` are base, all others loadable. With
+    `MONOLITHIC=y` nothing is loadable, so nothing is checked;
   * link failures before you build: in a tree, a loadable module that
     needs a type or attribute outside `optional_policy` (a require entry, or
     an interface called at the top level that always requires it) which
@@ -669,10 +673,8 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   and corenetwork macros are left active.
   `self_contained_policy` and `users_extra`, which the Makefile passes
   only for some build steps, are never decided.
-* The `.te` require check needs to know a module is loadable: without a
-  `modules.conf` in the tree (e.g. a bare upstream checkout), tree modules
-  aren't checked. Uses inside `ifdef` branches the build flags don't
-  decide (all of them without `make`) aren't judged, and a scope that calls
+* The `.te` require check: uses inside `ifdef` branches that can't be
+  decided (all of them without `make`) aren't judged, and a scope that calls
   an interface the index doesn't know isn't judged either.
 
 **Building**
