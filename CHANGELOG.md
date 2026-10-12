@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+**Fixes**
+
+* **Service editor, file access**: a file type whose rules match none of the
+  access levels (e.g. `mmap_manage_files_pattern`, plain `allow` rules, a
+  type transition of its own) read back as "label only (no access)", and
+  choosing a level silently replaced those rules. It now reads back as
+  **custom (kept as written)** with the rules shown, and choosing a level
+  warns that they will be replaced. In the Fedora tree 313 file types were
+  affected (CLIP's `httpd_cache_t` among them). The login pty option is
+  refused when its type is already a file type of the module.
+
 **Changed**
 
 * **Long lists of other interfaces** (service editor, more than 12): grouped

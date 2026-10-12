@@ -265,6 +265,16 @@ const build = async (te) => {
     const back = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
     check(back.model && back.model.caps.includes(cap), `${mod} ${dom} reads back with ${cap}`);
   }
+  // 5b. File access matching no level reads back as custom (CLIP's httpd_cache_t: mmap_manage_files_pattern).
+  if (list5.modules.some(x => x.module === 'apache')) {
+    const ap = await conn.sendRequest('selinux/serviceInfo', { module: 'apache', domain: 'httpd_t' });
+    const cust = ap.model.files.filter(f => f.access === 'custom');
+    const cache = ap.model.files.find(f => f.type === 'httpd_cache_t');
+    check(cust.length > 0 && cust.every(f => f.rules && f.rules.length) && cache && cache.access !== 'none',
+      `apache httpd_t: ${cust.length} file types with custom access (httpd_cache_t: ${cache && cache.access}${cache && cache.rules ? `, ${cache.rules.length} rules kept` : ''})`, cust.map(f => [f.type, f.rules]));
+    const pn = await conn.sendRequest('selinux/servicePlan', { model: ap.model, module: 'apache' });
+    check(pn.files.every(f => !f.changed), 'apache unchanged when saved as read back (custom rules kept)', pn.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')));
+  }
   // 6. Finding interfaces by what a service needs, and what one compiles to.
   let fi = await conn.sendRequest('selinux/findInterfaces', { domain: 'logintest_t', target: 'etc_t', tclass: 'file', perms: ['open', 'write'] });
   const top6 = (x) => (x.suggest && x.suggest.list && x.suggest.list[0] ? x.suggest.list[0].name : null);

@@ -147,9 +147,17 @@
         ['tmp', 'tmpfs', 'lock'].includes(k.id) && !row.paths.length
           ? h('span', { class: 'muted small', title: 'The service creates these at run time; a type transition gives them their label, so no path is needed' }, 'labeled when the service creates them')
           : h('textarea', { rows: Math.max(1, row.paths.length), spellcheck: 'false', placeholder: k.path || '/path/', title: 'One path per line, written to the .fc file. A path ending in / means the directory and everything in it; % is the module name', oninput: (e) => { row.paths = unlines(e.target.value); changed(); } }, lines(row.paths)),
-        h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
+        h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; if (row.rules) render(); changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
           accessOpts.map(a => h('option', { value: a, selected: a === row.access, title: accessHelp(a) }, info.catalog.accessLabels[a] || a))),
         h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { const t = typeOf(row); model.files.splice(i, 1); for (const hp of model.helpers || []) hp.files = (hp.files || []).filter(x => x.type !== t); render(); changed(); } }, '✕')));
+      // Rules that match no level: kept as written, shown so the choice is informed.
+      if (row.rules && row.rules.length) {
+        table.append(h('div', { class: 'frules', title: accessHelp('custom') },
+          h('div', { class: row.access === 'custom' ? 'muted small' : 'warn small' }, row.access === 'custom'
+            ? `The service's access to ${row.type}, kept as written:`
+            : `Choosing “${info.catalog.accessLabels[row.access] || row.access}” replaces these rules with its standard ones (see the preview):`),
+          h('pre', { class: 'grants' }, row.rules.join('\n'))));
+      }
     });
     const add = h('div', { class: 'adds' }, h('span', { class: 'muted' }, 'Add: '),
       kinds.map(k => h('button', { class: 'chip', ...tipOf(k.help || k.where || k.label), onclick: () => {
@@ -225,7 +233,10 @@
     const ptyType = () => `${(model.domain || `${model.name || 'NAME'}_t`).replace(/_t$/, '')}_devpts_t`;
     const groups = info.catalog.access.map(g => h('div', { class: 'group' }, h('div', { class: 'sub' }, g.group),
       g.items.map(it => check(it.label, on.has(it.id), (v) => { model.access = v ? [...model.access, it.id] : model.access.filter(x => x !== it.id); }, { help: it.help, code: it.calls.join(', '), note: it.optional ? '(optional_policy)' : '' })),
-      g.group === 'Logins' && lp ? check(lp.label, !!model.loginPty, (v) => { model.loginPty = v; }, { help: lp.help.replace('DOMAIN_devpts_t', ptyType()), code: `${ptyType()}, term_login_pty, term_create_pty` }) : null));
+      g.group === 'Logins' && lp ? (() => {
+        const clash = model.files.some(r => typeOf(r) === ptyType());
+        return check(lp.label, !!model.loginPty, (v) => { model.loginPty = v; }, { help: clash ? `${ptyType()} is already a file type of this module (see Files)` : lp.help.replace('DOMAIN_devpts_t', ptyType()), code: `${ptyType()}, term_login_pty, term_create_pty`, disabled: clash && !model.loginPty, note: clash ? '(already a file type)' : '' });
+      })() : null));
     return section('System access', `${model.access.length + (model.loginPty ? 1 : 0)} selected`, h('div', { class: 'cols' }, groups));
   }
 

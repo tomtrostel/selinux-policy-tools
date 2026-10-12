@@ -54,7 +54,7 @@ const FILE_KINDS = [
 ];
 const KIND = Object.fromEntries(FILE_KINDS.map(k => [k.id, k]));
 
-const ACCESS_LABELS = { manage: 'create, change and delete', append: 'create and append (no rewriting)', read: 'read only', none: 'label only (no access)' };
+const ACCESS_LABELS = { manage: 'create, change and delete', append: 'create and append (no rewriting)', read: 'read only', none: 'label only (no access)', custom: 'custom (kept as written)' };
 
 // Common system access: [label, calls (each a list of alternative names), hint].
 const ACCESS_GROUPS = [
@@ -199,6 +199,7 @@ const HELP = {
     append: 'Create files and add to them, but not overwrite, truncate or delete them, so a compromised service can’t erase its own logs.',
     read: 'Read files and list directories; no changes.',
     none: 'Only label the files; the service gets no access (for files that other programs use).',
+    custom: 'The module gives the service access with rules that match none of the levels here (e.g. mmap_manage_files_pattern, plain allow rules, a type transition of its own); they are kept exactly as written and listed below. Choosing a level replaces them with that level’s standard rules.',
   },
   access: {
     syslog: 'Log through syslog() or the systemd journal (/dev/log). Almost every daemon needs this.',
@@ -705,7 +706,8 @@ function recognize(texts, ctx, opts = {}) {
     if (pats.has('manage_files_pattern')) access = 'manage';
     else if (pats.has('append_files_pattern')) access = 'append';
     else if (pats.has('read_files_pattern')) access = 'read';
-    model.files.push({ kind: k.id, type: T, paths: pathsOf(T), access });
+    const row = { kind: k.id, type: T, paths: pathsOf(T), access };
+    model.files.push(row);
     ownAdd(u, t);
     // Declaration helpers on the type, rules from the domain to it.
     for (const s of editable) {
@@ -713,6 +715,15 @@ function recognize(texts, ctx, opts = {}) {
       if (s.kind === 'call' && s.top && s.args[0] === T) ownAdd(u, s);
       else if (s.kind === 'call' && s.args[0] === D && s.args.slice(1).includes(T) && /(_pattern|filetrans)$/.test(s.name)) ownAdd(u, s);
       else if (s.kind === 'allow' && s.src === D && s.tgt === T) ownAdd(u, s);
+    }
+    // No level matched, but the domain does get access (mmap_manage_files_pattern, allow rules, …):
+    // "custom", with those rules kept as written (and shown), not "label only".
+    if (access === 'none') {
+      const rules = (own.get(u) || []).filter(x => (x.kind === 'call' && x.args[0] === D) || ((x.kind === 'allow' || x.kind === 'rule') && (x.src === D || new RegExp(`^\\w+\\s+${D}\\b`).test(x.text || ''))));
+      if (rules.length) {
+        row.access = 'custom';
+        row.rules = rules.sort((a, b) => a.l - b.l).map(x => te.lines.slice(x.l, x.endL + 1).map(ln => ln.trim()).join(' '));
+      }
     }
   }
 
@@ -1440,6 +1451,11 @@ function validate(model, ctx, opts = {}) {
     if (types.has(t)) out.push(`File type ${t} is listed twice.`);
     types.add(t);
     if (opts.isNew && ctx.typeExists && ctx.typeExists(t)) out.push(`Type ${t} is already declared elsewhere.`);
+  }
+  // The login pty type must not be a file type of the module already (e.g. ipsec_mgmt_devpts_t).
+  if (model.loginPty) {
+    const P = `${names(model).D.replace(/_t$/, '')}_devpts_t`;
+    if ((model.files || []).some(r => fileType(model, r, ctx) === P)) out.push(`${P} is already one of this module's file types, so “Pseudo-terminals for logins” can't declare it again; untick it, or remove that file type first.`);
   }
   for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []))) if (p.trim() && !/^(\/|HOME_DIR(\/|$)|HOME_ROOT(\/|$))/.test(p.trim())) out.push(`Path "${p}" must be absolute (or start with HOME_DIR/ or HOME_ROOT/, the home directory placeholders of .fc files).`);
   // One path, one label: setfiles refuses a file_contexts with two specifications for the same path.

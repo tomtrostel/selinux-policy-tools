@@ -797,6 +797,7 @@ function showServiceEditor(context, mod, prefill = null) {
   .group { margin-bottom: 4px; }
   .files { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(150px, 1.3fr) minmax(170px, 2fr) minmax(120px, 1.2fr) 28px; gap: 6px; align-items: start; }
   .frow { display: contents; }
+  .frules { grid-column: 1 / -1; margin: -2px 0 6px; }
   .frow.head span { font-size: .85em; opacity: .7; }
   .adds { margin-top: 8px; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }

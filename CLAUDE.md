@@ -368,6 +368,18 @@ so far covered by the e2e tests only.
    is exactly a required type 6); every word must match; +3 when the name
    is or starts with the words joined by _; −3 dontaudit, −1.5 RARE parts
    unless typed; + 0.8·log10(1 + uses); − length/100. 25 shown, "N more…".
+   Custom file access (done, unreleased; user asked what "label only"
+   means for CLIP's httpd_cache_t, which httpd_t actually manages via
+   mmap_manage_files_pattern): recognize sets row.access 'custom' and
+   row.rules (statement texts) when the level found is none but the file
+   unit's own statements include rules from D (calls with D first, allow
+   from D); unitsOf renders custom like none (decl only), so the kept rules
+   survive while the sig is unchanged and are deleted when another level is
+   chosen. ACCESS_LABELS/HELP.level custom; the form lists row.rules under
+   the row (.frules) and warns when another level is picked. validate
+   refuses loginPty when <D-stem>_devpts_t is a file type already (found by
+   the survey: ipsec_mgmt_devpts_t). Fedora: 313 file types custom, 0 left
+   "label only" with access; survey mutation 30 = custom → read.
    Grouping long lists (item 4, done, unreleased): extraSection groups
    model.extra by module (info.interfaces m, else the name's prefix) when
    more than GROUP_AT = 12: details.egroup per module (sorted; open state in

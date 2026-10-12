@@ -401,6 +401,38 @@ allow srvd_t self:process signal_perms;
   const lm2 = JSON.parse(JSON.stringify(rl.model)); lm2.loginPty = false;
   o = svc.plan(lm2, lctx, o);
   check(!/devpts/.test(o.te), 'turning the pty off removes its type and rules');
+  // File access that matches no level (CLIP's apache cache): "custom", kept as written.
+  const cm = { te: `policy_module(cw, 1.0.0)
+
+type cw_t;
+type cw_exec_t;
+init_daemon_domain(cw_t, cw_exec_t)
+
+type cw_cache_t;
+files_type(cw_cache_t)
+
+########################################
+#
+# cw local policy
+#
+
+manage_dirs_pattern(cw_t, cw_cache_t, cw_cache_t)
+mmap_manage_files_pattern(cw_t, cw_cache_t, cw_cache_t)
+files_var_filetrans(cw_t, cw_cache_t, dir)
+`, if: '', fc: '/var/cache/cw(/.*)?\tgen_context(system_u:object_r:cw_cache_t,s0)\n' };
+  const cr = svc.recognize(cm, lctx, {});
+  const crow = cr.model.files.find(x => x.type === 'cw_cache_t');
+  check(crow && crow.access === 'custom' && crow.rules.length === 3 && /mmap_manage_files_pattern\(cw_t, cw_cache_t, cw_cache_t\)/.test(crow.rules.join('\n')), 'rules matching no level: "custom", with the rules (not "label only")', crow);
+  check(svc.plan(JSON.parse(JSON.stringify(cr.model)), lctx, cm).te === cm.te, 'custom: no-op edit leaves it unchanged');
+  const cm2 = JSON.parse(JSON.stringify(cr.model)); cm2.caps.push('kill');
+  check(/mmap_manage_files_pattern/.test(svc.plan(cm2, lctx, cm).te), 'an unrelated edit keeps the custom rules');
+  const cm3 = JSON.parse(JSON.stringify(cr.model)); cm3.files.find(x => x.type === 'cw_cache_t').access = 'read';
+  const co = svc.plan(cm3, lctx, cm).te;
+  check(!/mmap_manage_files_pattern|files_var_filetrans/.test(co) && /read_files_pattern\(cw_t, cw_cache_t, cw_cache_t\)/.test(co), 'choosing a level replaces them with its standard rules');
+  check(svc.catalog(lctx).accessLabels.custom === 'custom (kept as written)', 'label for custom');
+  // The login pty type can't be one of the module's file types already.
+  const lc = svc.newModel(); Object.assign(lc, { name: 'lp', exec: ['/usr/bin/lp'], loginPty: true, files: [{ kind: 'other', type: 'lp_devpts_t', paths: ['/dev/lp'], access: 'read' }] });
+  check(svc.validate(lc, lctx, { isNew: true }).some(p => /lp_devpts_t is already one of this module's file types/.test(p)), 'login pty type clashing with a file type is refused');
   const hd = svc.newModel(); Object.assign(hd, { name: 'hd', exec: ['/usr/bin/hd'], files: [{ kind: 'other', type: 'hd_home_t', paths: ['HOME_DIR/.hd/', 'rel/x'], access: 'read' }] });
   const hp = svc.validate(hd, lctx, { isNew: true });
   check(!hp.some(p => p.includes('"HOME_DIR/.hd/"')) && hp.some(p => p.includes('"rel/x"')), 'paths: HOME_DIR/ (the .fc home placeholder) accepted, relative ones refused', hp);
@@ -639,6 +671,19 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(/ports are in Network/.test(form.textContent), 'no match for a port: points to Network');
   ks().value = ''; ks().fire('input');
   send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  // A file type with custom access: the kept rules shown; choosing a level warns they are replaced.
+  {
+    const base = last('plan').model;
+    const crules = ['manage_dirs_pattern(webby_t, webby_cache_t, webby_cache_t)', 'mmap_manage_files_pattern(webby_t, webby_cache_t, webby_cache_t)'];
+    send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false, isNew: false, module: 'webby', layer: 'contrib', files: { te: '/t/webby.te' }, kept: [], provided: [], domains: [{ domain: 'webby_t' }],
+      model: { ...base, files: [{ kind: 'cache', type: 'webby_cache_t', paths: ['/var/cache/webby/'], access: 'custom', rules: crules }] } }, keep: false });
+    const fr = () => find(e => e.attrs.class === 'frules')[0];
+    const accSel = () => find(e => e.tag === 'select' && /What the service may do with these files/.test(e.attrs.title || ''))[0];
+    check(fr() && /kept as written/.test(fr().textContent) && /mmap_manage_files_pattern/.test(fr().textContent) && accSel().children[0].textContent === 'custom (kept as written)', 'custom access: its rules are listed under the row, the level reads "custom (kept as written)"');
+    accSel().value = 'read'; accSel().fire('change');
+    check(/replaces these rules/.test(fr().textContent) && fr().children[0].attrs.class === 'warn small', 'choosing a level warns the rules will be replaced');
+    send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  }
   // A long list of other interfaces: grouped by module, filtered in place.
   {
     const GI = [...Array.from({ length: 8 }, (_, i) => ({ n: `dev_thing_${i}`, s: `Device thing ${i}.`, m: 'devices' })), ...Array.from({ length: 6 }, (_, i) => ({ n: `files_thing_${i}`, s: `File thing ${i}.`, m: 'files' })),
@@ -756,7 +801,9 @@ async function survey(root) {
     // (interfaces an added option calls read back as part of it, as in the form)
     m => { for (const a of ['loginpgm', 'sessions', 'loginrecords']) if (!m.access.includes(a)) m.access.push(a); m.extra = m.extra.filter(n => !['auth_login_pgm_domain', 'userdom_spec_domtrans_all_users', 'userdom_signal_all_users', 'auth_rw_login_records'].includes(n)); },
     m => { const i = m.access.findIndex(a => ['loginpgm', 'sessions', 'ttys', 'ptys', 'loginrecords', 'lastlog', 'usercontexts'].includes(a)); if (i >= 0) m.access.splice(i, 1); },
-    m => { m.loginPty = !m.loginPty; },
+    m => { if (!m.files.some(r => r.type === `${m.domain.replace(/_t$/, '')}_devpts_t`)) m.loginPty = !m.loginPty; }, // (refused when that type is a file type already)
+    // A file type with custom rules switched to a standard level (its rules replaced).
+    m => { const f = m.files.find(x => x.access === 'custom'); if (f) { f.access = 'read'; delete f.rules; } },
   ];
   const bnorm = (m) => (m.booleans || []).filter(b => !b.external || Object.values(b.grants).some(v => (Array.isArray(v) ? v.length : v.listen.length + v.connect.length)))
     .map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : b.desc, JSON.stringify(grantsNorm(b.grants))]).sort((a, b) => a[0].localeCompare(b[0]));

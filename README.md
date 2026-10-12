@@ -257,7 +257,15 @@ writes. It offers what the existing service modules use (taken from the
   systemd unit file / init script labels. A path ending in `/` covers the
   directory and everything in it. Files the service creates in `/run`,
   `/tmp`, `/var/lib`, … get their type automatically (file type
-  transitions).
+  transitions). Access levels: create, change and delete; create and
+  append; read only; label only (no access: the type and its paths, for
+  files other programs use). In an existing module, a file type whose
+  rules match none of them (CLIP's `httpd_cache_t`:
+  `mmap_manage_files_pattern`, `manage_lnk_files_pattern`,
+  `files_var_filetrans`; plain `allow` rules) reads back as **custom (kept as
+  written)**, with those rules listed under it; they are kept exactly as
+  they are, and choosing a level instead says it replaces them with that
+  level's standard rules (the preview shows the change).
 * **Network:** ports it listens on and ports it connects to (TCP/UDP, any
   port type in the tree, shown with its port numbers, or any port), and
   **port types of its own** for port numbers no existing type covers. In a
@@ -884,8 +892,8 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Service editor: every domain init starts in the Fedora tree (488 in 376
   modules, 92 of them started by `init_system_domain`, `init_domain` or a
   ranged variant and 11 declared by a template) reads back into the form,
-  and saving it unchanged leaves all files byte-identical; 29 kinds of
-  edits on each (14,152; the login options and the login pty type
+  and saving it unchanged leaves all files byte-identical; 30 kinds of
+  edits on each (14,640; the login options, the login pty type and custom file access
   included) read back and repeat as a no-op. Earlier, on the main daemon
   domain of 326 modules: 26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
