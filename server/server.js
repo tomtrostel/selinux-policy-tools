@@ -2179,8 +2179,10 @@ async function standaloneUserPlan(model, ctx, where, license) {
   return { problems, files };
 }
 
-connection.onRequest('selinux/userPlan', async ({ model, module: mod, standalone, where, license }) => {
-  await indexing;
+connection.onRequest('selinux/userPlan', async (params) => { await indexing; return userPlan(params); });
+
+/** The files a user model writes: { problems, files } (new in the tree, new standalone, or edits of an existing user). */
+async function userPlan({ model, module: mod, standalone, where, license }) {
   if (!treeRoot && !usingDevel) return { problems: ['Open a policy source tree, or a folder for standalone modules, first.'], files: [] };
   if (mod) {
     const m = userModules().find(x => x.module === mod);
@@ -2225,6 +2227,134 @@ connection.onRequest('selinux/userPlan', async ({ model, module: mod, standalone
     files.push({ path: part.path, kind: 'conf', exists: true, text, changed: true, diff: service.lineDiff(part.text, text) });
   }
   return { problems, files };
+}
+
+/**
+ * What a user would reach with the planned files, before writing them: the policy built with
+ * them in a scratch copy (tree: its own variant; standalone: the module linked with the
+ * installed policy), then where each way in lands and what its sessions reach, with the risky
+ * abilities. For an existing tree user, also the difference from the last build of the tree.
+ */
+const previewBusy = new Map();
+connection.onRequest('selinux/userPreview', async (params) => {
+  await indexing;
+  const t0 = Date.now();
+  const why = buildUnavailable();
+  if (why) return { error: why };
+  const { model } = params;
+  const plan = await userPlan(params);
+  const blocking = (plan.problems || []).filter(p => !p.startsWith('Note:'));
+  if (blocking.length) return { error: `Fix these first: ${blocking[0]}` };
+  const planned = new Map((plan.files || []).map(f => [f.path, f.text]));
+  const m = params.module ? userModules().find(x => x.module === params.module) : null;
+  const sa = m ? m.standalone : (usingDevel || (!!treeRoot && !!develInterfaces() && !!params.standalone));
+  const R = `${model.name}_r`, U = `${model.name}_u`;
+  const key = sa ? `sa:${model.name}` : 'tree';
+  if (previewBusy.get(key)) return { error: 'A preview is already being built.' };
+  previewBusy.set(key, true);
+  try {
+    let bin = null, before = null, buildMs = 0;
+    const notes = [];
+    if (!sa) {
+      // The tree with the planned files: tree files replaced or added, spec overlays (users-targeted, modules-*.conf) swapped.
+      const dir = build.scratchDir('userpreview', treeRoot);
+      fs.mkdirSync(dir, { recursive: true });
+      workDirs.add(dir);
+      const opts = treeBuildOptions(treeRoot);
+      let i = 0;
+      const tmpOf = (p) => { const f = path.join(dir, `f${i++}-${path.basename(p)}`); fs.writeFileSync(f, planned.get(p)); return f; };
+      const files = { ...opts.files };
+      for (const [p] of planned) {
+        let replaced = false;
+        for (const [rel, srcs] of Object.entries(files)) {
+          const list = [].concat(srcs);
+          const at = list.findIndex(s => (typeof s === 'string' ? s : s && s.from) === p);
+          if (at < 0) continue;
+          const tmp = tmpOf(p);
+          files[rel] = list.map((s, j) => (j !== at ? s : typeof s === 'string' ? tmp : { ...s, from: tmp }));
+          replaced = true;
+        }
+        if (!replaced && p.startsWith(treeRoot + path.sep)) files[path.relative(treeRoot, p).replace(/\\/g, '/')] = [tmpOf(p)];
+      }
+      connection.sendNotification('selinux/build', { state: 'preview', module: model.name, to: 'user' });
+      const res = await build.buildTree(treeRoot, (p) => readSource(p), { ...opts, files, variant: 'userpreview' });
+      workDirs.add(res.workDir);
+      buildMs = res.ms;
+      if (!res.ok || !res.policyBin) {
+        const err = (res.diagnostics || []).find(d => d.severity === 'error');
+        return { error: `The tree doesn't build with these changes${err ? `: ${err.msg}` : ''}.`, log: (res.log || '').slice(-2000) };
+      }
+      bin = res.policyBin;
+      const cur = lastBuild.get(treeRoot);
+      if (m && cur && cur.ok && cur.policyBin && fs.existsSync(cur.policyBin)) before = cur.policyBin;
+      else if (m) notes.push('Build the tree once to see what the change adds or takes away.');
+    } else {
+      // The module built against the devel headers and linked with this host's installed policy.
+      const te = (plan.files.find(f => f.kind === 'te') || {}).path || (m && m.files.te);
+      const res = await build.buildModule(te, (p) => (planned.has(p) ? planned.get(p) : readSource(p)), { develMakefile: settings.build.develMakefile });
+      if (!res.ok) return { error: `The module doesn't build: ${((res.diagnostics || []).find(d => d.severity === 'error') || {}).msg || 'see the log'}`, log: (res.log || '').slice(-2000) };
+      const required = requiredAttributes();
+      const l = await build.linkWithInstalled(res, { isAttribute: (n) => required.has(n) });
+      buildMs = res.ms + l.ms;
+      if (!l.ok) return { error: `Linking with the installed policy failed: ${l.log.split('\n').slice(-2).join(' ')}` };
+      bin = l.policy;
+    }
+    // Where each way in lands: the planned (or current) contexts file, then default_contexts.
+    const ctxFile = plan.files.find(f => f.kind === 'contexts');
+    const defFile = plan.files.find(f => f.kind === 'defaults');
+    let ownText = ctxFile ? ctxFile.text : null, defText = defFile ? defFile.text : null;
+    if (!ctxFile || !defFile) {
+      if (sa) {
+        if (!ctxFile && m) ownText = readSource(path.join(path.dirname(m.files.te), `${U}_default_contexts`));
+        const active = build.installedPolicies().find(p => p.active);
+        if (!defFile && active) defText = readSource(path.join('/etc/selinux', active.name, 'contexts', 'default_contexts'));
+      } else {
+        const cp = userConfigPaths(model.name);
+        if (!ctxFile) ownText = readSource(cp.contexts);
+        if (!defFile) defText = readSource(path.join(path.dirname(cp.seusers), 'default_contexts'));
+      }
+    }
+    const own = ownText != null ? { path: 'own', list: logins.parseContexts(ownText) } : null;
+    const defaults = { path: 'default_contexts', list: logins.parseContexts(defText || '') };
+    const types = new Set([...(own ? own.list : []), ...defaults.list].flatMap(x => x.to.map(c => c.type)));
+    const info = await policyQuery.request({ op: 'users', bin, types: [...types], names: [] });
+    if (info.error) return { error: `Policy query failed: ${info.error}` };
+    // The user's roles: from the built policy (tree), or what semanage will give it (standalone).
+    const roles = (info.users && info.users[U] && info.users[U].roles) || [R, ...(model.switchTo || [])];
+    const roleTypes = (role) => new Set((info.roleTypes || {})[role] || []);
+    const ways = logins.entries(roles, roleTypes, own, defaults);
+    const starts = [];
+    for (const e of ways) for (const c of e.contexts) if (!starts.some(s => s.role === c.role && s.type === c.type)) starts.push(c);
+    const out = { ms: Date.now() - t0, buildMs, roles, ways: ways.filter(e => e.contexts.length), reached: 0, abilities: [], gained: [], lost: [], notes, standalone: sa };
+    // Without a way in (a confined role), its sessions start in its own domain once some user switches to it.
+    const from = starts.length ? starts : [{ role: R, type: `${model.name}_t` }];
+    if (!starts.length) notes.push(`No way in lands in ${R}: shown from ${model.name}_t, as entered by switching role.`);
+    const rr = await userReach(bin, U, from, roles);
+    if (rr.error) return { error: rr.error };
+    out.reached = Object.keys(rr.reached).length;
+    out.abilities = reachAbilities(rr);
+    out.domains = Object.keys(rr.reached).sort();
+    if (before) {
+      const b0 = await policyQuery.request({ op: 'users', bin: before, types: [...types], names: [] });
+      const bRoles = (b0.users && b0.users[U] && b0.users[U].roles) || roles;
+      const bWays = logins.entries(bRoles, (role) => new Set((b0.roleTypes || {})[role] || []),
+        (() => { const t = readSource(userConfigPaths(model.name).contexts); return t != null ? { path: 'own', list: logins.parseContexts(t) } : null; })(),
+        { path: 'default_contexts', list: logins.parseContexts(readSource(path.join(appconfigDir(treeRoot), 'default_contexts')) || '') });
+      const bStarts = [];
+      for (const e of bWays) for (const c of e.contexts) if (!bStarts.some(s => s.role === c.role && s.type === c.type)) bStarts.push(c);
+      const br = await userReach(before, U, bStarts.length ? bStarts : from, bRoles);
+      if (!br.error) {
+        const was = new Set(Object.keys(br.reached)), now = new Set(out.domains);
+        out.before = { reached: was.size, abilities: reachAbilities(br).map(a => a.id) };
+        out.gained = out.domains.filter(d => !was.has(d)).slice(0, 200).map(d => ({ name: d, path: pathOut(rr, d) }));
+        out.lost = [...was].filter(d => !now.has(d)).sort().slice(0, 200);
+      }
+    }
+    delete out.domains;
+    return out;
+  } finally {
+    previewBusy.delete(key);
+  }
 });
 
 /*
@@ -3253,15 +3383,28 @@ async function loginPolicy(against) {
 }
 
 /** Reach of one user from its login start contexts, cached per policy file + mtime. */
-async function userReach(bin, user, starts) {
+async function userReach(bin, user, starts, roles = null) {
   const key = `${bin}:${fs.statSync(bin).mtimeMs}`;
   if (reachCache.key !== key) reachCache = { key, map: new Map() };
-  const k = `${user}|${starts.map(s => `${s.role}:${s.type}`).sort().join(',')}`;
+  const k = `${user}|${(roles || []).join(' ')}|${starts.map(s => `${s.role}:${s.type}`).sort().join(',')}`;
   if (!reachCache.map.has(k)) {
-    reachCache.map.set(k, policyQuery.request({ op: 'reach', bin, user, starts,
+    reachCache.map.set(k, policyQuery.request({ op: 'reach', bin, user, starts, roles,
       access: logins.ABILITIES.map(a => ({ id: a.id, attr: a.attr, t: a.t, classes: a.classes, perms: a.perms })) }));
   }
   return reachCache.map.get(k);
+}
+
+/** The risky abilities within a reach result, nearest domain first, with the path and rule. */
+function reachAbilities(rr) {
+  const out = [];
+  for (const a of logins.ABILITIES) {
+    const hit = rr.access && rr.access[a.id];
+    if (!hit) continue;
+    const n = logins.nearest(rr, Object.keys(hit));
+    if (!n) continue;
+    out.push({ id: a.id, label: a.label, severity: a.severity, domain: n.d, count: Object.keys(hit).length, rule: hit[n.d].rule || null, path: pathOut(rr, n.d) });
+  }
+  return out;
 }
 
 const pathOut = (r, d) => { const k = r.reached[d]; return k ? logins.pathTo(r.steps, k).map(s => ({ ...s, text: logins.stepText(s) })) : []; };
@@ -3315,14 +3458,7 @@ connection.onRequest('selinux/logins', async ({ against } = {}) => {
       if (rr.error) { out.error = rr.error; } else {
         out.reached = Object.keys(rr.reached).length;
         out.roleSet = rr.roles;
-        for (const a of logins.ABILITIES) {
-          const hit = rr.access && rr.access[a.id];
-          if (!hit) continue;
-          const n = logins.nearest(rr, Object.keys(hit));
-          if (!n) continue;
-          out.abilities.push({ id: a.id, label: a.label, severity: a.severity, domain: n.d, count: Object.keys(hit).length,
-            rule: hit[n.d].rule || null, path: pathOut(rr, n.d) });
-        }
+        out.abilities = reachAbilities(rr);
       }
     }
     users.push(out);

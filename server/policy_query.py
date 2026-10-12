@@ -175,7 +175,7 @@ class Index:
         vals = {"u1": u, "r1": r1, "t1": t1, "u2": u, "r2": r2, "t2": t2}
         return all(self.eval_constraint(e, vals, []) for e in self._proc_cons.get(perm, ()))
 
-    def reach(self, user, starts, limit=12):
+    def reach(self, user, starts, limit=12, roles=None):
         """What a session of `user` can reach: BFS over (role, domain) states from
         the start contexts. A domain transition s → t needs the transition rule
         and an entrypoint s may execute (or dyntransition + setcurrent); t must be
@@ -184,7 +184,8 @@ class Index:
         entrypoint or, when s has setexec, explicitly (newrole, sudo -r); the
         policy's constraints must allow the change. Each reached domain keeps
         the step that first reached it."""
-        roles = self.user_roles.get(user, set())
+        # roles: the user's roles when the policy has no such user yet (one semanage will create).
+        roles = set(roles) if roles else self.user_roles.get(user, set())
         ra, rt = self.rbac()
         reached, steps, seen, frontier = {}, {}, set(), []
         for s in starts:
@@ -719,7 +720,7 @@ def main():
                 resp.update(users=users, roleTypes={r: sorted(ts & want) for r, ts in idx.role_types.items()},
                             exists=[n for n in req.get("names", []) if n in idx.attrs or n in idx.members])
             elif req.get("op") == "reach":
-                res = idx.reach(req["user"], req.get("starts", []), req.get("limit", 12))
+                res = idx.reach(req["user"], req.get("starts", []), req.get("limit", 12), req.get("roles"))
                 doms = set(res["reached"])
                 acc = {}
                 for a in req.get("access", []):

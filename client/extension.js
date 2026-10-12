@@ -943,6 +943,7 @@ ${EDITOR_CSS}</style></head><body>
     try {
       if (m.cmd === 'ready') await load();
       else if (m.cmd === 'standalone') { standalone = !!m.on; await load(m.model); }
+      else if (m.cmd === 'preview') post({ cmd: 'preview', result: await client.sendRequest('selinux/userPreview', { model: m.model, module: mod, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model, module: mod, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
       else if (m.cmd === 'apply') {

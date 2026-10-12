@@ -39,6 +39,12 @@
   whose `%post` creates the SELinux user, its logins and role grants with
   semanage and installs its contexts file (`%postun` removes them);
   reopened, it reads back from the module, contexts file and spec.
+  *Start from → Automation account* (ssh and cron only, sudo into one
+  narrow role, with the sudoers line to add) and *Preview what it can
+  reach*: the policy built with the planned files in a scratch copy (or the
+  standalone module linked with the installed policy) shows where the
+  logins land, what they reach, the risky abilities, and for an existing
+  user what the change adds or takes away.
 
 ## 0.11.0 (2026-10-12)
 

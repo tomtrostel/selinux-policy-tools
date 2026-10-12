@@ -727,6 +727,25 @@ refpolicy does for staff_r), the seusers lines, the contexts file in
 *Logins and Users* on the build shows where its logins land and what it can
 reach.
 
+**Automation accounts.** *Start from → Automation account* fills the form
+for an account scripts and tools log in as (Ansible, backups, monitoring):
+an ordinary user (the restricted templates forbid setuid programs, so sudo
+wouldn't work) that logs in over ssh and runs cron jobs only, with sudo and
+`cron_role` and no extra rights. A note explains the rest: map its Linux
+account, give it one narrow role to sudo into (a confined administrator
+role made for just its job), and the matching `/etc/sudoers` line
+(`ACCOUNT ALL=(root) ROLE=… TYPE=… NOPASSWD: …`), since sudo decides which
+commands it may run and SELinux which domain they run in.
+
+**Preview what it can reach** (above the file preview) builds the policy
+with the planned files without writing anything: the tree in a scratch copy
+of its own, or a standalone module linked with the installed policy. It
+then shows where each way in lands, how many domains its sessions reach,
+the risky abilities among them with the path there, and for an existing
+user what the change adds or takes away compared with the last build
+("staff without sudo: 77 domains, was 78; loses staff_sudo_t"). The
+preview is marked stale when the form changes afterwards.
+
 **Editing an existing user** (*SELinux: Edit User…*, or *Edit user…* on a
 card in Logins and Users on a build) opens any role module of the tree
 whose `.te` calls a userdomain template on a name: staff, sysadm, user,
@@ -1229,6 +1248,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   (logins and staff_u from the spec), a no-op edit changes nothing and an
   edit touches only the `.te` and its contexts file. Installing the RPM
   needs root and wasn't part of the test.
+  Previews: a new automation user in the CLIP tree (ssh lands in its
+  domain, roles with the narrow role it may switch to, 16 domains, ~9 s,
+  nothing written), staff without sudo against the last build (77 domains,
+  was 78, staff_sudo_t lost), a standalone user linked with RHEL's installed
+  policy (switching to sysadm_r brings all six risky abilities).
   Survey (test/user-test.js with a tree): every user role module unchanged
   by a no-op edit (Fedora 11, CLIP 11, RHEL 9 12, RHEL 10 12) and every
   test edit read back as edited and idempotent (130, 126, 138, 141: role

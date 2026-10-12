@@ -149,6 +149,27 @@ check(!byId.apply.disabled && /ops\.te \(new\)/.test(byId.preview.textContent) &
 send({ cmd: 'plan', plan: { problems: ['A role named ops_r already exists.'], files: [] } });
 check(byId.apply.disabled && /already exists/.test(byId.preview.textContent), 'a problem disables Create');
 
+// The automation preset and the reach preview.
+send({ cmd: 'init', info });
+find(e => e.tag === 'button' && e.textContent === 'Automation account')[0].fire('click');
+flush();
+const am = last('plan').model;
+check(am.user.kind === 'unpriv' && am.ways.join() === 'ssh,cron' && am.roleCalls.join() === 'sudo_role_template,cron_role' && am.preset === 'automation', 'automation preset: ordinary user, ssh + cron, sudo + cron_role', am);
+check(/one narrow role/.test(byId.form.textContent) && /ROLE=<role> TYPE=<domain> NOPASSWD/.test(byId.form.textContent), 'its note explains the narrow role and the sudoers line');
+send({ cmd: 'plan', plan: { problems: [], files: [{ path: '/t/a.te', kind: 'te', exists: false, diff: [['+', 'x']] }] } });
+const pb = byId.preview.all(e => e.tag === 'button' && e.textContent === 'Preview what it can reach')[0];
+pb.fire('click');
+check(last('preview') && last('preview').model.name === am.name && /Building a scratch copy/.test(byId.preview.textContent), 'Preview asks the server and shows it is building');
+send({ cmd: 'preview', result: { buildMs: 9100, roles: ['ops_r', 'logops_r'], ways: [{ label: 'ssh', contexts: [{ role: 'ops_r', type: 'ops_t' }] }], reached: 12, before: { reached: 10, abilities: [] },
+  abilities: [{ id: 'shadow', label: 'can read password hashes (/etc/shadow)', severity: 'medium', domain: 'chkpwd_t', path: [{ text: 'ops_t → chkpwd_t (runs chkpwd_exec_t)' }] }],
+  gained: [{ name: 'logops_t', path: [{ text: 'ops_t → newrole_t' }, { text: 'newrole_t → logops_t' }] }], lost: ['mail_t'], notes: [] } });
+const pt = byId.preview.textContent;
+check(/ssh: ops_r:ops_t/.test(pt) && /Reaches 12 domains \(was 10: \+1, −1\)/.test(pt) && /chkpwd_t/.test(pt) && /\(new\)/.test(pt) && /can reach now and couldn't before/.test(pt) && /no longer reach/.test(pt), 'preview result: ways, count with the difference, abilities (new), gained and lost');
+const nm = find(e => e.tag === 'input' && (e.attrs.placeholder || '').startsWith('e.g. ops'))[0];
+nm.value = 'ops2'; nm.fire('input');
+send({ cmd: 'plan', plan: { problems: [], files: [] } });
+check(/The form changed since/.test(byId.preview.textContent), 'a change after the preview marks it stale');
+
 // An existing user: name and kind fixed, its lines kept as they are listed, Apply.
 const staff = { ...S.newUserModel(), name: 'staff', module: 'staff', declaredBy: { name: 'userdom_unpriv_user_template', args: ['staff'] }, genUser: { exists: true, simple: false },
   logins: [{ login: '__default__', range: 's0' }], ways: ['ssh'], waysDefault: ['ssh'], waysFrom: 'default', userRoles: null };

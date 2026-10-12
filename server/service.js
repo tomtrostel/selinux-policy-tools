@@ -1558,10 +1558,15 @@ function editTe(text, rec, model, ctx) {
   const containers = scan.blocks.filter(b => b.name === 'optional_policy' || b.name === 'tunable_policy').sort((a, b) => (a.endL - a.l) - (b.endL - b.l));
   for (const b of containers) {
     if (!/`\s*(#.*)?$/.test(lines[b.l]) || !/^\s*'\s*\)\s*(#.*)?$/.test(lines[b.endL])) continue;
+    // An optional_policy left with only nested optional_policy blocks has nothing to require
+    // (checkmodule: "This block has no require section"); what is nested in it went with the
+    // removed statements (e.g. crontab_domtrans(staff_sudo_t) under sudo_role_template), so it goes too.
+    const nested = b.name === 'optional_policy' ? containers.filter(c => c !== b && c.name === 'optional_policy' && c.l > b.l && c.endL < b.endL) : [];
+    const inNested = (l) => nested.some(c => l >= c.l && l <= c.endL);
     let touched = false, empty = true;
     for (let l = b.l + 1; l < b.endL; l++) {
       if (delLines.has(l)) touched = true;
-      else if (lines[l].trim()) { empty = false; break; }
+      else if (lines[l].trim() && !/^\s*#/.test(lines[l]) && !inNested(l)) { empty = false; break; }
     }
     if (touched && empty) for (let l = b.l; l <= b.endL; l++) delLines.add(l);
   }

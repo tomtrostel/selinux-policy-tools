@@ -26,6 +26,7 @@
   $('apply').addEventListener('click', () => { if (model) { $('status').textContent = 'Writing…'; vscode.postMessage({ cmd: 'apply', model, ...extras() }); } });
 
   const changed = () => {
+    if (reach && reach !== 'building') reach.stale = true;
     clearTimeout(timer);
     timer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, ...extras() }), 250);
   };
@@ -75,6 +76,32 @@
     return h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'License'), sel, other);
   }
 
+  /**
+   * Automation account: an ordinary user (the template that keeps sudo working; the restricted
+   * ones forbid setuid programs) that logs in over ssh and runs cron jobs only, with sudo and the
+   * cron role call, and no extra rights. What it may do as root comes from the role it switches to.
+   */
+  function automationPreset() {
+    const has = (n) => info.catalog.roleCalls.some(c => c.n === n);
+    model.user.kind = 'unpriv';
+    model.ways = ['ssh', 'cron'].filter(w => info.catalog.ways.some(x => x.id === w));
+    model.roleCalls = ['sudo_role_template', 'cron_role'].filter(has);
+    model.caps = []; model.access = []; model.extra = []; model.self = [];
+    if (!model.summary) model.summary = 'Automation account';
+    model.preset = 'automation';
+    open.set('logins', true); open.set('roles', true);
+    render(); changed();
+  }
+
+  function presetNote() {
+    if (model.preset !== 'automation') return null;
+    const sw = model.switchTo[0];
+    return h('div', { class: 'note small' },
+      h('b', {}, 'Automation account. '), 'Map its Linux account below (e.g. ansible). Give it ', h('b', {}, 'one narrow role'), ' to sudo into under Roles → May switch to: a confined administrator role for just its job (create one with New User → Confined administrator role). sudo itself decides which commands it may run; put the role in /etc/sudoers too:',
+      h('pre', { class: 'grants' }, `${(model.logins.find(l => (l.login || '').trim()) || { login: 'ACCOUNT' }).login} ALL=(root) ${sw ? `ROLE=${sw} TYPE=${sw.replace(/_r$/, '_t')} ` : 'ROLE=<role> TYPE=<domain> '}NOPASSWD: /usr/bin/<the commands it runs>`),
+      'Preview what it can reach (right) to check it gets no more than that.');
+  }
+
   function userCard() {
     const n = model.name || 'NAME';
     if (!info.isNew) {
@@ -100,6 +127,9 @@
         { placeholder: 'e.g. ops', title: 'The name the user, role and domain are made from: NAME_u, NAME_r, NAME_t. Lowercase letters, digits and _.' })),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Summary'), text(model.summary, (v) => { model.summary = v; changed(); }, { size: 48, placeholder: 'e.g. Operators of the web servers', title: 'One line for the .if summary and the comment above its gen_user line' })),
       moduleRow(), licenseRow(),
+      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Start from'),
+        h('button', { title: 'An account scripts and tools use (Ansible, backups, monitoring): an ordinary user that logs in over ssh and runs cron jobs, with no console or desktop, and may sudo into one narrow role you pick under Roles.',
+          onclick: () => automationPreset() }, 'Automation account')),
       h('div', { class: 'sub' }, 'Kind'), kinds,
     ]);
   }
@@ -130,6 +160,7 @@
     }, { title: w.help + ((model.waysDefault || []).includes(w.id) ? ' Offered to it by default_contexts (shared); unticking takes its context off that line there.' : ''),
       code: w.sources.join(', ') + ((model.waysDefault || []).includes(w.id) ? ' · default_contexts' : '') }));
     return card('logins', 'Logins', `${model.logins.filter(l => (l.login || '').trim()).length} Linux login(s) · ${model.ways.length} way(s) in`, [
+      presetNote(),
       h('div', { class: 'muted small' }, 'Linux logins that get this SELinux user (seusers). A login already mapped to another user can’t be mapped twice.'),
       rows, h('button', { onclick: () => { model.logins.push({ login: '', range: '' }); render(); } }, '+ Add login'),
       h('div', { class: 'sub' }, 'Ways in'), h('div', { class: 'muted small' }, info.isNew ? 'How its sessions may start (its own default contexts file); the others aren’t offered to it.'
@@ -239,6 +270,37 @@
     renderPlan();
   }
 
+  // Reach preview: the policy built with the planned files in a scratch copy; stale once the model changes.
+  let reach = null; // null | 'building' | { result, stale }
+  function reachBox(blocked) {
+    const btn = h('button', { disabled: blocked || reach === 'building' || null, title: info.standalone ? 'Build the module against this host\'s devel headers, link it with the installed policy, and show where its logins land and what they can reach. Nothing is written.'
+      : 'Build the tree with these files in a scratch copy (about as long as a tree build) and show where its logins land and what they can reach, and what changes compared with the last build. Nothing is written.',
+    onclick: () => { reach = 'building'; renderPlan(); vscode.postMessage({ cmd: 'preview', model, ...extras() }); } }, reach && reach !== 'building' ? 'Preview again' : 'Preview what it can reach');
+    const box = h('div', { class: 'pad reach' }, btn);
+    if (reach === 'building') box.append(h('span', { class: 'muted' }, ' Building a scratch copy…'));
+    else if (reach && reach.result) {
+      const r = reach.result;
+      if (r.error) box.append(h('div', { class: 'warn' }, r.error));
+      else {
+        const pathBox = (p) => (p && p.length ? h('div', { class: 'path small' }, p.map(s => h('div', {}, `↳ ${s.text}`))) : null);
+        box.append(h('div', {},
+          reach.stale ? h('div', { class: 'warn small' }, 'The form changed since: preview again.') : null,
+          h('div', { class: 'muted small' }, `Built in ${(r.buildMs / 1000).toFixed(1)} s${r.standalone ? ' (linked with the installed policy)' : ''}; roles ${r.roles.join(' ')}.`),
+          h('div', { class: 'sub' }, 'Ways in'),
+          r.ways.length ? r.ways.map(w => h('div', {}, `${w.label}: `, h('code', {}, `${w.contexts[0].role}:${w.contexts[0].type}`), w.contexts.length > 1 ? h('span', { class: 'muted' }, ` (or ${w.contexts.slice(1).map(c => `${c.role}:${c.type}`).join(', ')})`) : null))
+            : h('div', { class: 'muted' }, 'none: it is entered by switching role'),
+          h('div', { class: 'sub' }, `Reaches ${r.reached} domain${r.reached === 1 ? '' : 's'}${r.before ? ` (was ${r.before.reached}: +${r.gained.length}, −${r.lost.length})` : ''}`),
+          r.abilities.length ? r.abilities.map(a => h('div', { class: 'ability' }, h('span', { class: `tag${a.severity === 'high' ? ' warn' : ''}` }, a.severity), ' ', a.label, ' — as ', h('code', {}, a.domain),
+            r.before && !r.before.abilities.includes(a.id) ? h('span', { class: 'warn' }, ' (new)') : null, pathBox(a.path)))
+            : h('div', { class: 'muted' }, 'None of the risky abilities (unconfined, loading policy, permissive, /etc/shadow, raw disks, booleans).'),
+          r.gained.length ? h('details', {}, h('summary', {}, `${r.gained.length} domain(s) it can reach now and couldn't before`), r.gained.map(g => h('div', {}, h('code', {}, g.name), pathBox(g.path)))) : null,
+          r.lost.length ? h('details', {}, h('summary', {}, `${r.lost.length} domain(s) it can no longer reach`), h('div', { class: 'small' }, r.lost.join(', '))) : null,
+          (r.notes || []).map(n => h('div', { class: 'muted small' }, n))));
+      }
+    }
+    return box;
+  }
+
   function renderPlan() {
     const pv = $('preview');
     pv.textContent = '';
@@ -246,6 +308,7 @@
     const blocking = plan.problems.filter(p => !p.startsWith('Note:'));
     $('apply').disabled = !!blocking.length || !plan.files.length;
     if (plan.problems.length) pv.append(h('div', { class: 'problems' }, plan.problems.map(p => h('div', { class: p.startsWith('Note:') ? 'note' : 'error' }, p))));
+    pv.append(reachBox(!!blocking.length));
     if (!plan.files.length) { pv.append(h('div', { class: 'pad muted' }, 'No changes.')); return; }
     if (tab >= plan.files.length) tab = 0;
     pv.append(h('div', { class: 'tabs' }, plan.files.map((f, i) => h('button', { class: `tab${i === tab ? ' sel' : ''}`, title: f.path, onclick: () => { tab = i; renderPlan(); } },
@@ -262,11 +325,15 @@
       if (m.keep && m.model) model = { ...m.model, prefix: m.info.model.prefix, cats: m.info.standalone ? '' : m.model.cats };
       else model = m.info.model;
       plan = null;
+      reach = null;
       $('title').textContent = info.isNew ? 'New User' : `User: ${model.name}_${model.standalone || (model.genUser && model.genUser.exists) ? 'u' : 'r'} (${info.module})`;
       $('apply').textContent = info.isNew ? 'Create' : 'Apply';
       $('status').textContent = '';
       render();
       if (model.name && info.isNew) changed();
+    } else if (m.cmd === 'preview') {
+      reach = { result: m.result, stale: false };
+      renderPlan();
     } else if (m.cmd === 'plan') {
       plan = m.plan;
       $('status').textContent = '';

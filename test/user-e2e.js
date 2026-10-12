@@ -55,6 +55,7 @@ const write = async (plan) => {
   await conn.sendRequest('selinux/reindex');
   await indexed;
 };
+const readSource0 = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
 const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
 
 (async () => {
@@ -212,6 +213,31 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
     lm.logins.push({ login: 'carol', range: '' });
     ep = await conn.sendRequest('selinux/userPlan', { model: lm, module: 'sadev' });
     check((ep.problems || []).some(p => /%post of .*sadev-selinux\.spec/.test(p)), 'logins of a standalone user: pointed to the spec');
+  }
+
+  // 7. Previews of what a user would reach (nothing written).
+  const pi = await conn.sendRequest('selinux/userInfo');
+  const am = pi.model;
+  Object.assign(am, { name: 'autouser', summary: 'Automation account', ways: ['ssh', 'cron'], roleCalls: ['sudo_role_template', 'cron_role'].filter(n => pi.catalog.roleCalls.some(c => c.n === n)),
+    switchTo: ['logops_r'], logins: [{ login: 'ansible', range: '' }] });
+  let pv = await conn.sendRequest('selinux/userPreview', { model: am });
+  check(!pv.error && pv.ways.some(w => w.source === 'sshd_t' && w.contexts[0].type === 'autouser_t') && pv.roles.join(' ') === 'autouser_r logops_r',
+    `new tree user preview (${pv.buildMs && (pv.buildMs / 1000).toFixed(1)} s): ssh lands in autouser_t, roles ${pv.roles}`, pv.error || pv);
+  check(!pv.error && pv.reached > 1 && !fs.existsSync(path.join(ws, 'policy/modules/roles/autouser.te')), `it reaches ${pv.reached} domains; nothing written`);
+  const sv = await conn.sendRequest('selinux/userInfo', { module: 'staff' });
+  const nm = JSON.parse(JSON.stringify(sv.model));
+  nm.roleCalls = nm.roleCalls.filter(n => n !== 'sudo_role_template');
+  pv = await conn.sendRequest('selinux/userPreview', { model: nm, module: 'staff' });
+  check(!pv.error && pv.before && pv.lost.includes('staff_sudo_t') && pv.reached < pv.before.reached, `staff without sudo: reaches ${pv.reached} (was ${pv.before && pv.before.reached}), loses ${(pv.lost || []).slice(0, 5).join(' ')}`, pv.error || pv);
+  check(!readSource0(path.join(ws, 'policy/modules/roles/staff.te')).includes('#preview'), 'staff.te untouched');
+  if (sai.standalone) {
+    const sp = JSON.parse(JSON.stringify(sai.model));
+    Object.assign(sp, { name: 'sapre', ways: ['ssh'], roleCalls: ['sudo_role_template'], switchTo: ['sysadm_r'], logins: [], grantUsers: [] });
+    pv = await conn.sendRequest('selinux/userPreview', { model: sp, standalone: true, license: 'MIT' });
+    check(!pv.error && pv.standalone && pv.roles.join(' ') === 'sapre_r sysadm_r' && pv.ways.some(w => w.contexts[0].type === 'sapre_t'),
+      `standalone preview (linked with the installed policy, ${pv.buildMs} ms): roles ${pv.roles}, ssh lands in sapre_t`, pv.error || pv);
+    const sys = pv.abilities && pv.abilities.length;
+    check(!pv.error && pv.reached > 1, `it reaches ${pv.reached} domains, ${sys} risky abilit${sys === 1 ? 'y' : 'ies'} (${(pv.abilities || []).map(a => `${a.id}@${a.domain}`).join(', ')})`);
   }
 
   proc.kill();

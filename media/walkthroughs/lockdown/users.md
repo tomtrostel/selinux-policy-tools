@@ -42,6 +42,13 @@ line, the role in `kernel.te`, `seusers` and its own contexts file. After
 the build, **Logins and Users** shows where its logins land and what it can
 reach.
 
+For an account that scripts log in as (Ansible, backups), **Start from →
+Automation account** sets up ssh and cron logins with sudo into one narrow
+role, and shows the sudoers line to add. **Preview what it can reach**
+builds the policy with the planned files in a scratch copy and shows where
+its logins land and what they can reach, before anything is written; for
+an existing user, what the change adds or takes away.
+
 A new user can also be **Standalone**: a module of its own built against
 the host's devel headers, with an RPM spec whose install script creates the
 SELinux user and its logins with `semanage` and installs its contexts file.

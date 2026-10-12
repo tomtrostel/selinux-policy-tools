@@ -818,7 +818,32 @@ so far covered by the e2e tests only.
    disabled. e2e section 6 (CLIP workspace on melody): plan, RHEL-form sudo
    call, build, make rpm, rpm --scripts/-qpl, read back, no-op, edit; the
    RPM wasn't installed (needs root).
-   Phase 2 (rest): automation preset + reach preview (2d). Plan agreed: kind of user from the tree's
+   Phase 2d, automation preset + reach preview (done, unreleased; "ok lets
+   do step d"): webview automationPreset() (kind unpriv: restricted
+   templates forbid setuid so sudo; ways ssh + cron; roleCalls
+   sudo_role_template + cron_role; no extra rights; model.preset) and
+   presetNote() (narrow role to switch to, sudoers line ROLE=/TYPE=).
+   Server userPlan() factored out of the request; `selinux/userPreview`
+   {model, module, standalone, license}: tree = buildTree(variant
+   'userpreview') with the planned files as `files` overlays (spec overlay
+   sources replaced by scratch copies, tree files added/replaced by
+   tree-relative path); standalone = build.buildModule(te, planned texts)
+   + linkWithInstalled; ways = logins.entries from the planned/current
+   contexts file + default_contexts; roles from the built policy's user,
+   else R + switchTo (policy_query reach takes `roles` for a user semanage
+   will create); userReach(bin, U, starts, roles) (cache key includes
+   roles), reachAbilities(); existing tree user: before = last build →
+   gained (with paths) / lost. Webview reachBox (button, building, result,
+   stale after a change). e2e section 7 (CLIP, RHEL 9): new tree user,
+   staff without sudo loses staff_sudo_t, standalone linked. Found on RHEL:
+   removing sudo_role_template from staff.te left an optional_policy with
+   only a nested optional_policy (crontab_domtrans(staff_sudo_t)) →
+   checkmodule "This block has no require section"; editTe now deletes a
+   touched optional_policy whose remaining content is only nested
+   optional_policy blocks or comments (service survey unchanged).
+   Step 9 is complete up to release; open: MCS, Model Context Protocol,
+   login checks in selinux.checks, comparing with the host's semanage
+   changes (the user's "later" list). Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role
