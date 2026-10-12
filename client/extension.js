@@ -808,6 +808,8 @@ function showServiceEditor(context, mod, prefill = null) {
   .portnum { display: inline-flex; gap: 2px; align-items: center; margin-right: 8px; }
   .kept { max-height: 300px; overflow: auto; }
   .chip.extra { flex-wrap: wrap; }
+  .egroup { border-left: 2px solid var(--vscode-panel-border); margin: 4px 0; padding-left: 8px; }
+  .egroup > summary { cursor: pointer; padding: 2px 0; }
   .grantsbox { flex-basis: 100%; }
   pre.grants { margin: 4px 0; padding: 4px 8px; background: var(--vscode-textCodeBlock-background); font-family: var(--vscode-editor-font-family); font-size: .88em; white-space: pre-wrap; max-height: 260px; overflow: auto; }
   .iface { border-top: 1px solid var(--vscode-panel-border); padding: 4px 0 6px; }

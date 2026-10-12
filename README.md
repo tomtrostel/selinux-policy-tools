@@ -394,6 +394,14 @@ as is*, each line clickable. Removing a file type, a boolean or a helper that th
 it. A path given for two types (say the service's program and a helper's)
 is refused too, since `setfiles` rejects the build.
 
+**Long lists of other interfaces** (more than 12, as on sshd or xdm) are
+grouped by module: one collapsible line per module with its count
+(`xdm_t` on RHEL 9: 255 interfaces in 70 modules, devices 33, files 26,
+userdomain 18, …), a filter that narrows them as you type (name, words of
+the description, module; groups with matches open, counts show "3 of 33"),
+and *Expand all* / *Collapse all*. Each entry keeps its ▸ (what it compiles
+to) and ✕.
+
 **Finding interfaces.** The keyword search in *Other interfaces* ranks
 results instead of listing them alphabetically: whole parts of an interface
 name count most, then the types it requires (a type such as `etc_t` puts

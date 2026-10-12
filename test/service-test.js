@@ -639,6 +639,31 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(/ports are in Network/.test(form.textContent), 'no match for a port: points to Network');
   ks().value = ''; ks().fire('input');
   send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  // A long list of other interfaces: grouped by module, filtered in place.
+  {
+    const GI = [...Array.from({ length: 8 }, (_, i) => ({ n: `dev_thing_${i}`, s: `Device thing ${i}.`, m: 'devices' })), ...Array.from({ length: 6 }, (_, i) => ({ n: `files_thing_${i}`, s: `File thing ${i}.`, m: 'files' })),
+      { n: 'logging_send_syslog_msg', s: 'Send syslog messages.', m: 'logging' }];
+    const last0 = last('plan').model;
+    send({ cmd: 'init', info: { ...info, interfaces: GI, licenses: null, standalone: false, canStandalone: false, model: { ...last0, extra: GI.map(i => i.n) } }, keep: false });
+    const groups = () => find(e => e.attrs.class === 'egroup');
+    check(groups().length === 3 && groups().every(g => !g.open) && /15 in 3 modules/.test(form.textContent), `15 other interfaces: grouped by module, closed (${groups().map(g => g.children[0].textContent).join(' | ')})`);
+    const gfilter = find(e => e.tag === 'input' && e.attrs.placeholder === 'Filter: name, words, module')[0];
+    gfilter.value = 'device 3'; gfilter.fire('input');
+    const vis = groups().filter(g => !g.hidden);
+    check(vis.length === 1 && vis[0].module === 'devices' && vis[0].open && vis[0].chipsOf.filter(c => !c.hidden).length === 1 && /1 of 8/.test(vis[0].textContent) && /1 of 15 match/.test(form.textContent), 'the filter keeps only matching interfaces, opening their group');
+    gfilter.value = ''; gfilter.fire('input');
+    check(groups().every(g => !g.hidden && !g.open), 'clearing it restores the closed groups');
+    buttonText('Expand all').fire('click');
+    check(groups().every(g => g.open), 'Expand all opens every group');
+    const otherSec = find(e => e.tag === 'details' && (e.attrs.class || '').includes('card') && /Other interfaces/.test(e.children[0].textContent))[0];
+    otherSec.open = true;
+    const files0 = groups().find(g => g.module === 'files');
+    files0.chipsOf[0].all(e => e.tag === 'button' && e.textContent === '✕')[0].fire('click');
+    await wait(300);
+    check(last('plan').model.extra.length === 14 && !last('plan').model.extra.includes('files_thing_0'), 'removing one from a group removes that interface');
+    check(groups().every(g => g.open) && find(e => e.tag === 'details' && (e.attrs.class || '').includes('card') && /Other interfaces/.test(e.children[0].textContent))[0].open, 'after the change, the groups and the section stay open');
+    send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  }
   // Other interfaces: what one compiles to (on demand), and finding one by what the service needs.
   const extraChip = () => find(e => (e.attrs.class || '').split(' ').includes('extra'))[0];
   check(!!extraChip(), 'existing other interfaces are listed');

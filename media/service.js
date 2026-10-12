@@ -429,16 +429,61 @@
     return [search, results];
   }
 
+  // Long lists of other interfaces (sshd, xdm, …) are grouped by module, with a filter.
+  const GROUP_AT = 12;
+  const openGroups = new Set();
+  let extraFilter = '';
+
   function extraSection() {
     const byName = new Map(info.interfaces.map(i => [i.n, i]));
-    const chips = h('div', { class: 'chips' }, model.extra.map((n, i) => {
+    const modOf = (n) => (byName.get(n) || {}).m || n.split('_')[0];
+    const chipOf = (n) => {
       const d = byName.get(n);
       const g = grantsToggle(n);
-      return h('span', { class: 'chip on extra', title: d ? d.s : '' }, g.btn, h('code', {}, n), d && d.s ? h('span', { class: 'muted' }, ' ' + d.s.slice(0, 70)) : null,
-        h('button', { class: 'icon', title: 'Remove this interface call', onclick: () => { model.extra.splice(i, 1); render(); changed(); } }, '✕'), g.box);
-    }));
+      const c = h('span', { class: 'chip on extra', title: d ? d.s : '' }, g.btn, h('code', {}, n), d && d.s ? h('span', { class: 'muted' }, ' ' + d.s.slice(0, 70)) : null,
+        h('button', { class: 'icon', title: 'Remove this interface call', onclick: () => { model.extra = model.extra.filter(x => x !== n); render(); changed(); } }, '✕'), g.box);
+      c.match = `${n} ${d ? d.s : ''} ${modOf(n)}`.toLowerCase();
+      return c;
+    };
     const add = (n) => { if (!model.extra.includes(n)) model.extra.push(n); render(); changed(); };
-    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy. ▸ shows what one compiles to.'), chips,
+    let list;
+    if (model.extra.length > GROUP_AT) {
+      const groups = new Map();
+      for (const n of model.extra) { const m = modOf(n); if (!groups.has(m)) groups.set(m, []); groups.get(m).push(n); }
+      const boxes = [...groups.keys()].sort().map(m => {
+        const chips = groups.get(m).slice().sort().map(chipOf);
+        const count = h('span', { class: 'muted' }, ` ${chips.length}`);
+        const d = h('details', { class: 'egroup', open: openGroups.has(m) ? true : null, ontoggle: (e) => { if (!extraFilter) { if (e.target.open) openGroups.add(m); else openGroups.delete(m); } } },
+          h('summary', { title: `Interfaces of the ${m} module this service calls` }, h('b', {}, m), count), h('div', { class: 'chips' }, chips));
+        Object.assign(d, { chipsOf: chips, countEl: count, module: m });
+        return d;
+      });
+      // Narrow the list in place as the filter is typed (no re-render: the field keeps its focus).
+      const applyFilter = () => {
+        const words = extraFilter.toLowerCase().split(/\s+/).filter(Boolean);
+        let shown = 0;
+        for (const d of boxes) {
+          let n = 0;
+          for (const c of d.chipsOf) { const ok = words.every(w => c.match.includes(w)); c.hidden = !ok; if (ok) n++; }
+          d.hidden = !n;
+          d.countEl.textContent = words.length ? ` ${n} of ${d.chipsOf.length}` : ` ${d.chipsOf.length}`;
+          d.open = words.length ? n > 0 : openGroups.has(d.module);
+          shown += n;
+        }
+        status.textContent = words.length ? `${shown} of ${model.extra.length} match` : `${model.extra.length} in ${boxes.length} modules`;
+      };
+      const status = h('span', { class: 'muted' });
+      const filter = h('input', { type: 'text', size: 28, spellcheck: 'false', value: extraFilter, placeholder: 'Filter: name, words, module',
+        title: 'Show only the interfaces whose name, description or module contains all these words', oninput: (e) => { extraFilter = e.target.value; applyFilter(); } });
+      const all = (open) => h('button', { class: 'chip', title: open ? 'Open every module group' : 'Close every module group', onclick: () => {
+        for (const d of boxes) { d.open = open; if (open) openGroups.add(d.module); else openGroups.delete(d.module); }
+      } }, open ? 'Expand all' : 'Collapse all');
+      list = [h('div', { class: 'row' }, filter, all(true), all(false), status), ...boxes];
+      applyFilter();
+    } else {
+      list = [h('div', { class: 'chips' }, model.extra.map(chipOf))];
+    }
+    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy. ▸ shows what one compiles to.'), ...list,
       ...ifaceSearch(model.extra, add), ...findByNeed(model.extra, add)], model.extra.length > 0 || info.isNew);
   }
 
@@ -653,7 +698,7 @@
     const form = $('form');
     const scroll = form.scrollTop;
     grantsSlots = new Map();
-    const open = [...form.querySelectorAll('details')].map(d => d.open);
+    const open = [...form.querySelectorAll('.card')].map(d => d.open); // the sections (not groups inside them)
     form.textContent = '';
     const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });

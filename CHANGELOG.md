@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Changed**
+
+* **Long lists of other interfaces** (service editor, more than 12): grouped
+  by module, collapsible, with counts, a filter that narrows them as you
+  type, and Expand all / Collapse all (`xdm_t` on RHEL 9: 255 interfaces in
+  70 modules).
+
 ## 0.10.1 (2026-10-11)
 
 **Changed**

@@ -368,7 +368,14 @@ so far covered by the e2e tests only.
    is exactly a required type 6); every word must match; +3 when the name
    is or starts with the words joined by _; −3 dontaudit, −1.5 RARE parts
    unless typed; + 0.8·log10(1 + uses); − length/100. 25 shown, "N more…".
-   Not done: grouping long lists by module (item 4).
+   Grouping long lists (item 4, done, unreleased): extraSection groups
+   model.extra by module (info.interfaces m, else the name's prefix) when
+   more than GROUP_AT = 12: details.egroup per module (sorted; open state in
+   openGroups), chips sorted; filter input narrows in place (chip.match =
+   name + summary + module, groups hidden/opened, counts "n of m", status
+   line) without re-render; Expand all / Collapse all. render() now restores
+   the sections' open state from `.card` elements only (nested details
+   would have broken the index-based restore).
    Read-only denials (done, 0.10.1; the user's open question, answered
    "do it"): rankInterfaces sets `writes` (perm weight > 1 beyond the need)
    and, when every denied perm has weight 1, scores writes candidates ×20;
