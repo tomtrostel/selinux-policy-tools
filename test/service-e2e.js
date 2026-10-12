@@ -310,6 +310,53 @@ const build = async (te) => {
   const back6 = await conn.sendRequest('selinux/serviceInfo', { module: 'logintest' });
   check(back6.model && back6.model.loginPty && ['loginpgm', 'sessions', 'loginrecords', 'ttys'].every(a => back6.model.access.includes(a)) && !back6.kept.length, 'logintest reads back with its login options and pty type', back6.model && { access: back6.model.access, pty: back6.model.loginPty, kept: back6.kept });
 
+  // 7. Services started by D-Bus activation, inetd, cron or as a mail server: listed, unchanged by a no-op
+  // edit, one line for a capability; a new service started by inetd, also by D-Bus and cron; one build.
+  const list7 = await conn.sendRequest('selinux/serviceList');
+  const edited7 = [];
+  for (const [mod, dom] of [['accountsd', 'accountsd_t'], ['colord', 'colord_t'], ['geoclue', 'geoclue_t'], ['comsat', 'comsat_t'], ['dbskk', 'dbskkd_t'], ['tcpd', 'tcpd_t'], ['sendmail', 'sendmail_t'], ['certwatch', 'certwatch_t'], ['backup', 'backup_t']]) {
+    const lm = list7.modules.find(x => x.module === mod);
+    if (!lm || !lm.domains.some(d => d.domain === dom)) { console.log(`     (${mod}: no ${dom} here)`); continue; }
+    const x = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+    if (x.unavailable) { check(false, `${mod} ${dom} opens in the editor`, x.unavailable); continue; }
+    const same = await conn.sendRequest('selinux/servicePlan', { model: x.model, module: mod });
+    const m7 = JSON.parse(JSON.stringify(x.model));
+    const cap = ['ipc_lock', 'sys_tty_config', 'audit_write', 'fsetid', 'sys_nice'].find(c => !m7.caps.includes(c));
+    m7.caps.push(cap);
+    const p7 = await conn.sendRequest('selinux/servicePlan', { model: m7, module: mod });
+    const changed = p7.files.filter(f => f.changed);
+    check(same.files.every(f => !f.changed) && !blocking(p7).length && changed.length === 1 && changed[0].kind === 'te' && changed[0].diff.filter(d => d[0] !== ' ').length <= 3,
+      `${mod} ${dom} (started by ${(x.model.entries || []).map(e => e.name).join(' + ')}${x.model.execElsewhere ? `, program type ${x.model.execType} from another module` : ''}): no-op unchanged, +${cap} changes one line`,
+      { problems: p7.problems, same: same.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')), diff: changed.map(f => f.diff.filter(d => d[0] !== ' ')) });
+    await write(p7);
+    edited7.push([mod, dom, cap]);
+  }
+  const st7 = info.catalog.starts;
+  const smod = (await conn.sendRequest('selinux/serviceInfo', {})).model;
+  // inetd if it is on in this tree, else systemd; an off one is refused as the main way.
+  const inetd7 = st7.main.find(s => s.name === 'inetd_tcp_service_domain');
+  const main7 = (inetd7 && !inetd7.off ? inetd7 : st7.main[0]).name;
+  if (inetd7 && inetd7.off) {
+    const pOff = await conn.sendRequest('selinux/servicePlan', { model: { ...smod, name: 'starttest', exec: ['/usr/sbin/starttest'], entries: [{ name: inetd7.name, args: [] }] }, module: null, where: info.defaultLayer });
+    check(blocking(pOff).some(p => /belongs to the inetd module, which is off in this policy/.test(p)), `inetd is off here (${inetd7.off}): refused as the main way`, pOff.problems);
+  }
+  Object.assign(smod, { name: 'starttest', summary: 'Start test service', exec: ['/usr/sbin/starttest'], entries: [{ name: main7, args: [] }, ...st7.also.map(s => ({ name: s.name, args: [] }))] });
+  const p8 = await conn.sendRequest('selinux/servicePlan', { model: smod, module: null, where: info.defaultLayer });
+  const t8 = p8.files.find(f => f.kind === 'te');
+  check(!blocking(p8).length && smod.entries.every(e => t8.text.includes(`${e.name}(starttest_t, starttest_exec_t)`)) && !(main7 !== 'init_daemon_domain' && /init_daemon_domain/.test(t8.text)),
+    `a new service started by ${smod.entries.map(e => e.name).join(' + ')} (offered: ${st7.main.map(s => s.name).join(', ')}; also ${st7.also.map(s => s.name).join(', ')})`, p8.problems || t8.text);
+  await write(p8);
+  r = await build(t8.path);
+  check(r.ok && r.validated, `tree with ${edited7.map(x => x[0]).join(', ')} edited and starttest builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
+  for (const [mod, dom, cap] of edited7) {
+    const back = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+    check(back.model && back.model.caps.includes(cap), `${mod} ${dom} reads back with ${cap}`);
+  }
+  const back8 = await conn.sendRequest('selinux/serviceInfo', { module: 'starttest' });
+  check(back8.model && JSON.stringify(back8.model.entries.map(e => e.name).sort()) === JSON.stringify(smod.entries.map(e => e.name).sort()) && !back8.kept.length, `starttest reads back started by ${back8.model && back8.model.entries.map(e => e.name).join(' + ')}`, back8.model && { entries: back8.model.entries, kept: back8.kept });
+  const tmp8 = r.workDir && path.join(r.workDir, 'tmp', 'starttest.tmp');
+  if (main7 === 'inetd_tcp_service_domain') check(tmp8 && fs.existsSync(tmp8) && /type_transition inetd_t starttest_exec_t:process starttest_t\s*;/.test(fs.readFileSync(tmp8, 'utf8')), 'built: inetd enters starttest_t');
+
   await conn.sendRequest('shutdown');
   conn.sendNotification('exit');
   await sleep(300);

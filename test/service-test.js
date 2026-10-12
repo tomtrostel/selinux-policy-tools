@@ -415,6 +415,41 @@ auth_login_pgm_domain(dm_t)
   check(!/init_daemon_domain/.test(o.te) && /userdom_spec_domtrans_all_users\(dm_t\)/.test(o.te) && /userdom_signal_all_users\(dm_t\)/.test(o.te) && /setuid/.test(o.te), 'an edit keeps init_domain/init_system_domain (no init_daemon_domain added)', o.te);
   r = svc.recognize(dm, lctx, { domain: 'dmx_t' });
   check(r.model.entries.length === 1 && r.model.entries[0].args.join() === 's0 - mcs_systemhigh' && svc.plan(JSON.parse(JSON.stringify(r.model)), lctx, dm).te === dm.te, 'a ranged entry keeps its range');
+  // Other ways to start a service: D-Bus activation and cron (optional_policy), inetd, a mail server.
+  {
+    const START = ['dbus_system_domain', 'cron_system_entry', 'inetd_tcp_service_domain', 'mta_mailserver', 'mta_sendmail_mailserver'];
+    const sctx = { ...ctx, has: (n) => KNOWN.has(n) || START.includes(n), optional: (n) => OPTIONAL.has(n) || START.includes(n) };
+    const cat = svc.catalog(sctx).starts;
+    check(cat.main.map(s => s.name).join() === 'init_daemon_domain,mta_mailserver,inetd_tcp_service_domain' && cat.also.map(s => s.name).join() === 'dbus_system_domain,cron_system_entry' && cat.also.every(s => s.help && s.optional),
+      'catalog: main ways to start it and further ones, only those the tree has', cat);
+    const ms = JSON.parse(JSON.stringify(model));
+    ms.entries.push({ name: 'dbus_system_domain', args: [] }, { name: 'cron_system_entry', args: [] });
+    const os = svc.plan(ms, sctx, null);
+    check(os.te.includes('init_daemon_domain(webby_t, webby_exec_t)') && os.te.includes("optional_policy(`\n\tcron_system_entry(webby_t, webby_exec_t)\n')") && os.te.includes("optional_policy(`\n\tdbus_system_domain(webby_t, webby_exec_t)\n')"),
+      'D-Bus activation and cron: in optional_policy, next to init_daemon_domain', os.te);
+    const rs = svc.recognize(os, sctx, {});
+    check(rs.model.entries.map(e => e.name).join() === 'init_daemon_domain,cron_system_entry,dbus_system_domain' && !rs.kept.length && svc.plan(JSON.parse(JSON.stringify(rs.model)), sctx, os).te === os.te, 'they read back as ways to start it; no-op unchanged', rs.model.entries);
+    let es = svc.plan({ ...JSON.parse(JSON.stringify(rs.model)), entries: rs.model.entries.filter(x => x.name !== 'cron_system_entry') }, sctx, os);
+    check(changedLines(os.te, es.te).every(x => x[0] === '-') && !/cron_system_entry/.test(es.te) && /dbus_system_domain/.test(es.te), 'removing cron removes its optional block only', changedLines(os.te, es.te));
+    // inetd instead of systemd: at the top level.
+    const mi = { ...JSON.parse(JSON.stringify(model)), entries: [{ name: 'inetd_tcp_service_domain', args: [] }] };
+    const oi = svc.plan(mi, sctx, null);
+    check(/\ninetd_tcp_service_domain\(webby_t, webby_exec_t\)\n/.test(oi.te) && !/init_daemon_domain/.test(oi.te) && svc.daemonDomains(oi.te)[0].via === 'inetd_tcp_service_domain', 'inetd as the main way: top level, no init_daemon_domain; a service too', oi.te);
+    check(svc.validate({ ...mi, entries: [...mi.entries, { name: 'init_daemon_domain', args: [] }] }, sctx, { isNew: true }).some(p => /started by inetd_tcp_service_domain and init_daemon_domain; choose one/.test(p)) &&
+      svc.validate({ ...mi, entries: [] }, sctx, { isNew: true }).some(p => /Nothing starts the service/.test(p)), 'validate: two main ways, or none');
+    const offCtx = { ...sctx, off: (n) => (/^inetd_/.test(n) ? 'inetd' : false) };
+    check(svc.validate(mi, offCtx, { isNew: true }).some(p => /belongs to the inetd module, which is off/.test(p)) && !svc.validate(ms, offCtx, { isNew: true }).some(p => /is off/.test(p)) &&
+      svc.catalog(offCtx).starts.main.find(s => s.name === 'inetd_tcp_service_domain').off === 'inetd', 'a main way whose module is off: refused, marked in the catalog');
+    // An existing module started only by D-Bus activation in optional_policy (accountsd), and a sendmail-like one.
+    const ac = { te: 'policy_module(acc, 1.0.0)\n\ntype acc_t;\ntype acc_exec_t;\n\noptional_policy(`\n\tdbus_system_domain(acc_t, acc_exec_t)\n\')\n\nallow acc_t self:fifo_file rw_fifo_file_perms;\n', if: '', fc: '' };
+    const ra = svc.recognize(ac, sctx, {});
+    check(!ra.error && ra.model.entries.map(e => e.name).join() === 'dbus_system_domain' && !ra.kept.length && svc.plan(JSON.parse(JSON.stringify(ra.model)), sctx, ac).te === ac.te, 'started only by D-Bus activation (in optional_policy): a service, no-op unchanged', ra.error || [ra.model.entries, ra.kept]);
+    const sm = { te: 'policy_module(sm, 1.0.0)\n\ntype sendmail_t;\nmta_sendmail_mailserver(sendmail_t)\n\nallow sendmail_t self:capability setuid;\n', if: '', fc: '' };
+    const rm = svc.recognize(sm, sctx, {});
+    check(!rm.error && rm.model.execType === 'sendmail_exec_t' && rm.model.execElsewhere && svc.plan(JSON.parse(JSON.stringify(rm.model)), sctx, sm).te === sm.te, 'mta_sendmail_mailserver(D): program type from the mta module, not declared here', rm.error || rm.model);
+    const em = JSON.parse(JSON.stringify(rm.model)); em.caps.push('kill');
+    check(!/type sendmail_exec_t/.test(svc.plan(em, sctx, sm).te), 'an edit doesn’t declare sendmail_exec_t');
+  }
   // A domain declared by a template.
   const sv = { te: `policy_module(srv, 1.0.0)
 
@@ -564,7 +599,8 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
 
 (async () => {
   check(posted[0] && posted[0].cmd === 'ready', 'webview asks for data when loaded');
-  const info = { isNew: true, catalog: svc.catalog(ctx), ports: [{ name: 'http', nums: 'tcp 80,443' }, { name: 'ntp', nums: 'udp 123' }],
+  const startsCat = svc.catalog({ ...ctx, has: (n) => ctx.has(n) || ['dbus_system_domain', 'cron_system_entry', 'inetd_tcp_service_domain'].includes(n), optional: () => true }).starts;
+  const info = { isNew: true, catalog: { ...svc.catalog(ctx), starts: startsCat }, ports: [{ name: 'http', nums: 'tcp 80,443' }, { name: 'ntp', nums: 'udp 123' }],
     interfaces: [{ n: 'dev_read_urand', s: 'Read from pseudo random number generator devices (e.g., /dev/urandom).', m: 'devices' }, { n: 'nis_use_ypbind', s: 'Use the ypbind service.', m: 'nis' }],
     layers: ['contrib', 'services', 'system'], defaultLayer: 'contrib', mode: 'tree', model: svc.newModel() };
   send({ cmd: 'init', info });
@@ -573,6 +609,16 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(['Service', 'Files', 'Network', 'System access', 'Process and capabilities', 'Other interfaces', 'Interfaces for other modules'].every(s => sections.includes(s)), `sections: ${sections.join(', ')}`);
   const name = find(e => e.attrs.id === 'name')[0];
   name.value = 'webby'; name.fire('input');
+  // Started by: systemd by default; inetd instead, cron as well, then back.
+  const startSel = () => find(e => e.tag === 'select' && /What starts the program/.test(e.attrs.title || ''))[0];
+  check(startSel() && startSel().children.filter(o => 'selected' in o.attrs).map(o => o.value).join() === 'init_daemon_domain' && startSel().children.some(o => o.value === 'inetd_tcp_service_domain'), 'Started by: systemd selected, inetd offered');
+  startSel().value = 'inetd_tcp_service_domain'; startSel().fire('change');
+  const cronBox = () => find(e => e.tag === 'label' && /Also: Run by cron/.test(e.textContent))[0].all(e => e.tag === 'input')[0];
+  cronBox().checked = true; cronBox().fire('change');
+  await wait(400);
+  check(JSON.stringify(last('plan').model.entries.map(e => e.name)) === '["inetd_tcp_service_domain","cron_system_entry"]', 'Started by inetd, also cron: in the planned model', last('plan').model.entries);
+  startSel().value = 'init_daemon_domain'; startSel().fire('change');
+  cronBox().checked = false; cronBox().fire('change');
   buttonText('+ State data').fire('click');
   checkbox('Bind ports below 1024').checked = true; checkbox('Bind ports below 1024').fire('change');
   checkbox('Use the D-Bus system bus').checked = true; checkbox('Use the D-Bus system bus').fire('change');
@@ -870,6 +916,9 @@ async function survey(root) {
     m => { if (!m.files.some(r => r.type === `${m.domain.replace(/_t$/, '')}_devpts_t`)) m.loginPty = !m.loginPty; }, // (refused when that type is a file type already)
     // A file type with custom rules switched to a standard level (its rules replaced).
     m => { const f = m.files.find(x => x.access === 'custom'); if (f) { f.access = 'read'; delete f.rules; } },
+    // Ways it is started: cron added; a further way (D-Bus activation, cron) removed.
+    m => { m.entries = m.entries || []; if (!m.entries.some(e => e.name === 'cron_system_entry')) m.entries.push({ name: 'cron_system_entry', args: [] }); },
+    m => { const i = (m.entries || []).findIndex(e => ['dbus_system_domain', 'cron_system_entry'].includes(e.name)); if (i >= 0 && m.entries.length > 1) m.entries.splice(i, 1); },
     // File access under a boolean: manage on a file type it only reads (or not at all), in a new boolean; a level changed.
     m => { const f = m.files.find(x => !['unit', 'initrc'].includes(x.kind) && ['read', 'none'].includes(x.access)); if (f) m.booleans.push({ name: m.name.replace(/-/g, '_') + '_e2e_write', desc: 'Test boolean.', default: false, _new: true, grants: { files: [{ type: f.type, access: 'manage' }] } }); },
     m => { for (const b of m.booleans) { const x = (b.grants.files || [])[0]; if (x) { x.access = x.access === 'read' ? 'manage' : 'read'; return; } } },
@@ -885,7 +934,7 @@ async function survey(root) {
   for (const f of idx.files.values()) {
     if (!f.path.endsWith('.te') || !/modules/.test(f.path)) continue;
     const te = fs.readFileSync(f.path, 'utf8');
-    if (!/\binit_(ranged_)?(daemon_|system_)?domain\(/.test(te)) continue;
+    if (!svc.ENTRY_RE.test(te)) continue;
     const base = f.path.slice(0, -3);
     const rd = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '');
     const texts = { te, if: rd(base + '.if'), fc: rd(base + '.fc') };
@@ -898,7 +947,7 @@ async function survey(root) {
     if (r.error) continue;
     doms++;
     if (r.model.declaredBy) viaTemplate++;
-    if ((r.model.entries || []).some(e => e.name !== 'init_daemon_domain')) otherEntry++;
+    if (!(r.model.entries || []).some(e => e.name.startsWith('init_'))) otherEntry++;
     const o = svc.plan(JSON.parse(JSON.stringify(r.model)), tctx, texts);
     if (o.te === texts.te && o.if === texts.if && o.fc === texts.fc) same++; else bad.push(`unchanged ${f.path} ${dom}`);
     for (const [i, mut] of muts.entries()) {
@@ -913,6 +962,6 @@ async function survey(root) {
     }
     }
   }
-  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by init_system_domain/init_domain/ranged variants, ${viaTemplate} declared by a template)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
+  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by D-Bus, inetd, cron or as a mail server only, ${viaTemplate} declared by a template)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
   check(good === edits, `${root}: ${good} of ${edits} edits read back as the edited model and are idempotent`, bad.filter(b => b.startsWith('edit')).slice(0, 10));
 }

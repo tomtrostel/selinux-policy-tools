@@ -381,11 +381,21 @@ service editor again, can be installed with *SELinux: Install Module*, and
 take fixes from the denial assistant. The service's own package can then
 require `<name>-selinux`.
 
-**Editing an existing service** opens any module whose domains init
-starts: `init_daemon_domain()`, `init_system_domain()`, `init_domain()` or
-their ranged variants (several domains: pick one), so on RHEL also
-`xserver` (`xdm_t`, `xserver_t`), `dbus`, `rpm`, `getty`, `mount` and others
-declared that way. How init starts a domain is kept as written (an edit
+**Editing an existing service** opens any module with a domain something
+starts as a system service: init (`init_daemon_domain()`,
+`init_system_domain()`, `init_domain()` or their ranged variants), D-Bus
+activation (`dbus_system_domain()`: accountsd, colord, geoclue, …), inetd
+or xinetd (`inetd_service_domain()` and its TCP/UDP variants: comsat,
+tcpd, …; `ucspitcp_service_domain()`), cron (`cron_system_entry()`:
+certwatch, backup, tripwire, …) or as a mail server (`mta_mailserver()`,
+`mta_sendmail_mailserver()`), at the top level or in `optional_policy`
+(several domains: pick one). So on RHEL also `xserver` (`xdm_t`,
+`xserver_t`), `dbus`, `rpm`, `getty`, `mount` and others declared that way.
+**Started by** shows how: systemd, systemd as a mail server, or inetd as
+the main way, plus D-Bus activation and cron as further ones (written in
+`optional_policy`). A main way whose module is off in the tree (inetd in
+CLIP) is shown but can't be chosen, since the module would fail to link.
+A way the list doesn't offer is kept as written (an edit
 never turns `init_domain` into `init_daemon_domain`), and a domain declared
 by a template (`ssh_server_template(sshd)` declares `sshd_t`) reads back
 with that call as its declaration. The editor reads
@@ -898,11 +908,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   from `apache.te` in `optional_policy`, and the rebuilt tree allows it.
   The practice module's four sample denials get their intended verdicts,
   and its HTTP fix resolves after a build (`npm run test:tutorial`).
-* Service editor: every domain init starts in the Fedora tree (488 in 376
-  modules, 92 of them started by `init_system_domain`, `init_domain` or a
-  ranged variant and 11 declared by a template) reads back into the form,
-  and saving it unchanged leaves all files byte-identical; 30 kinds of
-  edits on each (14,640; the login options, the login pty type and custom file access
+* Service editor: every service domain in the Fedora tree (523 in 397
+  modules; 36 started only by D-Bus activation, inetd, cron or as a mail
+  server, 12 declared by a template) reads back into the form,
+  and saving it unchanged leaves all files byte-identical; 34 kinds of
+  edits on each (17,782; file access under a boolean, the ways it is started, the login options, the login pty type and custom file access
   included) read back and repeat as a no-op. Earlier, on the main daemon
   domain of 326 modules: 26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
@@ -1110,9 +1120,12 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Find by need and ▸ need the policy's m4 output: in a tree, a build;
   standalone, the devel headers. Find by need offers interfaces that take
   just the domain.
-* Services only: a domain started by init (`init_daemon_domain()`,
-  `init_system_domain()`, `init_domain()` or a ranged variant). User
-  applications and CGI scripts are edited in the `.te` as before. Big
+* Services only: a domain started by init, D-Bus activation, inetd, cron or
+  as a mail server (see *Editing an existing service*). Daemons whose start
+  call is inside a module's own template (`rpc_domain_template(nfsd)`,
+  `rhcs_domain_template(fenced)`, …), user applications
+  (`application_domain`) and CGI scripts (`apache_content_template`) are
+  edited in the `.te` as before. Big
   daemons such as sshd, xdm or the X server still list many interfaces
   under *Other interfaces* (no option describes them) and keep the rules
   of the module's other domains and those in `ifdef` blocks as they are.

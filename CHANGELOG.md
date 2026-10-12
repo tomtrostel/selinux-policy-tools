@@ -16,6 +16,17 @@
   boolean's level, and other rules on the type in the block go with it;
   rules that match no level stay kept as written. A level the service
   always has anyway is noted.
+* **Service editor: services not started by init.** Modules whose service
+  is started by D-Bus activation (`dbus_system_domain`: accountsd, colord,
+  geoclue, …), inetd/xinetd (`inetd_service_domain` and its TCP/UDP
+  variants: comsat, tcpd, dbskk; `ucspitcp_service_domain`), cron
+  (`cron_system_entry`: certwatch, backup, tripwire, …) or as a mail server
+  (`mta_mailserver`, `mta_sendmail_mailserver`) now open in the editor, also
+  when that call is in `optional_policy` (Fedora: 523 service domains in 397
+  modules, was 488 in 376). A new **Started by** row chooses systemd,
+  systemd as a mail server or inetd, and adds D-Bus activation and cron as
+  further ways (in `optional_policy`). A main way whose module is off in
+  the tree (inetd in CLIP) is shown but refused, since it would fail to link.
 
 ## 0.10.2 (2026-10-11)
 

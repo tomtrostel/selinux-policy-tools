@@ -118,8 +118,32 @@ const ACCESS_GROUPS = [
  * Calls that make a domain one init/systemd starts: (domain, program type[, MLS range]).
  * New services use init_daemon_domain; existing modules keep whichever they have.
  */
-const ENTRY_CALLS = ['init_daemon_domain', 'init_ranged_daemon_domain', 'init_system_domain', 'init_ranged_system_domain', 'init_domain', 'init_ranged_domain'];
+const INIT_CALLS = ['init_daemon_domain', 'init_ranged_daemon_domain', 'init_system_domain', 'init_ranged_system_domain', 'init_domain', 'init_ranged_domain'];
+/*
+ * Other ways a system service is started, each (domain, program type): D-Bus activation, a mail server,
+ * inetd/xinetd (or ucspi-tcp), cron. Their modules may be off, so they usually sit in optional_policy.
+ * MAIN: one of them starts the service ("Started by"); ALSO: a further way, next to the main one.
+ */
+const START_CALLS = ['dbus_system_domain', 'mta_mailserver', 'mta_sendmail_mailserver', 'inetd_service_domain', 'inetd_tcp_service_domain', 'inetd_udp_service_domain', 'inetd_core_service_domain', 'ucspitcp_service_domain', 'cron_system_entry'];
+const ENTRY_CALLS = [...INIT_CALLS, ...START_CALLS];
 const ENTRY = new Set(ENTRY_CALLS);
+// Entry calls with the program type built in: only the domain is passed.
+const ENTRY_EXEC = { mta_sendmail_mailserver: 'sendmail_exec_t' };
+const ENTRY_RE = new RegExp(`\\b(${ENTRY_CALLS.join('|')})\\s*\\(`);
+const STARTS = {
+  main: [
+    ['init_daemon_domain', 'systemd (or an init script)', 'systemd starts it from its unit file (or init from a SysV script), and it runs in its domain. The usual choice.'],
+    ['mta_mailserver', 'systemd, as a mail server', 'systemd starts it as the system’s mail server (MTA): like systemd, plus it becomes a mailserver_domain, which mail clients and delivery agents are allowed to talk to.'],
+    ['inetd_service_domain', 'inetd / xinetd (TCP and UDP)', 'inetd or xinetd listens on its port and starts the program for each connection; the program gets the connection as its standard input and output.'],
+    ['inetd_tcp_service_domain', 'inetd / xinetd (TCP)', 'inetd or xinetd starts the program for each TCP connection and hands it the socket.'],
+    ['inetd_udp_service_domain', 'inetd / xinetd (UDP)', 'inetd or xinetd starts the program when a UDP datagram arrives on its port.'],
+  ],
+  also: [
+    ['dbus_system_domain', 'D-Bus activation', 'The D-Bus system bus may start it on demand when a client calls its bus name (a D-Bus service file with SystemdService= or Exec=). Also makes it a system bus service.'],
+    ['cron_system_entry', 'Run by cron', 'System cron jobs (/etc/cron.d, /etc/cron.daily, …) may run the program, and it runs in its domain instead of the cron job’s.'],
+  ],
+};
+const ALSO = new Set(STARTS.also.map(s => s[0]));
 
 const ACCESS = Object.fromEntries(ACCESS_GROUPS.flatMap(([, items]) => items.map(([id, label, calls]) => [id, { id, label, calls }])));
 
@@ -421,7 +445,14 @@ function unitsOf(model, ctx) {
 
   const entries = model.entries && model.entries.length ? model.entries : [{ name: 'init_daemon_domain', args: [] }];
   const by = model.declaredBy || null;
-  add('domain', { D, E, entries, by }, [by ? call(by.name, by.args, 'decl') : type(D), ...(by && by.execToo ? [] : [type(E)]), ...entries.map(e => call(e.name, [D, E, ...(e.args || [])], 'decl'))]);
+  // Further ways to start it (D-Bus activation, cron) go in optional_policy when their module may be off;
+  // the main one stays at the top level, since without it the type isn't a domain at all.
+  const entryStmt = (e) => {
+    const args = ENTRY_EXEC[e.name] ? [D] : [D, E, ...(e.args || [])];
+    return ALSO.has(e.name) && ctx.optional(e.name) ? call(e.name, args, 'local', 'start') : call(e.name, args, 'decl');
+  };
+  const elsewhere = !!model.execElsewhere || (by && by.execToo);
+  add('domain', { D, E, entries, by, elsewhere: !!model.execElsewhere }, [by ? call(by.name, by.args, 'decl') : type(D), ...(elsewhere ? [] : [type(E)]), ...entries.map(entryStmt)]);
   if (model.loginPty) {
     const P = `${D.replace(/_t$/, '')}_devpts_t`;
     add('loginpty', 1, [type(P), call('term_login_pty', [P], 'decl'),
@@ -629,14 +660,19 @@ function scanTe(text) {
   return { parse: p, lines, stmts, blocks };
 }
 
-/** Domains init starts, from a module's .te: (domain, program type) of its init_*domain() calls; init_daemon_domain's program type wins. */
+/**
+ * Services of a module's .te: (domain, program type) of its start calls (init_*domain, D-Bus activation,
+ * inetd, cron, mail server). init_daemon_domain's program type wins, then other init_* calls'.
+ */
 function daemonDomains(teText) {
   const out = [];
+  const rank = (n) => (n === 'init_daemon_domain' ? 0 : INIT_CALLS.includes(n) ? 1 : 2);
   for (const c of parsePolicy(teText).calls) {
-    if (!ENTRY.has(c.name) || c.inDef || c.args.length < 2) continue;
+    if (!ENTRY.has(c.name) || c.inDef || c.args.length < (ENTRY_EXEC[c.name] ? 1 : 2) || !/^\w+$/.test(c.args[0])) continue;
+    const exec = ENTRY_EXEC[c.name] || c.args[1];
     const have = out.find(x => x.domain === c.args[0]);
-    if (!have) out.push({ domain: c.args[0], exec: c.args[1], via: c.name });
-    else if (c.name === 'init_daemon_domain' && have.via !== 'init_daemon_domain') Object.assign(have, { exec: c.args[1], via: c.name });
+    if (!have) out.push({ domain: c.args[0], exec, via: c.name });
+    else if (rank(c.name) < rank(have.via)) Object.assign(have, { exec, via: c.name });
   }
   return out;
 }
@@ -660,7 +696,7 @@ function recognize(texts, ctx, opts = {}) {
   const te = scanTe(texts.te || '');
   const domains = daemonDomains(texts.te || '');
   const mod = te.parse.module || opts.module;
-  if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() (or init_system_domain(), init_domain(), …) call, so it isn't a service module the editor understands.` };
+  if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() (or another call that starts a service: init_system_domain(), dbus_system_domain(), inetd_service_domain(), cron_system_entry(), …), so it isn't a service module the editor understands.` };
   const dom = domains.find(x => x.domain === opts.domain) || domains.find(x => x.domain === `${mod}_t`) || domains[0];
   const D = dom.domain, E = dom.exec;
   const editable = te.stmts.filter(s => s.top || s.opt || s.bool);
@@ -674,14 +710,17 @@ function recognize(texts, ctx, opts = {}) {
   if (m) model.summary = m[1];
   const claim = (pred) => { for (const s of editable) if (!claimed.has(s) && pred(s)) claimed.add(s); };
   claim(s => s.kind === 'type' && (s.name === D || s.name === E));
-  // How init starts it (init_daemon_domain, init_system_domain, a ranged variant, …), kept as written.
+  // How it is started (init_daemon_domain, init_system_domain, a ranged variant, D-Bus activation, inetd, cron, …),
+  // at the top level or in optional_policy, kept as written.
   model.entries = [];
   for (const st of editable) {
-    if (st.kind === 'call' && st.top && ENTRY.has(st.name) && st.args[0] === D && st.args[1] === E && !claimed.has(st)) {
-      claimed.add(st);
-      model.entries.push({ name: st.name, args: st.args.slice(2) });
-    }
+    if (st.kind !== 'call' || st.bool || !ENTRY.has(st.name) || st.args[0] !== D || claimed.has(st)) continue;
+    if (ENTRY_EXEC[st.name] ? st.args.length !== 1 || ENTRY_EXEC[st.name] !== E : st.args[1] !== E) continue;
+    claimed.add(st);
+    model.entries.push({ name: st.name, args: ENTRY_EXEC[st.name] ? [] : st.args.slice(2) });
   }
+  // A program type the module doesn't declare (mta_sendmail_mailserver: sendmail_exec_t of the mta module).
+  if (!editable.some(st => st.kind === 'type' && st.name === E) && model.entries.some(e => ENTRY_EXEC[e.name] === E)) model.execElsewhere = true;
   claim(s => s.kind === 'call' && s.name === 'init_daemon_domain' && s.args[0] === D);
   // A domain declared by a template (e.g. ssh_server_template(sshd) declares sshd_t).
   if (!editable.some(st => st.kind === 'type' && st.name === D) && ctx.declares) {
@@ -1498,6 +1537,18 @@ function validate(model, ctx, opts = {}) {
     if (t && t !== e.type) out.push(`${e.path} is labeled both ${t} and ${e.type}; a path can have only one type, so remove it from one of them.`);
     else specType.set(e.spec, e.type);
   }
+  // How it is started: one main way at most, and only calls this policy has.
+  const entries = model.entries || [];
+  if (opts.isNew && !entries.length) out.push('Nothing starts the service: choose how it is started (Started by).');
+  for (const e of entries) if (ctx.has && !ctx.has(e.name)) out.push(`${e.name} doesn't exist in this policy, so it can't start the service.`);
+  const picked = [...new Set(entries.filter(e => STARTS.main.some(s => s[0] === e.name)).map(e => e.name))];
+  const sameAsBefore = opts.baseline && JSON.stringify((opts.baseline.entries || []).map(e => e.name).sort()) === JSON.stringify(entries.map(e => e.name).sort());
+  if (picked.length > 1 && !sameAsBefore) out.push(`It is started by ${picked.join(' and ')}; choose one of them under Started by.`);
+  // The main way is outside optional_policy: its module must be on, or linking fails.
+  for (const e of entries) {
+    const off = !ALSO.has(e.name) && ctx.off && ctx.off(e.name);
+    if (off && !sameAsBefore) out.push(`${e.name} belongs to the ${off} module, which is off in this policy (modules.conf), so the build would fail to link. Turn ${off} on, or choose another way under Started by.`);
+  }
   if (!(model.exec || []).some(p => p.trim())) out.push('Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
   ctx = portCtx(model, ctx);
@@ -1646,7 +1697,7 @@ function lineDiff(a, b) {
 /** Default model for a new service. */
 function newModel() {
   return {
-    name: '', summary: '', exec: ['/usr/bin/%'],
+    name: '', summary: '', exec: ['/usr/bin/%'], entries: [{ name: 'init_daemon_domain', args: [] }],
     files: [{ kind: 'unit', paths: ['/usr/lib/systemd/system/%.service'], access: 'none' }, { kind: 'runtime', paths: ['/run/%/'], access: 'manage' }],
     self: ['fifo'], caps: [], net: { listen: [], connect: [] }, access: ['syslog', 'locale'], extra: [], permissive: false,
     booleans: [], ports: [], helpers: [], provides: ['domtrans', 'admin'],
@@ -1670,6 +1721,10 @@ function catalog(ctx) {
     self: SELF.map(([id, label, perms, risky]) => ({ id, label, help: HELP.self[id], risky: !!risky, rule: Object.entries(perms).map(([c, ps]) => `${c} ${ps.join(' ')}`).join('; ') })),
     caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, help: HELP.cap[name], risky: !!risky })),
     provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, help: HELP.provides[id], needs: needs || null })),
+    // How the service is started: the main ways and further ones (only those this tree has).
+    // off: the module that provides it is off in this tree (modules.conf), named.
+    starts: { main: STARTS.main.filter(([n]) => ctx.has(n)).map(([name, label, help]) => ({ name, label, help, off: (ctx.off && ctx.off(name)) || null })),
+      also: STARTS.also.filter(([n]) => ctx.has(n)).map(([name, label, help]) => ({ name, label, help, optional: !!ctx.optional(name), off: (ctx.off && ctx.off(name)) || null })) },
     // A pty type of its own for the sessions a login service starts (shown with the Logins options).
     loginPty: ctx.has('term_login_pty') && ctx.has('term_create_pty') ? { label: 'Pseudo-terminals for logins (a pty type of its own)',
       help: 'Gives the sessions it starts pseudo-terminals of a type of its own (DOMAIN_devpts_t, declared with term_login_pty), which it may create, use and hand to the user, as sshd does. The user’s session then gets the terminal relabeled to its own pty type.' } : null,
@@ -1679,5 +1734,5 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames,
+  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, STARTS,
 };

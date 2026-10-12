@@ -1640,6 +1640,12 @@ function treeServiceCtx() {
       if (idx.moduleKinds && idx.moduleKinds.has(f.module)) return idx.moduleKinds.get(f.module) !== 'base';
       return !['kernel', 'system'].includes(f.layer);
     },
+    // The module defining it is off in this tree (modules.conf): calling it outside optional_policy fails to link.
+    off: (n) => {
+      const d = (idx.defs.get(n) || [])[0];
+      const f = d && fileOf(d.path);
+      return !!(f && idx.moduleKinds && idx.moduleKinds.get(f.module) === 'off') && f.module;
+    },
     moduleArgs,
     moduleExists: (n) => mods.has(n),
     typeExists: (t) => idx.decls.has(t),
@@ -1668,13 +1674,13 @@ function serviceBools(except) {
   return out.sort((a, b) => a.n.localeCompare(b.n));
 }
 
-/** The workspace's modules that the editor can open: a .te with init_daemon_domain. */
+/** The workspace's modules that the editor can open: a .te with a call that starts a service (init_daemon_domain, dbus_system_domain, …). */
 function serviceModules() {
   const out = [];
   for (const m of idx.modules()) {
     if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te))) continue;
     const text = readSource(m.files.te);
-    if (!text || !/\binit_(ranged_)?(daemon_|system_)?domain\s*\(/.test(text)) continue;
+    if (!text || !service.ENTRY_RE.test(text)) continue;
     out.push({ module: m.module, layer: m.layer, files: m.files, domains: service.daemonDomains(text) });
   }
   return out;
@@ -1778,7 +1784,7 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
     return { ...info, isNew: true, model };
   }
   const m = existing;
-  if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te, so it isn't a service module the editor understands.` };
+  if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te (nor another call that starts a service, such as dbus_system_domain() or inetd_service_domain()), so it isn't a service module the editor understands.` };
   const rec = service.recognize(serviceTexts(m.files), ctx, { domain, module: mod, ports: ownedPorts(mod) });
   if (rec.error) return { unavailable: rec.error };
   const prov = new Set(rec.provided);

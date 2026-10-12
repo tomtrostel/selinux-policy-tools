@@ -63,6 +63,42 @@
   const lines = (arr) => (arr || []).join('\n');
   const unlines = (s) => s.split('\n').map(x => x.trim()).filter(Boolean);
 
+  const START_TIP = 'What starts the program so that it runs in the service’s domain. Most services are started by systemd; the ticks below add further ways';
+  /** How the service is started: one main way (select) and further ones (D-Bus activation, cron). */
+  function startsRows() {
+    const st = info.catalog.starts;
+    if (!st) return null;
+    model.entries = model.entries || [];
+    const alsoNames = new Set(st.also.map(s => s.name).concat(['dbus_system_domain', 'cron_system_entry']));
+    const mains = model.entries.filter(e => !alsoNames.has(e.name));
+    const orig = (info.model.entries || []).filter(e => !alsoNames.has(e.name));
+    const simple = (es) => es.length === 1 && st.main.some(s => s.name === es[0].name) && !(es[0].args || []).length;
+    // An existing module's way that the list doesn't offer (init_system_domain, a ranged variant, …) stays as written.
+    const asWritten = orig.length && !simple(orig) ? `as written: ${orig.map(e => e.name).join(' + ')}` : null;
+    const cur = !mains.length ? '' : simple(mains) ? mains[0].name : '__keep';
+    const label = (n) => (st.main.find(s => s.name === n) || {}).label || n;
+    const sel = h('select', { title: START_TIP, onchange: (e) => {
+      const v = e.target.value;
+      const others = model.entries.filter(x => alsoNames.has(x.name));
+      model.entries = [...(v === '__keep' ? JSON.parse(JSON.stringify(orig)) : v ? [{ name: v, args: [] }] : []), ...others];
+      render(); changed();
+    } },
+      asWritten ? h('option', { value: '__keep', selected: cur === '__keep', title: 'Keep the calls the module has now' }, asWritten) : null,
+      // A way whose module is off can't be the main one (it would fail to link): shown, not selectable.
+      st.main.map(s => h('option', { value: s.name, selected: cur === s.name, disabled: !!s.off && cur !== s.name, title: s.off ? `The ${s.off} module is off in this policy (modules.conf); turn it on to use this` : s.help }, s.off ? `${s.label} (${s.off} is off)` : s.label)),
+      st.also.length ? h('option', { value: '', selected: cur === '', title: 'Only the ways ticked below start it (e.g. a service only D-Bus starts)' }, 'only as ticked below') : null);
+    const curHelp = (st.main.find(s => s.name === cur) || {}).help;
+    const rows = [h('div', { class: 'row' }, h('span', { class: 'lbl', title: START_TIP }, 'Started by'), sel,
+      cur && cur !== '__keep' ? h('code', { class: 'code', title: curHelp || label(cur) }, cur) : null)];
+    for (const s of st.also) {
+      const on = model.entries.some(e => e.name === s.name);
+      rows.push(check(`Also: ${s.label}`, on, (v) => {
+        model.entries = v ? [...model.entries, { name: s.name, args: [] }] : model.entries.filter(e => e.name !== s.name);
+      }, { help: s.help + (s.off ? ` The ${s.off} module is off in this policy, so this has no effect until it is turned on.` : ''), code: s.name, note: s.off ? `(in optional_policy; ${s.off} is off here)` : s.optional ? '(in optional_policy)' : '' }));
+    }
+    return rows;
+  }
+
   /** License for the RPM spec: common ones, the user's saved ones, or Custom… (with Save to my list / Save as my default). */
   function licenseRow() {
     const L = info.licenses;
@@ -126,6 +162,8 @@
     rows.push(h('div', { class: 'row top' }, h('label', { class: 'lbl', title: PROG_TIP }, 'Program'),
       h('textarea', { title: PROG_TIP, rows: Math.max(1, (model.exec || []).length), cols: 40, spellcheck: 'false', placeholder: '/usr/bin/%', oninput: (e) => { model.exec = unlines(e.target.value); changed(); } }, lines(model.exec)),
       h('span', { class: 'muted' }, ' one path per line; it runs in ', h('code', {}, model.domain || `${model.name || 'NAME'}_t`), ' when systemd starts it')));
+    const starts = startsRows();
+    if (starts) rows.push(...starts);
     rows.push(check('Permissive while testing (denials are logged, not enforced)', model.permissive, (v) => { model.permissive = v; }, { help: PERM_TIP }));
     if (info.isNew) rows.push(h('div', { class: 'muted small' }, '% in paths and names stands for the module name.'));
     return section('Service', null, rows);

@@ -30,7 +30,8 @@ before the release ("looks okay"); not clicked through feature by feature.
 ranked keyword search for interfaces. 0.10.2: long interface lists grouped
 by module, custom file access (kept rules shown, openable, expanded), build
 of the active tree from outside trees/modules. Unreleased: file access
-under a boolean (service editor).
+under a boolean, services started by D-Bus/inetd/cron/mail server
+(service editor).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -467,6 +468,39 @@ so far covered by the e2e tests only.
    read always + manage and /var/lib filetrans under the boolean, built as
    `if (svctest_connect_any)`; ntp: manage ntpd_key_t under a new boolean)
    on CLIP, RHEL 9, RHEL 10.
+   Other ways to start a service (done, unreleased; user asked why bugzilla
+   isn't in the editor, then to survey all other module kinds; of the six
+   found, "do 2-5 first"): START_CALLS dbus_system_domain, mta_mailserver,
+   mta_sendmail_mailserver (one argument; ENTRY_EXEC gives sendmail_exec_t,
+   model.execElsewhere = no `type E` here, the domain unit then omits it),
+   inetd_service_domain / _tcp_ / _udp_ / _core_, ucspitcp_service_domain,
+   cron_system_entry; ENTRY_CALLS = INIT_CALLS + those, ENTRY_RE (server
+   serviceModules, survey). daemonDomains ranks init_daemon_domain, other
+   init_*, others. recognize: entries also in optional_policy (not under a
+   boolean). unitsOf entryStmt: ALSO (dbus, cron) with ctx.optional →
+   local/opt (optional_policy), others decl at top level. STARTS {main,
+   also} → catalog.starts (only ctx.has; `off` = server ctx.off(n): the
+   defining module is off in moduleKinds); validate: new with no entries,
+   unknown names, two main ways, a main way whose module is off (unless
+   the same entries as the baseline). Webview startsRows(): Started by
+   select (off ones disabled; "as written: …" for entries the list doesn't
+   offer; "only as ticked below"), Also: checkboxes. Tests: service-test
+   (render, read back, removal, inetd main, validation, sendmail-like,
+   optional-only accountsd-like, form), survey mutations 33/34 (Fedora 523
+   domains in 397 modules, 17,782 edits), service-e2e section 7 (accountsd,
+   colord, geoclue, comsat, dbskk, tcpd, sendmail, certwatch, backup:
+   no-op unchanged + one capability line; new starttest by inetd + D-Bus +
+   cron, built; CLIP: inetd off → refused, systemd used) on CLIP, RHEL 9,
+   RHEL 10.
+   Module kinds still not handled (survey 2026-10-12, Fedora + CLIP):
+   (1) daemons whose init call is inside a module template
+   (rpc_domain_template(nfsd), rhcs, courier, cfengine, cinder, cloudform,
+   freeipmi, jabber, likewise, milter, nut, piranha, pki/tomcat, sblim,
+   thin, zarafa; ~55 domains) — next; (6) web applications
+   (apache_content_template: bugzilla, mediawiki, …, and the script parts
+   of collectd/git/munin/nut). Out of scope: application_domain /
+   userdom_user_application_domain programs, domains entered directly
+   (keyutils, passenger, openca), roles, kernel-layer modules.
    Ideas not done: gen_bool.
 
 7. **Tutorials** (done, 0.9.0; user request: "tutorials … integrate
