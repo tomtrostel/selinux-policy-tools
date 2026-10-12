@@ -150,6 +150,121 @@ class Index:
                     out.append(tr)
         return out
 
+    # ----- what a login can reach (logins view) -----
+
+    def rbac(self):
+        """role allow (R → roles it may change to) and role_transition ((R, exec type) → R2) for processes."""
+        if not hasattr(self, "_role_allow"):
+            self._role_allow, self._role_trans = {}, {}
+            for r in setools.RBACRuleQuery(self.policy, ruletype=["allow"]).results():
+                self._role_allow.setdefault(str(r.source), set()).add(str(r.target))
+            for r in setools.RBACRuleQuery(self.policy, ruletype=["role_transition"]).results():
+                if str(r.tclass) == "process":
+                    for t in self.expand(str(r.target)):
+                        self._role_trans.setdefault((str(r.source), t), set()).add(str(r.default))
+        return self._role_allow, self._role_trans
+
+    def proc_ok(self, u, r1, t1, r2, t2, perm):
+        """Whether the policy's (non-MLS) constraints let u:r1:t1 → u:r2:t2 for process `perm`."""
+        if not hasattr(self, "_proc_cons"):
+            self._proc_cons = {}
+            for c in self.policy.constraints():
+                if str(c.tclass) == "process" and hasattr(c, "perms") and not c.ruletype.name.startswith("mls"):
+                    for x in c.perms:
+                        self._proc_cons.setdefault(str(x), []).append(c.expression)
+        vals = {"u1": u, "r1": r1, "t1": t1, "u2": u, "r2": r2, "t2": t2}
+        return all(self.eval_constraint(e, vals, []) for e in self._proc_cons.get(perm, ()))
+
+    def reach(self, user, starts, limit=12):
+        """What a session of `user` can reach: BFS over (role, domain) states from
+        the start contexts. A domain transition s → t needs the transition rule
+        and an entrypoint s may execute (or dyntransition + setcurrent); t must be
+        in the role's types. The role changes to R2 (a role of the user that
+        `allow R R2` permits and that may run t) by a role_transition on the
+        entrypoint or, when s has setexec, explicitly (newrole, sudo -r); the
+        policy's constraints must allow the change. Each reached domain keeps
+        the step that first reached it."""
+        roles = self.user_roles.get(user, set())
+        ra, rt = self.rbac()
+        reached, steps, seen, frontier = {}, {}, set(), []
+        for s in starts:
+            st = (s["role"], s["type"])
+            if s["type"] in self.attrs and s["role"] in roles and st not in seen:
+                seen.add(st)
+                frontier.append(st)
+                key = "%s:%s" % st
+                steps[key] = {"depth": 0, "start": True, "role": s["role"], "type": s["type"]}
+                reached.setdefault(s["type"], key)
+        ep_cache, ex_cache, cand_cache = {}, {}, {}
+        for depth in range(1, limit + 1):
+            nxt = []
+            for role, s in frontier:
+                if s not in cand_cache:
+                    sn = [s] + self.attrs.get(s, [])
+                    cand = {}
+                    for r in self.with_perm(sn, self.by_src, "process", "transition"):
+                        for t in self.side_types(r, "t", s):
+                            if t != s and t in self.domains:
+                                cand.setdefault(t, []).append(r)
+                    dyn = set()
+                    if self.can(s, "setcurrent"):
+                        for r in self.with_perm(sn, self.by_src, "process", "dyntransition"):
+                            dyn.update(t for t in self.side_types(r, "t", s) if t != s and t in self.domains)
+                    cand_cache[s] = (cand, dyn, self.can(s, "setexec"))
+                cand, dyn, setexec = cand_cache[s]
+                for t in sorted(set(cand) | dyn):
+                    targets = [r2 for r2 in roles if t in self.role_types.get(r2, ()) and (r2 == role or r2 in ra.get(role, ()))]
+                    targets = [r2 for r2 in targets if (r2, t) not in seen]
+                    if not targets:
+                        continue
+                    if t not in ep_cache:
+                        ep_cache[t] = self.entrypoints(t)
+                    if s not in ex_cache:
+                        ex_cache[s] = self.exec_types(s)
+                    eps = ep_cache[t] & ex_cache[s]
+                    if not eps and t not in dyn:
+                        continue
+                    auto_roles = set()
+                    for e in eps:
+                        auto_roles |= rt.get((role, e), set())
+                    for r2 in targets:
+                        how = None
+                        if r2 != role:
+                            if r2 in auto_roles:
+                                how = "role_transition"
+                            elif setexec and eps:
+                                how = "setexec"
+                            else:
+                                continue
+                        perm = "transition" if eps else "dyntransition"
+                        if not self.proc_ok(user, role, s, r2, t, perm):
+                            continue
+                        seen.add((r2, t))
+                        nxt.append((r2, t))
+                        conds = sorted({r["cond"] for r in cand.get(t, []) if r["cond"]})
+                        if any(not r["cond"] for r in cand.get(t, [])):
+                            conds = []
+                        key = "%s:%s" % (r2, t)
+                        steps[key] = {"depth": depth, "from": "%s:%s" % (role, s), "role": r2, "type": t, "roleChange": how,
+                                      "entrypoints": sorted(eps)[:3], "dynamic": not eps, "conditional": conds}
+                        reached.setdefault(t, key)
+            frontier = nxt
+            if not frontier:
+                break
+        return {"roles": sorted({r for r, _ in seen}), "reached": reached, "steps": steps}
+
+    def reach_access(self, domains, t, classes, perms):
+        """Of `domains`, which may access type t ({domain: [rule, perms]}, one rule each)."""
+        t = self.aliases.get(t, t)
+        if t not in self.attrs:
+            raise KeyError(t)
+        out = {}
+        for r, srcs, hit in self.granting(t, classes, perms):
+            for d in srcs & domains:
+                if d not in out or (out[d][0]["cond"] and not r["cond"]):
+                    out[d] = (r, hit)
+        return {d: {"rule": r, "perms": hit} for d, (r, hit) in out.items()}
+
     # ----- property checks -----
 
     def names(self, items):
@@ -590,6 +705,34 @@ def main():
                 resp.update(idx.typeinfo(req.get("names", []), req.get("sourceRules", [])))
             elif req.get("op") == "avc":
                 resp.update(results=idx.avc(req.get("checks", []), req.get("bools") or {}))
+            elif req.get("op") == "users":
+                # Users with their roles and range; each role's types among `types`; which `names` exist.
+                want = set(req.get("types", []))
+                users = {}
+                for u in idx.policy.users():
+                    rng = None
+                    try:
+                        rng = str(u.mls_range) if idx.policy.mls else None
+                    except Exception:
+                        pass
+                    users[str(u)] = {"roles": sorted(idx.user_roles[str(u)]), "range": rng}
+                resp.update(users=users, roleTypes={r: sorted(ts & want) for r, ts in idx.role_types.items()},
+                            exists=[n for n in req.get("names", []) if n in idx.attrs or n in idx.members])
+            elif req.get("op") == "reach":
+                res = idx.reach(req["user"], req.get("starts", []), req.get("limit", 12))
+                doms = set(res["reached"])
+                acc = {}
+                for a in req.get("access", []):
+                    try:
+                        if a.get("attr"):
+                            acc[a["id"]] = {d: {} for d in doms if a["attr"] in idx.attrs.get(d, [])} if a["attr"] in idx.members else None
+                        else:
+                            acc[a["id"]] = idx.reach_access(doms, a["t"], a.get("classes") or [], a.get("perms") or "*")
+                    except KeyError:
+                        acc[a["id"]] = None
+                resp.update(res, access=acc)
+            elif req.get("op") == "access":
+                resp.update(access=idx.reach_access(set(req.get("domains", [])), req["t"], req.get("classes") or [], req.get("perms") or "*"))
             elif req.get("op") == "check":
                 resp.update(results=[dict(id=c.get("id"), **idx.check(c)) for c in req.get("checks", [])])
             else:

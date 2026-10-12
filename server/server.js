@@ -2153,10 +2153,7 @@ function sourceLocation(name, kinds) {
  * build.conf). Lines: login:seuser[:range]; '#' comments.
  */
 function seusersMappings(root) {
-  let type = null;
-  for (const a of treeCfg().makeArgs || []) { const m = /^TYPE=(\S+)/.exec(a); if (m) type = m[1]; }
-  if (!type) { try { const m = /^\s*TYPE\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) type = m[1]; } catch { /* none */ } }
-  const file = path.join(root, 'config', `appconfig-${type || 'mcs'}`, 'seusers');
+  const file = path.join(appconfigDir(root), 'seusers');
   const text = readSource(file);
   if (text == null) return { file: null, list: [] };
   const list = [];
@@ -2166,6 +2163,14 @@ function seusersMappings(root) {
     if (m) list.push({ login: m[1], user: m[2], range: m[3] || null, loc: { p: file, l, c: 0 } });
   });
   return { file, list };
+}
+
+/** The tree's config/appconfig-<TYPE> (TYPE from the build arguments or build.conf; mcs by default). */
+function appconfigDir(root) {
+  let type = null;
+  for (const a of treeCfg().makeArgs || []) { const m = /^TYPE=(\S+)/.exec(a); if (m) type = m[1]; }
+  if (!type) { try { const m = /^\s*TYPE\s*=\s*(\S+)/m.exec(fs.readFileSync(path.join(root, 'build.conf'), 'utf8')); if (m) type = m[1]; } catch { /* none */ } }
+  return path.join(root, 'config', `appconfig-${type || 'mcs'}`);
 }
 
 /** Users come from gen_user(name, ...) calls (refpolicy's policy/users file). */
@@ -2891,6 +2896,184 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
   // suggest: false = none; { verdicts, max } widens it (the benchmark asks for allowed accesses too).
   if (suggest !== false) await suggestInterfaces(out, usedBin, notes, (suggest && suggest.verdicts) || ['missing'], (suggest && suggest.max) || 25, (suggest && suggest.limit) || 5);
   return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: fcFile || pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
+});
+
+/* ---------------- logins: who logs in as what, and what they can reach ---------------- */
+
+const logins = require('./logins');
+const ADMIN_ROLES = ['sysadm_r', 'secadm_r', 'auditadm_r', 'unconfined_r'];
+let reachCache = { key: null, map: new Map() };
+
+/**
+ * The login configuration that goes with a policy (a denialPolicies entry):
+ * an installed policy's /etc/selinux/<name> files; a tree build's
+ * config/appconfig-<TYPE> files (editor contents win); a standalone module
+ * build uses this host's running configuration. host = this host's accounts
+ * apply (installed running policy, or a module linked with it).
+ */
+function loginConfig(pol) {
+  const read = (p) => { const t = readSource(p); return t == null ? null : t; };
+  if (pol.build && !usingDevel && treeRoot) {
+    const dir = appconfigDir(treeRoot);
+    return { dir, host: false, seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'default_contexts'), userFile: (u) => path.join(dir, `${u}_default_contexts`), read };
+  }
+  const name = pol.name || (build.installedPolicies().find(p => p.active) || {}).name;
+  if (!name) return null;
+  const dir = path.join('/etc/selinux', name);
+  return { dir, host: !!(pol.active || pol.build), seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'contexts', 'default_contexts'),
+    userFile: (u) => path.join(dir, 'contexts', 'users', u), read };
+}
+
+/** The policy file for a login report: the entry's own, or the module linked with this host's policy. */
+async function loginPolicy(against) {
+  const policies = denialPolicies();
+  const pol = policies.find(p => p.id === against) || policies.find(p => p.active) || policies.find(p => p.build) || policies[0] || null;
+  if (!pol) return { policies, error: process.platform === 'win32' ? 'Login reports need a Linux host (use Remote-SSH).' : 'No policy to report on: no installed policy under /etc/selinux, and no workspace build.' };
+  let bin = pol.bin;
+  if (pol.build && usingDevel) {
+    const l = await linkedPolicy();
+    if (l.unavailable) return { policies, pol, error: l.unavailable };
+    bin = l.policy;
+  }
+  return { policies, pol, bin };
+}
+
+/** Reach of one user from its login start contexts, cached per policy file + mtime. */
+async function userReach(bin, user, starts) {
+  const key = `${bin}:${fs.statSync(bin).mtimeMs}`;
+  if (reachCache.key !== key) reachCache = { key, map: new Map() };
+  const k = `${user}|${starts.map(s => `${s.role}:${s.type}`).sort().join(',')}`;
+  if (!reachCache.map.has(k)) {
+    reachCache.map.set(k, policyQuery.request({ op: 'reach', bin, user, starts,
+      access: logins.ABILITIES.map(a => ({ id: a.id, attr: a.attr, t: a.t, classes: a.classes, perms: a.perms })) }));
+  }
+  return reachCache.map.get(k);
+}
+
+const pathOut = (r, d) => { const k = r.reached[d]; return k ? logins.pathTo(r.steps, k).map(s => ({ ...s, text: logins.stepText(s) })) : []; };
+
+/**
+ * Logins report: every SELinux user with its roles, the Linux logins mapped
+ * to it, where each way of logging in lands, how many domains its sessions
+ * can reach and which risky abilities among them (with the path there).
+ * On this host's running policy also the accounts in /etc/passwd: people's
+ * logins with the seusers line that applies, and service accounts.
+ */
+connection.onRequest('selinux/logins', async ({ against } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
+  if (lp.error) return { error: lp.error, policies, policy: lp.pol ? { id: lp.pol.id, label: lp.pol.label } : null };
+  const { pol, bin } = lp;
+  const cfg = loginConfig(pol);
+  if (!cfg) return { error: 'No login configuration found for this policy.', policies };
+  const notes = [];
+  const seText = cfg.read(cfg.seusers);
+  if (seText == null) notes.push(`No seusers file at ${cfg.seusers}: every login falls back to the policy's defaults.`);
+  const seusers = logins.parseSeusers(seText);
+  const defText = cfg.read(cfg.defaults);
+  if (defText == null) notes.push(`No default_contexts at ${cfg.defaults}.`);
+  const defaults = { path: cfg.defaults, list: logins.parseContexts(defText) };
+  const r = await policyQuery.request({ op: 'users', bin, types: [], names: [] });
+  if (r.error) return { error: `Policy query failed: ${r.error}`, policies };
+  const userFiles = {};
+  const types = new Set(defaults.list.flatMap(x => x.to.map(c => c.type)));
+  for (const u of Object.keys(r.users)) {
+    if (!/^\w+$/.test(u)) continue;
+    const p = cfg.userFile(u);
+    const t = cfg.read(p);
+    if (t != null) { userFiles[u] = { path: p, list: logins.parseContexts(t) }; userFiles[u].list.forEach(x => x.to.forEach(c => types.add(c.type))); }
+  }
+  const info = await policyQuery.request({ op: 'users', bin, types: [...types],
+    names: logins.ABILITIES.map(a => a.attr || a.t) });
+  const roleTypes = (role) => new Set((info.roleTypes || {})[role] || []);
+  const locs = userLocations();
+  const users = [];
+  for (const [name, u] of Object.entries(info.users || {}).sort((a, b) => a[0].localeCompare(b[0]))) {
+    const ent = logins.entries(u.roles, roleTypes, userFiles[name] || null, defaults);
+    const starts = [];
+    for (const e of ent) for (const c of e.contexts) if (!starts.some(s => s.role === c.role && s.type === c.type)) starts.push(c);
+    const mapped = seusers.filter(x => x.user === name);
+    const out = { name, roles: u.roles, range: u.range, loc: pol.build && !usingDevel ? locs.get(name) || null : null, logins: mapped.map(x => ({ ...x, file: cfg.seusers })),
+      entries: ent, contextsFile: userFiles[name] ? userFiles[name].path : null, reached: 0, abilities: [] };
+    if (starts.length && name !== 'system_u') {
+      const rr = await userReach(bin, name, starts);
+      if (rr.error) { out.error = rr.error; } else {
+        out.reached = Object.keys(rr.reached).length;
+        out.roleSet = rr.roles;
+        for (const a of logins.ABILITIES) {
+          const hit = rr.access && rr.access[a.id];
+          if (!hit) continue;
+          const n = logins.nearest(rr, Object.keys(hit));
+          if (!n) continue;
+          out.abilities.push({ id: a.id, label: a.label, severity: a.severity, domain: n.d, count: Object.keys(hit).length,
+            rule: hit[n.d].rule || null, path: pathOut(rr, n.d) });
+        }
+      }
+    }
+    users.push(out);
+  }
+  const userByName = new Map(users.map(u => [u.name, u]));
+  const adminRoles = ADMIN_ROLES.filter(x => (info.roleTypes || {})[x]);
+  const mappings = seusers.map(m => ({ ...m, file: cfg.seusers, notes: logins.mappingNotes(m, userByName.get(m.user), adminRoles) }));
+  let accounts = null;
+  if (cfg.host && process.platform !== 'win32') {
+    const pw = logins.parsePasswd(readSource('/etc/passwd'));
+    const groupsOf = logins.parseGroups(readSource('/etc/group'), pw);
+    let uidMin = 1000;
+    try { const m = /^\s*UID_MIN\s+(\d+)/m.exec(fs.readFileSync('/etc/login.defs', 'utf8')); if (m) uidMin = +m[1]; } catch { /* default */ }
+    const people = pw.filter(p => p.uid === 0 || (p.uid >= uidMin && p.uid !== 65534)).map(p => {
+      const m = logins.mappingFor(p.name, seusers, groupsOf);
+      return { name: p.name, uid: p.uid, shell: p.shell, canLogin: !logins.NO_LOGIN.test(p.shell || ''), mapping: m ? { user: m.user, range: m.range, how: m.how, login: m.login, l: m.l } : null };
+    });
+    accounts = { people, services: logins.serviceAccounts(pw, seusers, groupsOf, uidMin), uidMin };
+  } else if (!cfg.host) {
+    notes.push('A tree build: its seusers and contexts are shown; the accounts of the system it will run on are not known here.');
+  }
+  return { policy: { id: pol.id, label: pol.label, configDir: cfg.dir, host: cfg.host }, policies, users, mappings, seusersFile: seText == null ? null : cfg.seusers, accounts, notes };
+});
+
+/** Every domain a user's sessions can reach, nearest first, with the path to each. */
+connection.onRequest('selinux/loginReach', async ({ against, user, starts } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const rr = await userReach(lp.bin, user, starts || []);
+  if (rr.error) return { error: rr.error };
+  const list = Object.keys(rr.reached).map(d => ({ d, depth: rr.steps[rr.reached[d]].depth, role: rr.steps[rr.reached[d]].role }))
+    .sort((a, b) => a.depth - b.depth || a.d.localeCompare(b.d));
+  return { roles: rr.roles, domains: list.map(x => ({ name: x.d, depth: x.depth, role: x.role, path: x.depth ? pathOut(rr, x.d) : [] })) };
+});
+
+/**
+ * Can a user's sessions get an access: { against, user, starts, target | path,
+ * tclass, perms } → the nearest reached domain allowed it, the path there and
+ * the rule; or no.
+ */
+connection.onRequest('selinux/loginCan', async ({ against, user, starts, target, path: p, tclass, perms } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  let resolved = null;
+  if (!target && p) {
+    if (!p.startsWith('/')) return { error: 'A path must be absolute.' };
+    const fc = lp.pol.build ? (usingDevel ? moduleFileContexts() : treeFileContexts(lastBuild.get(treeRoot))) : lp.pol.fc;
+    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', denials.FILE_MODES[tclass] || 'file', p]);
+    const m = /\t(\S+)\s*$/.exec(r.stdout);
+    const ctx = m && denials.parseContext(m[1]);
+    if (!ctx) return { error: `No file context gives ${p} a label${(r.stderr || '').trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''}.` };
+    target = ctx.type;
+    resolved = { path: p, type: target };
+  }
+  if (!/^[A-Za-z_]\w*$/.test(target || '')) return { error: 'Give a type (e.g. shadow_t) or an absolute path.' };
+  if (!/^\w+$/.test(tclass || '')) return { error: 'Choose the kind of object.' };
+  const rr = await userReach(lp.bin, user, starts || []);
+  if (rr.error) return { error: rr.error };
+  const r = await policyQuery.request({ op: 'access', bin: lp.bin, domains: Object.keys(rr.reached), t: target, classes: [tclass], perms: perms && perms.length ? perms : '*' });
+  if (r.error) return { error: /KeyError/.test(r.error) ? `${target} is not a type in this policy.` : `Policy query failed: ${r.error}` };
+  const n = logins.nearest(rr, Object.keys(r.access));
+  if (!n) return { target, resolved, can: false, reached: Object.keys(rr.reached).length };
+  return { target, resolved, can: true, domain: n.d, count: Object.keys(r.access).length, rule: r.access[n.d].rule, perms: r.access[n.d].perms, path: pathOut(rr, n.d) };
 });
 
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */

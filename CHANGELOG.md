@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Logins and Users** (*SELinux: Logins and Users…*, person icon in the
+  Policy Explorer): who logs in as which SELinux user and what their
+  sessions can reach, for this host's installed policy or the workspace's
+  last build. Linux logins from `seusers` (`%group` and `__default__`
+  lines, with notes for `unconfined_u` and for `__default__` on a user with
+  an admin role); per SELinux user the ways in (ssh, console, cron, …) from
+  `default_contexts` and its own contexts file, every domain reachable by
+  running programs and changing role (role allow, role_transition or
+  setexec, checked against the policy's constraints), risky abilities
+  within reach with the path and the rule (unconfined, loading a policy,
+  permissive mode, `/etc/shadow`, raw disks, booleans), and a "can it …?"
+  question for a path or type. On the running policy also people's and
+  service accounts from `/etc/passwd` with the seusers line that applies.
+  The lockdown walkthrough's users page covers it.
+
 ## 0.11.0 (2026-10-12)
 
 **Added**

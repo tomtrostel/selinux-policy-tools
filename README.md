@@ -19,7 +19,8 @@ It works at two levels:
   changed compared with `HEAD`, what turning a module off or on would do,
   a domain transition graph, security property checks re-run after every
   build, and validation of users, roles and MLS levels, all traced back to
-  the source lines responsible.
+  the source lines responsible. A logins report shows which SELinux user
+  each Linux login gets and what its sessions can reach.
 * **Writing and fixing policy.** A service editor that writes and edits a
   daemon's module from a form, and a denial assistant that reads AVC
   denials and tells a wrong label or a boolean that is off from a rule
@@ -110,8 +111,8 @@ in the Policy Explorer title bar), or from *Help → Welcome → Walkthroughs*:
   instead of `audit2allow` rules, and checking what was actually granted.
 * **Review and lock down a policy**: compiled change review against HEAD,
   tags or two refs, module previews, the transition graph, property checks,
-  comparing with the installed policy, users and roles, and a lockdown
-  routine.
+  comparing with the installed policy, users, roles and who can log in as
+  what, and a lockdown routine.
 
 **SELinux: Create Practice Module…** copies a small daemon policy
 (`notesd`) with four deliberate mistakes and a `selinux.checks` file into a
@@ -638,6 +639,49 @@ install it with *SELinux: Install Module*.
   each block headed by the source line that produced it.
 * Build logs go to the *SELinux Build* output channel.
 
+**Logins and Users** (*SELinux: Logins and Users…*, or the person icon in
+the Policy Explorer; Linux)
+
+Who logs in as what, and what their sessions can reach. *Policy* picks this
+host's installed policy (its `/etc/selinux/<name>` seusers and contexts) or
+the workspace's last build (a tree's `config/appconfig-<TYPE>` files; a
+standalone module linked with the running policy and its configuration).
+
+* **Linux logins**: the seusers lines (`login`, `%group`, `__default__`)
+  with the SELinux user and range, each line clickable. Noted: a login
+  mapped to `unconfined_u`, `__default__` on a user with an admin role
+  (CLIP maps `__default__` to `staff_u`, which has `sysadm_r`), a mapping to
+  a user the policy doesn't have.
+* **SELinux users**, one card each: its roles and logins; **ways in**
+  (ssh, console, graphical, cron jobs, systemd user session, … from
+  `default_contexts` and the user's own `contexts/users/<user>` file): the
+  context each lands in and the others it may choose; then what its
+  sessions can **reach**: every domain from there by running programs
+  (domain transitions with an entrypoint the domain may execute, or
+  dyntransition) and changing role where the user has the role, `allow R1
+  R2` permits it and the policy's constraints agree (a `role_transition`, or
+  asked for with newrole / `sudo -r` by a domain with `setexec`). Booleans
+  are taken as possibly on; conditional steps say which boolean.
+* **Risky abilities within reach**, with the shortest path and the rule:
+  runs unconfined, loads a policy, switches to permissive, reads
+  `/etc/shadow`, writes raw disks, changes booleans. Most are reached by
+  running a program (`user_t → chkpwd_t` reads `/etc/shadow`); what a user
+  can make it do then depends on the program, which the card says.
+* **All reachable domains** on demand, each with its path, and **Ask**: can
+  this user's sessions read `/etc/shadow` (a path, labeled from the
+  policy's file contexts, or a type), with any class and permissions → yes
+  with the nearest domain, the path and the rule, or no.
+* On this host's running policy, **people's accounts** (UID ≥ `UID_MIN`
+  from `/etc/login.defs`, and root) with the seusers line that applies
+  (own, `%group`, or `__default__`), and **service accounts** (system
+  UIDs): their processes run as `system_u` in the service's domain whatever
+  seusers says; it applies only if the account logs in, so one with a login
+  shell (e.g. `postgres` with `/bin/bash`) that would get a user with high
+  risks is flagged.
+
+On RHEL 9's targeted policy the report takes about 9 s (the reach of each
+user is 0.1–2.5 s; staff_u reaches 867 domains, user_u 100, guest_u 11).
+
 **Compiled Policy view** (full trees; standalone modules linked with the
 installed policy)
 
@@ -1062,6 +1106,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   `initrc_t`); RHEL's installed policy `init_t` 576, `sshd_t` 33 (incl.
   dynamic ones), 22 domains can enter `sysadm_t` (one boolean-controlled).
   The graph's webview script is tested against a fake DOM.
+* Logins and Users (test/logins-e2e.js on Rocky 9.8): the running targeted
+  policy maps `root` and `__default__` to `unconfined_u` (noted; it runs
+  unconfined and can load a policy); `staff_u` over ssh lands in `staff_t`
+  or may choose `sysadm_r:sysadm_t`, and from `staff_t` reaches `sysadm_t`
+  through `newrole_t` (role change by setexec, only while `secure_mode` is
+  off); `user_u` reads `/etc/shadow` only as `chkpwd_t`; `guest_u` can't
+  load a policy; `daemon` is a service account without a login. CLIP's
+  tree build: `__default__ → staff_u` noted for its admin role, `staff_u`
+  opens at its `gen_user` line, no host accounts. The webview is tested
+  against a fake DOM.
 * Module Preview on CLIP: `cron` off (links; 22 dependent optional blocks;
   removed rules traced into them), `mta` off (link error on the requiring
   interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
@@ -1099,6 +1153,21 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   intended.
 
 ## Limitations
+
+**Logins and Users**
+
+* Reach is what the policy permits, not what each program will do: a
+  domain counts as reached when the user may run a program that enters it
+  (`mount`, `passwd`, a container runtime), even if that program only does
+  narrow things for ordinary users. Booleans are taken as possibly on.
+* MLS/MCS constraints and levels aren't part of reach (the session's range
+  limits which categories it sees, not which domains it enters); pam and
+  sudoers settings aren't read (sudo rules decide who may run what as
+  root; the policy decides which domain that runs in).
+* `semanage login`/`user` changes that aren't in the files under
+  `/etc/selinux/<name>` (the merged `seusers` is) and user roles added with
+  `semanage user` show up only through the installed policy, not a tree
+  build. For a tree build, the target system's accounts aren't known.
 
 **Denial assistant**
 

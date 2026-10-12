@@ -276,6 +276,7 @@ function activate(context) {
       if (p.tree && p.ok) changes.afterBuild();
       // The denial assistant re-checks applied fixes against the new build.
       if (denialPanel) denialPanel.webview.postMessage({ cmd: 'built', ok: p.ok, module: p.module });
+      if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
 
@@ -430,6 +431,7 @@ function activate(context) {
       }
       showDenials(context, text);
     }),
+    vscode.commands.registerCommand('selinux.showLogins', () => showLogins(context)),
     vscode.commands.registerCommand('selinux.buildRpm', async () => {
       // The standalone module of the active editor, or one picked from the workspace's *-selinux.spec files.
       const specs = (await vscode.workspace.findFiles('**/*-selinux.spec', '**/{rpmbuild,node_modules,tmp}/**', 100)).map(u => u.fsPath);
@@ -1628,6 +1630,93 @@ function showDenials(context, text, against = null) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { stopWatch(); denialPanel = null; }, undefined, context.subscriptions);
+}
+
+let loginsPanel = null;
+
+/** Logins and Users: who logs in as which SELinux user, where they land and what they can reach (media/logins.js). */
+function showLogins(context) {
+  if (loginsPanel) { loginsPanel.reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxLogins', 'Logins and Users', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  loginsPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'logins.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  select, input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; font-family: var(--vscode-editor-font-family); }
+  button.link:hover { text-decoration: underline; }
+  #main { padding: 10px 14px 40px; }
+  h2 { font-size: 1.05em; margin: 18px 0 6px; }
+  .intro { opacity: .8; margin: 0 0 8px; max-width: 70em; }
+  table { border-collapse: collapse; margin: 4px 0 8px; }
+  td, th { text-align: left; padding: 3px 14px 3px 0; vertical-align: top; }
+  th { font-weight: 600; opacity: .75; }
+  .card { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-radius: 4px; margin: 0 0 10px; }
+  .card.high { border-left-color: var(--vscode-charts-red, #f14c4c); }
+  .card.medium { border-left-color: var(--vscode-charts-yellow, #cca700); }
+  .card.low, .card.none { border-left-color: var(--vscode-charts-green, #89d185); }
+  .card.idle { border-left-color: var(--vscode-panel-border); }
+  .card > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .uname { font-weight: 600; font-family: var(--vscode-editor-font-family); }
+  .body { padding: 2px 14px 10px; }
+  .sub { font-weight: 600; margin: 10px 0 4px; }
+  .badge { font-size: .8em; padding: 1px 7px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .sev { font-size: .8em; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); }
+  .sev.high { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+  .sev.medium { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-editorWarning-foreground); }
+  .note { margin: 2px 0; }
+  .note.high { color: var(--vscode-errorForeground); }
+  .note.medium { color: var(--vscode-editorWarning-foreground); }
+  code, .mono { font-family: var(--vscode-editor-font-family); }
+  .path { margin: 2px 0 6px 16px; font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  .path div::before { content: '↳ '; opacity: .6; }
+  pre.rule { margin: 2px 0 6px 16px; padding: 4px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  .ability { margin: 6px 0; }
+  .ask { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+  .answer { border: 1px solid var(--vscode-focusBorder); border-radius: 4px; padding: 6px 10px; margin: 6px 0; }
+  .answer.yes { border-color: var(--vscode-editorWarning-foreground); }
+  .answer.no { border-color: var(--vscode-testing-iconPassed, #73c991); }
+  .muted { opacity: .7; }
+  .domains { columns: 3 16em; font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  .domains details { break-inside: avoid; }
+  .notes { margin: 6px 0; padding-left: 20px; opacity: .9; }
+</style></head><body>
+<div id="bar">
+  <span id="title">Logins and Users</span>
+  <label>Policy <select id="against"></select></label>
+  <button id="refresh">Refresh</button>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'load') {
+        panel.webview.postMessage({ cmd: 'report', report: await client.sendRequest('selinux/logins', { against: m.against || null }) });
+      } else if (m.cmd === 'reach') {
+        panel.webview.postMessage({ cmd: 'reach', user: m.user, result: await client.sendRequest('selinux/loginReach', { against: m.against, user: m.user, starts: m.starts }) });
+      } else if (m.cmd === 'can') {
+        panel.webview.postMessage({ cmd: 'can', user: m.user, result: await client.sendRequest('selinux/loginCan',
+          { against: m.against, user: m.user, starts: m.starts, target: m.target, path: m.path, tclass: m.tclass, perms: m.perms }) });
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { loginsPanel = null; }, undefined, context.subscriptions);
 }
 
 /** Write a planned fix (one undoable edit, with any other file it needs, e.g. a new interface), save it so it builds, and show the inserted lines. */

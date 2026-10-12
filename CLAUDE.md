@@ -700,6 +700,51 @@ so far covered by the e2e tests only.
    MCS, chronyd/true transitions, CLIP ntpd_extra_t new interface flow,
    prefill), tutorial-e2e (the sample denials + fix).
 
+9. **Users and logins** (user request 2026-10-12: "start looking more at
+   MCP and users (service accounts?)"; picked 1 + 2 of the suggestions,
+   view first; "service accounts" = both automation logins and daemon
+   run-as accounts; MCS / Model Context Protocol later).
+   Phase 1, Logins and Users view (done, unreleased): `server/logins.js`
+   (pure: parseSeusers (%group, l), parseContexts, entries(userRoles,
+   roleTypes, userFile, defaultFile) = system_r sources, user file first,
+   contexts filtered to the user's roles + role types, ENTRY_LABELS/ORDER;
+   parsePasswd/parseGroups, mappingFor (own > first %group > __default__,
+   as getseuserbyname), serviceAccounts (uid < UID_MIN or 65534, login
+   shell?), pathTo/nearest/stepText, mappingNotes, ABILITIES).
+   policy_query.py ops `users` {types, names} (users' roles + range, role
+   types ∩ types, which names exist), `reach` {user, starts, access} (BFS
+   over (role, type) states: transition + entrypoint ∩ exec types or
+   dyntransition + setcurrent; role R2 of the user with t in its types and
+   R2 == R or allow R R2, changed by role_transition on an entrypoint or
+   setexec; `proc_ok` evaluates the non-MLS process constraints with u1 =
+   u2; steps keyed "role:type", reached[type] = first state; access items
+   {attr} or {t, classes, perms} → reached domains with it), `access`.
+   Server: loginConfig(pol) (tree build: appconfigDir() files via
+   readSource; installed: /etc/selinux/<name>/seusers, contexts/
+   default_contexts, contexts/users/<u>; devel build: the running one,
+   host true), loginPolicy (denialPolicies entries, linked for devel),
+   userReach cache per bin mtime + starts; requests `selinux/logins`
+   {against}, `selinux/loginReach` {user, starts}, `selinux/loginCan`
+   {user, starts, target | path, tclass, perms} (path via matchpathcon
+   with the policy's fc). Client showLogins (media/logins.js), command
+   `selinux.showLogins` (Policy Explorer person icon), reloads after a
+   build when on 'build'. Tests: test/logins-test.js (npm test),
+   test/logins-e2e.js (melody: running targeted + CLIP build). RHEL 9:
+   report ~9 s, staff_u reaches 867 domains (sysadm_t via newrole_t,
+   setexec, only while secure_mode is off), user_u 100 (/etc/shadow only as
+   chkpwd_t). Not yet tried interactively.
+   Phase 2 (next): user editor. Plan agreed: kind of user from the tree's
+   templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
+   templates; userdom_unpriv/restricted/admin/base/confined_admin
+   templates), roles it may switch to, ways in, sudo/su into a role
+   (sudo_role_template, su_role_template), services it administers
+   (*_admin), caps/access/interfaces/booleans as in the service editor;
+   logins + range; writes the role module, gen_user line, seusers,
+   <user>_default_contexts; standalone: RPM with semanage user/login and
+   the contexts file; opens existing users with minimal edits; an
+   "automation account" preset (restricted user, ssh/cron, sudo into one
+   narrow role). Reuse reach as its preview.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -862,6 +907,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/denials.js`: denial assistant (audit parsing, grouping, verdicts);
   `media/denials.js` its webview.
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
+- `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
+  paths); `media/logins.js` its webview.
 - `server/service.js`: service editor model (catalogs, render, recognize,
   minimal edits by unit diff); `media/service.js` its webview form.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
@@ -940,6 +987,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/denials-test.js` (in `npm test`) and `test/denials-e2e.js`
   (`npm run test:denials-e2e`, melody; optional tree arg, default CLIP);
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
+- `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
+  (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 
