@@ -2274,6 +2274,28 @@ connection.onRequest('selinux/domains', async () => {
 
 /* ---------------- denial assistant ---------------- */
 
+/**
+ * The file contexts of a tree build, for matchpathcon: file_contexts or
+ * tmp/all_mods.fc when the build wrote one (upstream refpolicy's validate),
+ * else base.fc plus every module's tmp/<mod>.mod.fc combined (RHEL's
+ * Makefile writes no combined file). null without a build.
+ */
+function treeFileContexts(res) {
+  if (!res || !res.workDir) return null;
+  const direct = [path.join(res.workDir, 'file_contexts'), path.join(res.workDir, 'tmp', 'all_mods.fc')].find(p => fs.existsSync(p));
+  if (direct) return direct;
+  let parts = [];
+  try { parts = fs.readdirSync(path.join(res.workDir, 'tmp')).filter(n => n.endsWith('.mod.fc')).map(n => path.join(res.workDir, 'tmp', n)); } catch { return null; }
+  const base = path.join(res.workDir, 'base.fc');
+  if (fs.existsSync(base)) parts.unshift(base);
+  if (!parts.length) return null;
+  const out = path.join(res.workDir, 'tmp', 'zz_file_contexts');
+  const newest = Math.max(...parts.map(p => fs.statSync(p).mtimeMs));
+  try { if (fs.statSync(out).mtimeMs >= newest) return out; } catch { /* write it */ }
+  fs.writeFileSync(out, parts.map(p => fs.readFileSync(p, 'utf8')).join('\n'));
+  return out;
+}
+
 const denials = require('./denials');
 
 /** Policies denials can be checked against: this host's installed policies and the workspace's last build. */
@@ -2289,7 +2311,7 @@ function denialPolicies() {
   } else if (treeRoot) {
     const res = lastBuild.get(treeRoot);
     if (res && res.policyBin && fs.existsSync(res.policyBin)) {
-      const fc = [path.join(res.workDir, 'file_contexts'), path.join(res.workDir, 'tmp', 'all_mods.fc')].find(f => fs.existsSync(f)) || null;
+      const fc = treeFileContexts(res);
       list.push({ id: 'build', label: `Last build of ${path.basename(treeRoot)}`, bin: res.policyBin, build: true, fc });
     }
   }
@@ -2432,7 +2454,7 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
   const calls = new Set();
   for (const g of needProbe) {
     // Interfaces that require the type themselves (not through a call) first, the type's own module's first among them.
-    const ownReq = (d) => (d.requires || []).some(r => r.name === g.target) || (d.generated && (idx.generatedAt(d.path, d.l, d.c) || []).includes(g.target));
+    const ownReq = (d) => (d.requires || []).some(r => r.name === g.target) || (d.generated && [...(idx.generatedAt(d.path, d.l, d.c) || [])].includes(g.target));
     // The module that owns the type: where it is declared, else (devel headers: no declarations) the module
     // whose interfaces most often require it themselves.
     let tMod = (locOf(g.target) || {}).m || null;
@@ -2486,6 +2508,87 @@ async function suggestInterfaces(groups, bin, notes, verdicts = ['missing'], max
   }
   log(`denial suggestions: ${calls.size} interface calls probed in ${ex.ms} ms, ${Date.now() - t0} ms total`);
 }
+
+/* ---------- finding interfaces (service editor) ---------- */
+
+/** A compiled policy to size attributes against: the workspace build, else the running policy. */
+async function policyForRanking() {
+  if (usingDevel) {
+    const res = lastModule && lastBuild.get(lastModule);
+    if (res && res.ok) { const l = await linkedPolicy(); if (!l.unavailable) return l.policy; }
+  } else if (treeRoot) {
+    const res = lastBuild.get(treeRoot);
+    if (res && res.policyBin && fs.existsSync(res.policyBin)) return res.policyBin;
+  }
+  const active = build.installedPolicies().find(p => p.active);
+  return active ? active.policy : null;
+}
+
+/**
+ * Interfaces that give `domain` an access, narrowest first, the same way the
+ * denial assistant ranks them: { target, tclass, perms } or { path, tclass,
+ * perms } (the path's type from the file contexts).
+ */
+connection.onRequest('selinux/findInterfaces', async ({ domain, target, path: p, tclass, perms } = {}) => {
+  await indexing;
+  if (!/^[A-Za-z_]\w*$/.test(domain || '')) return { error: 'Give the service a name first.' };
+  if (!/^\w+$/.test(tclass || '') || !(perms || []).length || !perms.every(x => /^\w+$/.test(x))) return { error: 'Choose what kind of object and which permissions.' };
+  let resolved = null;
+  if (!target && p) {
+    if (!p.startsWith('/')) return { error: 'A path must be absolute.' };
+    if (process.platform === 'win32') return { error: 'Looking up a path needs a Linux host (use Remote-SSH); give the type instead.' };
+    const fc = !usingDevel && treeRoot ? treeFileContexts(lastBuild.get(treeRoot)) : null;
+    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', denials.FILE_MODES[tclass] || 'file', p]);
+    const m = /\t(\S+)\s*$/.exec(r.stdout);
+    const ctx = m && denials.parseContext(m[1]);
+    if (!ctx) return { error: `No file context gives ${p} a label${(r.stderr || '').trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''}.` };
+    target = ctx.type;
+    resolved = { path: p, type: target, from: fc ? 'the tree\'s file contexts' : 'this host\'s file contexts' };
+  }
+  if (!/^[A-Za-z_]\w*$/.test(target || '')) return { error: 'Give a type (e.g. etc_t) or an absolute path.' };
+  const bin = await policyForRanking();
+  const notes = [];
+  const g = { kind: 'deny', source: domain, target, tclass, perms, v: { verdict: 'missing', needed: `allow ${domain} ${target}:${tclass} { ${perms.join(' ')} };` } };
+  await suggestInterfaces([g], bin, notes, ['missing'], 1, 12);
+  return { target, resolved, suggest: g.suggest || null, notes };
+});
+
+let grantsCache = { key: null, map: new Map() };
+/** What interface calls really compile to for a domain (m4 with the policy's own Makefile): name → { rules, attrs, cond }. */
+connection.onRequest('selinux/interfaceGrants', async ({ domain, names } = {}) => {
+  await indexing;
+  if (!/^[A-Za-z_]\w*$/.test(domain || '')) return { error: 'Give the service a name first.' };
+  const list = [...new Set((names || []).filter(n => /^\w+$/.test(n)))].slice(0, 400);
+  const cfg = probeConfig();
+  if (cfg.unavailable) return { error: cfg.unavailable };
+  const res = usingDevel ? lastBuild.get(lastModule) : lastBuild.get(treeRoot);
+  const key = `${cfg.work}:${res ? res.ms + ':' + (res.workDir || '') : ''}:${idx.defs.size}`;
+  if (grantsCache.key !== key) grantsCache = { key, map: new Map() };
+  const todo = list.filter(n => !grantsCache.map.has(`${domain}|${n}`));
+  if (todo.length) {
+    const ex = await build.expandCalls(todo.map(n => `${n}(${domain})`), cfg);
+    if (!ex.ok) return { error: `m4 failed: ${ex.log.trim().split('\n').slice(-2).join(' ')}` };
+    const stmts = denials.probeStatements(ex.text);
+    const fmt = (x) => (x.length === 1 ? x[0] : `{ ${x.join(' ')} }`);
+    for (const n of todo) {
+      const st = stmts.get(`${n}(${domain})`) || [];
+      const rules = [], attrs = [];
+      let cond = 0;
+      const seen = new Set();
+      for (const s of st) {
+        if (s.rt === 'typeattribute') { if (s.s[0] === domain) attrs.push(...s.attrs); continue; }
+        if (s.rt !== 'allow' && s.rt !== 'dontaudit') continue;
+        const text = `${s.rt} ${fmt(s.s)} ${fmt(s.t)}:${fmt(s.c)} ${fmt(s.perms)};`;
+        if (seen.has(text)) continue;
+        seen.add(text);
+        if (s.cond) cond++;
+        rules.push({ text, cond: !!s.cond, nested: !!s.nested });
+      }
+      grantsCache.map.set(`${domain}|${n}`, { rules, attrs: [...new Set(attrs)], cond });
+    }
+  }
+  return { grants: Object.fromEntries(list.map(n => [n, grantsCache.map.get(`${domain}|${n}`)])) };
+});
 
 /** Whether calls into a module belong in optional_policy (it can be off): not base, or outside kernel/system. */
 function moduleOptional(mod, file) {

@@ -807,6 +807,13 @@ function showServiceEditor(context, mod, prefill = null) {
   .bool { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 4px 10px 8px; margin: 8px 0; }
   .portnum { display: inline-flex; gap: 2px; align-items: center; margin-right: 8px; }
   .kept { max-height: 300px; overflow: auto; }
+  .chip.extra { flex-wrap: wrap; }
+  .grantsbox { flex-basis: 100%; }
+  pre.grants { margin: 4px 0; padding: 4px 8px; background: var(--vscode-textCodeBlock-background); font-family: var(--vscode-editor-font-family); font-size: .88em; white-space: pre-wrap; max-height: 260px; overflow: auto; }
+  .iface { border-top: 1px solid var(--vscode-panel-border); padding: 4px 0 6px; }
+  .tag { font-size: .8em; padding: 0 6px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); }
+  .tag.best { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); border: none; }
+  .tag.warn { color: var(--vscode-editorWarning-foreground); }
   .keptline { cursor: pointer; padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .keptline:hover { background: var(--vscode-list-hoverBackground); }
   .ln { display: inline-block; min-width: 40px; opacity: .55; font-family: var(--vscode-editor-font-family); }
@@ -853,6 +860,8 @@ function showServiceEditor(context, mod, prefill = null) {
       if (m.cmd === 'ready' || m.cmd === 'reload') await load();
       else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
       else if (m.cmd === 'standalone') { current.standalone = !!m.on; await load(true); }
+      else if (m.cmd === 'find') post({ cmd: 'found', id: m.id, result: await client.sendRequest('selinux/findInterfaces', m.query) });
+      else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
       else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);

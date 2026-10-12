@@ -339,6 +339,22 @@ so far covered by the e2e tests only.
    376 modules; 29 mutation kinds, 14,152 edits). e2e section 5 (CLIP,
    RHEL 9, RHEL 10): xdm_t, xserver_t, sshd_t + a capability (one line),
    new login service logintest with the options and pty, one tree build.
+   Finding interfaces (done, unreleased; user: "let us add other
+   interfaces … help us find the one we want", items 1 and 3 of 4 offered):
+   server `selinux/findInterfaces` {domain, target | path, tclass, perms}
+   (path → type with matchpathcon on the tree build's tmp/all_mods.fc or the
+   host's; then suggestInterfaces() on one synthetic missing group with
+   limit 12 against `policyForRanking()` = tree policy.bin / linked module /
+   running policy) and `selinux/interfaceGrants` {domain, names} (probe
+   expansion, statements per call formatted as rules + added attributes,
+   cached per probe dir/build/index). Webview: `findByNeed()` (NEEDS: class
+   → [label, exact perms], custom perms) under the keyword search, results
+   like the denial cards with Add; `grantsToggle()` ▸ on extra chips,
+   keyword hits and found rows (grantsInfo / grantsSlots, refilled on the
+   'grants' message, reset when the domain name changes). Fixed on the way:
+   ownReq in suggestInterfaces spread idx.generatedAt()'s Set (crashed in
+   trees for port types). Not done: better keyword ranking, grouping long
+   lists by module (items 2 and 4).
    Standalone modules as RPMs (done, unreleased; user: "make them a stand
    alone module … package the service and the policy in an RPM"; target =
    the build host's devel headers): `isStandaloneModule(p)` = module file in

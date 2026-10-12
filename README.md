@@ -394,6 +394,21 @@ as is*, each line clickable. Removing a file type, a boolean or a helper that th
 it. A path given for two types (say the service's program and a helper's)
 is refused too, since `setfiles` rejects the build.
 
+**Finding interfaces.** *Other interfaces* has, besides the keyword search,
+**Find by need**: a type (`etc_t`, a port type such as `http_port_t`, a
+domain such as `syslogd_t`) or an absolute path (looked up in the tree
+build's file contexts, else this host's), the kind of object (file, dir,
+socket classes, process, dbus, …) and what to do with it (read, write,
+append, create, list, connect, bind, send signals, …, or exact
+permissions). It lists the interfaces that grant exactly that, ranked as
+the denial assistant ranks them (from what each one compiles to, narrowest
+first, tagged *narrowest*, *owner*, *broad*, with what else each grants;
+pairs when no single one covers it); *Add* puts one in the service. **▸**
+next to an interface (found, from the keyword search, or already in the
+service) shows the rules it really compiles to for this service's domain
+and the attributes it adds (m4 with the policy's own Makefile; in a tree
+after a build), so long lists such as sshd's can be reviewed.
+
 **Login services.** *System access* has a **Logins** group for programs
 that log users in, such as sshd, getty or a display manager: log users in
 (`auth_login_pgm_domain`: PAM, switching to the user's identity, role and
@@ -1051,6 +1066,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   build on a host with that release's `selinux-policy-devel`. Port number
   conflicts are checked against the tree, not the target policy. The
   property checks and the Compiled Policy view still show the tree.
+* Find by need and ▸ need the policy's m4 output: in a tree, a build;
+  standalone, the devel headers. Find by need offers interfaces that take
+  just the domain.
 * Services only: a domain started by init (`init_daemon_domain()`,
   `init_system_domain()`, `init_domain()` or a ranged variant). User
   applications and CGI scripts are edited in the `.te` as before. Big

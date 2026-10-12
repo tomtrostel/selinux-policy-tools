@@ -240,6 +240,121 @@
   }
 
   /** Search box over the interfaces taking just a domain; onPick(name). */
+  /* ---------- what an interface really grants (m4), shown on demand ---------- */
+
+  const grantsInfo = new Map();   // interface → { rules, attrs, cond } | 'loading' | { error }
+  let grantsSlots = new Map();    // interface → [elements showing its rules] (rebuilt by each render)
+  const domainName = () => model.domain || `${model.name || 'NAME'}_t`;
+  function fillGrants(el, n) {
+    const g = grantsInfo.get(n);
+    el.textContent = '';
+    if (!g || g === 'loading') { el.append(h('div', { class: 'muted small' }, 'Working out what it compiles to…')); return; }
+    if (g.error) { el.append(h('div', { class: 'warn small' }, g.error)); return; }
+    const lines = g.rules.map(r => r.text + (r.cond ? '   [under a boolean]' : ''));
+    el.append(h('pre', { class: 'grants' }, lines.length ? lines.slice(0, 30).join('\n') + (lines.length > 30 ? `\n… and ${lines.length - 30} more` : '') : 'No rules for the domain itself.'),
+      g.attrs.length ? h('div', { class: 'muted small', title: 'Attributes give the domain every rule written for them elsewhere' }, `and adds the attributes ${g.attrs.join(', ')}`) : null);
+  }
+  /** A ▸ button that shows (and asks for) what interface n grants to this service's domain. */
+  function grantsToggle(n) {
+    const box = h('div', { class: 'grantsbox' });
+    box.hidden = true;
+    if (!grantsSlots.has(n)) grantsSlots.set(n, []);
+    grantsSlots.get(n).push(box);
+    const btn = h('button', { class: 'icon', title: `Show the rules ${n}(${domainName()}) compiles to (m4 with this policy's own Makefile)`, onclick: (e) => {
+      if (e && e.stopPropagation) e.stopPropagation();
+      box.hidden = !box.hidden;
+      btn.textContent = box.hidden ? '▸' : '▾';
+      if (!box.hidden) {
+        if (!grantsInfo.has(n)) { grantsInfo.set(n, 'loading'); vscode.postMessage({ cmd: 'grants', domain: domainName(), names: [n] }); }
+        fillGrants(box, n);
+      }
+    } }, '▸');
+    return { btn, box };
+  }
+
+  /* ---------- finding an interface by what the service needs ---------- */
+
+  // What to allow on a kind of object: label → exact permissions (the narrowest interface covering them wins).
+  const NEEDS = {
+    file: [['read', ['open', 'read']], ['write', ['open', 'write']], ['append', ['open', 'append']], ['create', ['create']], ['create, write and delete', ['create', 'write', 'unlink', 'rename']], ['execute', ['execute']], ['memory-map', ['map']], ['see attributes', ['getattr']]],
+    dir: [['list', ['read', 'search']], ['search', ['search']], ['add and remove entries', ['add_name', 'remove_name', 'write']], ['create and delete', ['create', 'rmdir']], ['see attributes', ['getattr']]],
+    lnk_file: [['read', ['read']], ['create and delete', ['create', 'unlink']]],
+    sock_file: [['write (connect through it)', ['write']], ['create and delete', ['create', 'unlink']]],
+    chr_file: [['read', ['open', 'read']], ['write', ['open', 'write']], ['read and write', ['open', 'read', 'write']]],
+    blk_file: [['read', ['open', 'read']], ['read and write', ['open', 'read', 'write']]],
+    fifo_file: [['read', ['read']], ['write', ['write']]],
+    unix_stream_socket: [['connect', ['connectto']]],
+    unix_dgram_socket: [['send to', ['sendto']]],
+    tcp_socket: [['connect to the port', ['name_connect']], ['bind the port', ['name_bind']]],
+    udp_socket: [['bind the port', ['name_bind']]],
+    process: [['send signals', ['signal']], ['check it is alive (signull)', ['signull']], ['kill', ['sigkill']], ['see its state', ['getattr']]],
+    dbus: [['send messages', ['send_msg']]],
+  };
+  const NEED_TIP = 'Find the interfaces that give this service exactly an access: a type (e.g. etc_t, or the port type http_port_t for tcp_socket) or a path (looked up in the file contexts), the kind of object and what to do with it. They are ranked as the denial assistant ranks them: from what each interface really compiles to, narrowest first';
+  let findSeq = 0;
+  const findTargets = new Map();  // request id → results element
+  function findByNeed(exclude, onPick) {
+    const results = h('div', { class: 'results' });
+    const what = h('input', { type: 'text', size: 26, spellcheck: 'false', placeholder: 'type or path, e.g. etc_t or /var/log/x.log', title: 'A type (etc_t, http_port_t, syslogd_t) or an absolute path; a path is looked up in the file contexts' });
+    const cls = h('select', { title: 'The kind of object: file classes for files and directories, sockets for ports and other processes' }, Object.keys(NEEDS).map(c => h('option', { value: c }, c)));
+    const act = h('select', { title: 'What the service must be able to do with it' });
+    const custom = h('input', { type: 'text', size: 18, spellcheck: 'false', placeholder: 'e.g. read write', title: 'Exactly these permissions (space separated)' });
+    custom.hidden = true;
+    const fillAct = () => {
+      act.textContent = '';
+      for (const [label, perms] of NEEDS[cls.value] || []) act.append(h('option', { value: perms.join(' ') }, label));
+      act.append(h('option', { value: '__custom__' }, 'exactly these permissions…'));
+      custom.hidden = true;
+    };
+    cls.addEventListener('change', fillAct);
+    act.addEventListener('change', () => { custom.hidden = act.value !== '__custom__'; });
+    cls.value = 'file';
+    fillAct();
+    const go = h('button', { class: 'chip', title: NEED_TIP, onclick: () => {
+      const q = what.value.trim();
+      const perms = (act.value === '__custom__' ? custom.value : act.value).split(/\s+/).filter(Boolean);
+      if (!q || !perms.length) { results.textContent = ''; results.append(h('div', { class: 'muted' }, 'Give a type or a path, and what to do with it.')); return; }
+      const id = ++findSeq;
+      findTargets.set(id, { results, exclude, onPick });
+      results.textContent = '';
+      results.append(h('div', { class: 'muted' }, 'Expanding the candidates with m4…'));
+      vscode.postMessage({ cmd: 'find', id, query: { domain: domainName(), ...(q.startsWith('/') ? { path: q } : { target: q }), tclass: cls.value, perms } });
+    } }, 'Find');
+    return [h('div', { class: 'row', title: NEED_TIP }, h('span', { class: 'lbl' }, 'Find by need'), what, cls, act, custom, go), results];
+  }
+  function showFound(id, r) {
+    const t = findTargets.get(id);
+    if (!t) return;
+    const { results, exclude, onPick } = t;
+    results.textContent = '';
+    if (r.error) { results.append(h('div', { class: 'warn' }, r.error)); return; }
+    if (r.resolved) results.append(h('div', { class: 'muted small' }, `${r.resolved.path} is ${r.resolved.type} (${r.resolved.from}).`));
+    const s = r.suggest;
+    for (const n of r.notes || []) results.append(h('div', { class: 'muted small' }, n));
+    if (!s) return;
+    if (s.own) { results.append(h('div', { class: 'muted' }, `${r.target} belongs to this module: give the service access to it in Files (or a plain allow rule in the .te).`)); return; }
+    (s.list || []).forEach((x, k) => {
+      const g = grantsToggle(x.name);
+      const tags = [k === 0 && x.covers ? h('span', { class: 'tag best', title: 'Covers it with the fewest other rights' }, 'narrowest') : null,
+        x.owner ? h('span', { class: 'tag', title: `Defined by the module that owns ${r.target}` }, 'owner') : null,
+        x.broad ? h('span', { class: 'tag warn', title: 'Grants far more than the narrowest one' }, 'broad') : null,
+        !x.covers ? h('span', { class: 'tag warn', title: 'Grants only part of it' }, `lacks ${x.missing.join(' ')}`) : null];
+      const have = exclude.includes(x.name) || model.extra.includes(x.name);
+      results.append(h('div', { class: 'iface' },
+        h('div', { class: 'row' }, g.btn, h('code', {}, x.name), tags,
+          h('button', { class: 'chip', disabled: have, title: have ? 'Already added' : `Add ${x.name} to this service`, onclick: () => onPick(x.name) }, have ? 'added' : 'Add')),
+        x.summary ? h('div', { class: 'muted small' }, x.summary) : null,
+        x.grants && x.grants.length ? h('div', { class: 'small', title: 'What it grants besides that access (largest first)' }, h('span', { class: 'muted' }, 'also grants: '), x.grants.join('; ')) : h('div', { class: 'muted small' }, 'grants nothing else'),
+        g.box));
+    });
+    for (const c of s.combos || []) {
+      results.append(h('div', { class: 'iface' }, h('div', { class: 'row' }, h('span', { class: 'muted' }, 'together: '), c.items.map(x => h('code', {}, x.name + ' ')),
+        h('button', { class: 'chip', title: 'Add both', onclick: () => c.items.forEach(x => { if (!model.extra.includes(x.name)) onPick(x.name); }) }, 'Add both'))));
+    }
+    if (s.newIface) results.append(h('div', { class: 'muted' }, `No interface grants it. The module that owns ${r.target} (${s.newIface.module}) could get one, e.g. ${s.newIface.name}; the denial assistant writes it (SELinux: Analyze Denials…).`));
+    if (s.note && !(s.list || []).length) results.append(h('div', { class: 'muted' }, s.note));
+  }
+
   function ifaceSearch(exclude, onPick, keep = () => true) {
     const results = h('div', { class: 'results' });
     const search = h('input', { type: 'text', size: 40, spellcheck: 'false', placeholder: 'Search interfaces: name or words from the summary', title: 'Type part of an interface name or words from its description, then click a result to add it. Only interfaces that take just the domain are listed', oninput: () => {
@@ -247,7 +362,10 @@
       results.textContent = '';
       if (!q.length) return;
       const hits = info.interfaces.filter(i => !exclude.includes(i.n) && keep(i) && q.every(w => i.n.includes(w) || i.s.toLowerCase().includes(w))).slice(0, 40);
-      for (const it of hits) results.append(h('div', { class: 'hit', title: `Add ${it.n}: ${it.s}`, onclick: () => { search.value = ''; onPick(it.n); } }, h('code', {}, it.n), h('span', { class: 'muted' }, ` ${it.m} — ${it.s}`)));
+      for (const it of hits) {
+        const g = grantsToggle(it.n);
+        results.append(h('div', {}, h('div', { class: 'hit', title: `Add ${it.n}: ${it.s}`, onclick: () => { search.value = ''; onPick(it.n); } }, g.btn, h('code', {}, it.n), h('span', { class: 'muted' }, ` ${it.m} — ${it.s}`)), g.box));
+      }
       if (!hits.length) results.append(h('div', { class: 'muted' }, 'No interface taking just a domain matches.'));
     } });
     return [search, results];
@@ -257,11 +375,13 @@
     const byName = new Map(info.interfaces.map(i => [i.n, i]));
     const chips = h('div', { class: 'chips' }, model.extra.map((n, i) => {
       const d = byName.get(n);
-      return h('span', { class: 'chip on', title: d ? d.s : '' }, h('code', {}, n), d && d.s ? h('span', { class: 'muted' }, ' ' + d.s.slice(0, 70)) : null,
-        h('button', { class: 'icon', title: 'Remove this interface call', onclick: () => { model.extra.splice(i, 1); render(); changed(); } }, '✕'));
+      const g = grantsToggle(n);
+      return h('span', { class: 'chip on extra', title: d ? d.s : '' }, g.btn, h('code', {}, n), d && d.s ? h('span', { class: 'muted' }, ' ' + d.s.slice(0, 70)) : null,
+        h('button', { class: 'icon', title: 'Remove this interface call', onclick: () => { model.extra.splice(i, 1); render(); changed(); } }, '✕'), g.box);
     }));
-    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy.'), chips,
-      ...ifaceSearch(model.extra, (n) => { model.extra.push(n); render(); changed(); })], model.extra.length > 0 || info.isNew);
+    const add = (n) => { if (!model.extra.includes(n)) model.extra.push(n); render(); changed(); };
+    return section('Other interfaces', `${model.extra.length}`, [h('div', { class: 'muted small' }, 'Any interface that takes just the domain. Calls into modules that can be turned off go in optional_policy. ▸ shows what one compiles to.'), chips,
+      ...ifaceSearch(model.extra, add), ...findByNeed(model.extra, add)], model.extra.length > 0 || info.isNew);
   }
 
   const emptyGrants = () => ({ self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] });
@@ -474,11 +594,13 @@
   function render() {
     const form = $('form');
     const scroll = form.scrollTop;
+    grantsSlots = new Map();
     const open = [...form.querySelectorAll('details')].map(d => d.open);
     form.textContent = '';
     const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
+    if (grantsInfo.domain !== domainName()) { grantsInfo.clear(); grantsInfo.domain = domainName(); }
     $('title').textContent = info.isNew ? 'New service' : `Service: ${model.name}`;
   }
 
@@ -504,6 +626,14 @@
     } else if (m.cmd === 'stale') {
       if (dirty) $('stale').hidden = false;
       else vscode.postMessage({ cmd: 'reload' });
+    } else if (m.cmd === 'found') {
+      showFound(m.id, m.result);
+    } else if (m.cmd === 'grants') {
+      if (m.domain !== domainName()) return;
+      const r = m.result || {};
+      for (const [n, g] of Object.entries(r.grants || {})) grantsInfo.set(n, g || { error: 'No expansion for it.' });
+      if (r.error) for (const [n, v] of grantsInfo) if (v === 'loading') grantsInfo.set(n, { error: r.error });
+      for (const [n, els] of grantsSlots) for (const el of els) if (!el.hidden) fillGrants(el, n);
     } else if (m.cmd === 'licenseSaved') {
       info.licenses = m.licenses;
       license = m.license;

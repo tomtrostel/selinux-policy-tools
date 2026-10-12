@@ -4,6 +4,12 @@
 
 **New**
 
+* **Service editor: finding interfaces**: *Find by need* in *Other
+  interfaces* (a type or path, the kind of object, what to do with it) lists
+  the interfaces that grant it, narrowest first, with what else each
+  grants; **▸** on any interface shows the rules it really compiles to.
+* **Fix**: denial suggestions in a tree failed for port types (template-
+  generated interfaces).
 * **Service editor: more services, login services**: modules whose
   domains are started by `init_system_domain`, `init_domain` or a ranged
   variant open too (on RHEL 9 51 more, e.g. `xserver`, `dbus`, `getty`),

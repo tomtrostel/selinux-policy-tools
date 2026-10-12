@@ -29,4 +29,9 @@ lot, so look for another way first. `dac_override` denials, for example,
 usually mean a file has the wrong owner.
 
 **Other interfaces**: anything else in the tree that takes just the domain.
-Search by name or by words in its description ("read random", "nfs").
+Search by name or by words in its description ("read random", "nfs"), or
+**Find by need**: give a type (`etc_t`, `http_port_t`) or a path
+(`/var/log/myapp.log`), the kind of object and what to do with it (read,
+write, connect…), and it lists the interfaces that grant exactly that,
+narrowest first, with what else each grants. **▸** next to any interface
+(found, searched or already added) shows the rules it really compiles to.

@@ -261,6 +261,19 @@ const build = async (te) => {
     const back = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
     check(back.model && back.model.caps.includes(cap), `${mod} ${dom} reads back with ${cap}`);
   }
+  // 6. Finding interfaces by what a service needs, and what one compiles to.
+  let fi = await conn.sendRequest('selinux/findInterfaces', { domain: 'logintest_t', target: 'etc_t', tclass: 'file', perms: ['open', 'write'] });
+  const top6 = (x) => (x.suggest && x.suggest.list && x.suggest.list[0] ? x.suggest.list[0].name : null);
+  check(top6(fi) === 'files_rw_etc_files' && fi.suggest.list[0].covers, `find: write etc_t files → ${top6(fi)}`, fi);
+  fi = await conn.sendRequest('selinux/findInterfaces', { domain: 'logintest_t', path: '/var/log/messages', tclass: 'file', perms: ['open', 'append'] });
+  check(fi.resolved && fi.resolved.type === 'var_log_t' && /tree/.test(fi.resolved.from) && fi.suggest.list.length > 0, `find by path: /var/log/messages is ${fi.resolved && fi.resolved.type} (${fi.resolved && fi.resolved.from}) → ${top6(fi)}`, fi);
+  fi = await conn.sendRequest('selinux/findInterfaces', { domain: 'logintest_t', target: 'http_port_t', tclass: 'tcp_socket', perms: ['name_connect'] });
+  check(top6(fi) === 'corenet_tcp_connect_http_port', `find: connect to http_port_t → ${top6(fi)}`, fi);
+  const gr = await conn.sendRequest('selinux/interfaceGrants', { domain: 'logintest_t', names: ['files_read_etc_files', 'auth_read_shadow'] });
+  const ge = gr.grants && gr.grants.files_read_etc_files;
+  check(ge && ge.rules.some(x => /^allow logintest_t etc_t:file /.test(x.text)), `files_read_etc_files(logintest_t) compiles to ${ge ? ge.rules.length : 0} rules, e.g. ${ge && ge.rules.find(x => /etc_t:file/.test(x.text)) ? ge.rules.find(x => /etc_t:file/.test(x.text)).text : '?'}`, gr);
+  const gs = gr.grants && gr.grants.auth_read_shadow;
+  check(gs && (gs.rules.length || gs.attrs.length), `auth_read_shadow(logintest_t): ${gs ? `${gs.rules.length} rules${gs.attrs.length ? `, adds ${gs.attrs.join(', ')}` : ''}` : '?'}`, gs);
   const back6 = await conn.sendRequest('selinux/serviceInfo', { module: 'logintest' });
   check(back6.model && back6.model.loginPty && ['loginpgm', 'sessions', 'loginrecords', 'ttys'].every(a => back6.model.access.includes(a)) && !back6.kept.length, 'logintest reads back with its login options and pty type', back6.model && { access: back6.model.access, pty: back6.model.loginPty, kept: back6.kept });
 

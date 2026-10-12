@@ -32,7 +32,9 @@ dev_read_urand(notesd_t)
   that owns the type: hover the type to see which module that is, then
   **Ctrl+Alt+M** to open the module and scan its `.if` outline.
 * In the service editor, **Other interfaces** searches names *and*
-  descriptions: "random", "nfs read", "journal".
+  descriptions ("random", "nfs read", "journal"), and **Find by need** lists
+  the interfaces that grant an access you describe (a type or path and what
+  to do with it), narrowest first; **▸** shows what one compiles to.
 * Hover a candidate to read its documentation and what it requires;
   **F12** shows its body.
 

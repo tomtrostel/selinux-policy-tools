@@ -611,6 +611,31 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(licSelect().children.some(o => o.textContent === 'LicenseRef-Acme (saved)' && o.attrs.selected !== undefined) && !licInput(), 'saved: offered in the list and selected');
   byId.apply.disabled = false; byId.apply.fire('click');
   check(last('apply').standalone === true && last('apply').license === 'LicenseRef-Acme', 'apply says standalone, with the license');
+  // Other interfaces: what one compiles to (on demand), and finding one by what the service needs.
+  const extraChip = () => find(e => (e.attrs.class || '').split(' ').includes('extra'))[0];
+  check(!!extraChip(), 'existing other interfaces are listed');
+  const extraName = extraChip().all(e => e.tag === 'code')[0].textContent;
+  extraChip().all(e => e.tag === 'button' && e.textContent === '▸')[0].fire('click');
+  check(last('grants') && last('grants').domain === 'webby_t' && last('grants').names.join() === extraName, `▸ asks what ${extraName}(webby_t) compiles to`);
+  send({ cmd: 'grants', domain: 'webby_t', result: { grants: { [extraName]: { rules: [{ text: 'allow webby_t urandom_device_t:chr_file { open read };', cond: false }], attrs: ['some_attr'], cond: 0 } } } });
+  check(/allow webby_t urandom_device_t:chr_file \{ open read \};/.test(extraChip().textContent) && /some_attr/.test(extraChip().textContent), 'the rules it compiles to are shown, with the attributes it adds');
+  const what = find(e => e.tag === 'input' && (e.attrs.placeholder || '').startsWith('type or path'))[0];
+  const selects = [find(e => e.tag === 'select' && (e.attrs.title || '').startsWith('The kind of object'))[0], find(e => e.tag === 'select' && e.attrs.title === 'What the service must be able to do with it')[0]].filter(Boolean);
+  check(what && selects.length === 2 && selects[1].children.some(o => o.textContent === 'write'), 'Find by need: a type or path, the kind of object, what to do');
+  what.value = 'etc_t'; selects[1].value = 'open write';
+  buttonText('Find').fire('click');
+  const fq = last('find');
+  check(fq && fq.query.domain === 'webby_t' && fq.query.target === 'etc_t' && fq.query.tclass === 'file' && fq.query.perms.join() === 'open,write', 'Find sends the need', fq);
+  what.value = '/var/log/webby.log'; buttonText('Find').fire('click');
+  check(last('find').query.path === '/var/log/webby.log' && !last('find').query.target, 'a path is sent as a path (looked up on the host)');
+  send({ cmd: 'found', id: fq.id, result: { target: 'etc_t', resolved: null, notes: [], suggest: { list: [
+    { name: 'files_rw_etc_files', covers: true, missing: [], owner: true, extra: 16, grants: ['etc_t dir: search'], summary: 'Read and write generic files in /etc.' },
+    { name: 'files_manage_etc_files', covers: true, missing: [], owner: true, extra: 42, grants: [], summary: '' }] } } });
+  const found = find(e => e.attrs.class === 'iface' && /files_rw_etc_files/.test(e.textContent))[0];
+  check(found && /narrowest/.test(found.textContent) && /also grants: etc_t dir: search/.test(found.textContent), 'found: ranked, narrowest tagged, what else it grants');
+  found.all(e => e.tag === 'button' && e.textContent === 'Add')[0].fire('click');
+  await wait(300);
+  check(last('plan').model.extra.includes('files_rw_etc_files'), 'Add puts it in the service');
   // Logins: the options and the pty type of its own.
   const lcat = svc.catalog({ ...ctx, has: (n) => KNOWN.has(n) || ['auth_login_pgm_domain', 'userdom_spec_domtrans_all_users', 'userdom_signal_all_users', 'term_login_pty', 'term_create_pty'].includes(n) });
   send({ cmd: 'init', info: { ...info, catalog: lcat, licenses: null, standalone: false, canStandalone: false }, keep: true });
