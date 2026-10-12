@@ -381,6 +381,21 @@ service editor again, can be installed with *SELinux: Install Module*, and
 take fixes from the denial assistant. The service's own package can then
 require `<name>-selinux`.
 
+**Web applications.** A module built on `apache_content_template(NAME)`
+(bugzilla, mediawiki, awstats, the CGI parts of collectd, git, munin, …)
+opens as a web application: the domain Apache runs its CGI scripts in
+(`NAME_script_t` in Fedora/RHEL, `httpd_NAME_script_t` upstream), its
+**CGI scripts** paths, and a **Web content** section with the content types
+the template declares (files it reads, data it changes, data it only adds
+to, `.htaccess` files) and their paths in the `.fc`. Everything else in the
+form (network, system access, capabilities, file types of its own, other
+interfaces, booleans) edits the script domain's rules. A new module can be
+a web application too (*What*: Web application), written as
+`apache_content_template(NAME)` plus its paths; refused when the tree has
+the apache module off. Paths keep a file type flag the path doesn't imply
+(`/usr/share/bugzilla/ -d`), so CLIP's bugzilla, which labels one directory
+`-d` for content and `--` for scripts, reads back and saves unchanged.
+
 **Editing an existing service** opens any module with a domain something
 starts as a system service: init (`init_daemon_domain()`,
 `init_system_domain()`, `init_domain()` or their ranged variants), D-Bus
@@ -914,11 +929,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   from `apache.te` in `optional_policy`, and the rebuilt tree allows it.
   The practice module's four sample denials get their intended verdicts,
   and its HTTP fix resolves after a build (`npm run test:tutorial`).
-* Service editor: every service domain in the Fedora tree (660 in 414
-  modules; 34 started only by D-Bus activation, inetd, cron or as a mail
-  server, 150 declared by a template and 138 of those started by it) reads
-  back into the form, and saving it unchanged leaves all files
-  byte-identical; 34 kinds of edits on each (22,440; file access under a boolean, the ways it is started, the login options, the login pty type and custom file access
+* Service editor: every service domain in the Fedora tree (685 in 420
+  modules; 25 web applications, 34 started only by D-Bus activation, inetd,
+  cron or as a mail server, 175 declared by a template and 138 of those
+  started by it) reads back into the form, and saving it unchanged leaves
+  all files byte-identical; 35 kinds of edits on each (23,975; web content paths, file access under a boolean, the ways it is started, the login options, the login pty type and custom file access
   included) read back and repeat as a no-op. Earlier, on the main daemon
   domain of 326 modules: 26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
@@ -1126,11 +1141,13 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * Find by need and ▸ need the policy's m4 output: in a tree, a build;
   standalone, the devel headers. Find by need offers interfaces that take
   just the domain.
-* Services only: a domain started by init, D-Bus activation, inetd, cron or
-  as a mail server, directly or through a template of its module (see
-  *Editing an existing service*). User applications (`application_domain`)
-  and CGI scripts (`apache_content_template`) are edited in the `.te` as
-  before. For template-declared daemons, types and rules inside the
+* Services and web applications only: a domain started by init, D-Bus
+  activation, inetd, cron or as a mail server, directly or through a
+  template of its module, or the script domain of `apache_content_template`
+  (see *Editing an existing service*, *Web applications*). User applications
+  (`application_domain`) are edited in the `.te` as before. What
+  `apache_content_template` grants and declares is fixed by the template.
+  For template-declared daemons, types and rules inside the
   template (often its runtime and log types) aren't in the form. Big
   daemons such as sshd, xdm or the X server still list many interfaces
   under *Other interfaces* (no option describes them) and keep the rules

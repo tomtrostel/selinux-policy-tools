@@ -31,7 +31,7 @@ ranked keyword search for interfaces. 0.10.2: long interface lists grouped
 by module, custom file access (kept rules shown, openable, expanded), build
 of the active tree from outside trees/modules. Unreleased: file access
 under a boolean, services started by D-Bus/inetd/cron/mail server or
-by a template of their module (service editor).
+by a template of their module, web applications (service editor).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -508,10 +508,33 @@ so far covered by the e2e tests only.
    template (138 started by it), 22,440 edits; e2e section 8: nfsd_t,
    gssd_t, fenced_t, systemd_logind_t, spamass_milter_t (+cap, built) on
    CLIP (34 listed), RHEL 9 (110), RHEL 10 (129).
+   Web applications (done, unreleased; "go ahead and do 6"; bugzilla was
+   the user's example): WEB_TEMPLATE apache_content_template;
+   webPatterns(ctx) = its declPatterns (ctx.declares) → {template, d
+   (*_script_t), e (*_script_exec_t), content {content, rw, ra, htaccess}}
+   (Fedora $1_…, upstream httpd_$1_…); WEB_KINDS labels/help/default paths.
+   daemonDomains: top-level calls of it → {web: {name, args}} (attached to
+   a domain found through its own start call too). recognize: dom.web →
+   declaredBy {…, web: true}, model.webapp (patterns), model.content {id:
+   paths} from the .fc, exec = script paths (no implied --). names(): web
+   models from the patterns (webStem = declaredBy.args[0] or model.name);
+   unitsOf: a new web app is declared by the template call, no entries.
+   fcEntries/editFc include content types; validate: no "Nothing starts"
+   for web apps, "no CGI script paths" note, apache off → refused for new.
+   Paths: fcFromPath reads a trailing " -d"/" --"/… flag (FT_SUFFIX);
+   recognize's pathsOf(T, exec) appends the fc's flag when the path doesn't
+   imply it (impliedFtype); validate's one-path-two-labels check keys on
+   spec + flag (CLIP bugzilla: same dir -d content, -- scripts). Server
+   startingTemplates() also returns web (patterns) and adds the template to
+   the module regex. Catalog webapp {…, off, kinds}. Webview: What radio
+   (new), setWebapp(on), CGI scripts row, "Run by" row, contentSection()
+   (Web content), titles. Tests: service-test (catalog, new web app Fedora
+   names, read back, no-op, CLIP bugzilla with -d/--, ra path added, apache
+   off, form switch), survey mutation 35 (Fedora 685 domains / 420 modules,
+   25 web apps, 23,975 edits), service-e2e section 9 (bugzilla no-op + cap +
+   ra path; new webtest built, its rw path in tmp/all_mods.fc).
    Module kinds still not handled (survey 2026-10-12, Fedora + CLIP):
-   (6) web applications
-   (apache_content_template: bugzilla, mediawiki, …, and the script parts
-   of collectd/git/munin/nut). Out of scope: application_domain /
+   all six agreed kinds are done. Out of scope so far: application_domain /
    userdom_user_application_domain programs, domains entered directly
    (keyutils, passenger, openca), roles, kernel-layer modules.
    Ideas not done: gen_bool.

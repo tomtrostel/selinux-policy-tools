@@ -34,6 +34,19 @@
   and open in the editor with the template call as their declaration and
   start (Fedora: 660 service domains in 414 modules; RHEL 10: 129 such
   domains). The template call and what it declares stay as written.
+* **Service editor: web applications.** Modules built on
+  `apache_content_template` (bugzilla, mediawiki, awstats, the CGI parts of
+  collectd, git, munin, Apache's own `httpd_sys_script_t`, …) open as web
+  applications: the script domain, its **CGI scripts** paths and a **Web
+  content** section with the template's content types (read, read/write,
+  append-only, `.htaccess`) and their `.fc` paths, with the rest of the form
+  editing the script domain's rules (Fedora: 25 web applications; type
+  names from the template, so `NAME_script_t` in Fedora/RHEL and
+  `httpd_NAME_script_t` upstream). New modules can be web applications
+  (*What*: Web application), refused when the apache module is off.
+* Paths in the service editor keep a file type flag the path doesn't imply
+  (`/usr/share/bugzilla/ -d`), and one path for directories (`-d`) and for
+  files (`--`) is no longer reported as two labels for one path.
 
 **Fixes**
 

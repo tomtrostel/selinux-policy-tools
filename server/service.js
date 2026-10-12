@@ -328,13 +328,21 @@ const pick = (ctx, alts) => (alts || []).find(n => ctx.has(n)) || null;
 const sub = (s, name) => (s || '').replace(/%/g, name);
 const RX_SPECIAL = /[\\()[\]{}*+?|^$]/;
 
-/** fc spec ⇄ the path shown in the editor: `/var/lib/foo/` = the directory and everything in it. */
+/**
+ * fc spec ⇄ the path shown in the editor: `/var/lib/foo/` = the directory and everything in it.
+ * A file type flag the path doesn't imply is written after it: `/usr/share/foo/ -d` (directories only).
+ */
+const FT_SUFFIX = /\s+(-[-dlbcsp])$/;
 function fcFromPath(p) {
+  const ft = FT_SUFFIX.exec(p);
+  if (ft) return { ...fcFromPath(p.slice(0, ft.index)), ftype: ft[1] };
   if (RX_SPECIAL.test(p)) return { spec: p };
   const esc = (s) => s.replace(/\./g, '\\.');
   if (p.endsWith('/') && p.length > 1) return { spec: `${esc(p.slice(0, -1))}(/.*)?` };
   return { spec: esc(p), file: true };
 }
+/** The file type flag a path gets without a suffix: '--' for a single file (or any program path of a service), else none. */
+const impliedFtype = (p, exec) => (exec || fcFromPath(p).file ? '--' : '');
 function pathFromFc(spec) {
   const simple = (s) => /^(?:[\w/@:-]|\\\.)+$/.test(s);
   const unesc = (s) => s.replace(/\\\./g, '.');
@@ -346,9 +354,42 @@ function pathFromFc(spec) {
 
 /* ---------- units: what each setting generates ---------- */
 
+/*
+ * Web applications: CGI scripts Apache runs in a domain of their own, declared with their content types
+ * by apache_content_template(NAME). The type names come from the template's own declarations
+ * (Fedora/RHEL: NAME_script_t, NAME_content_t, …; upstream refpolicy: httpd_NAME_script_t, …).
+ */
+const WEB_TEMPLATE = 'apache_content_template';
+const WEB_KINDS = [
+  ['content', 'Pages and files it reads', (p) => /_content_t$/.test(p) && !/_r[wa]_content_t$/.test(p), '/usr/share/%/',
+    'Pages, templates and other files of the application that the scripts (and Apache) only read. Typically its installation directory.'],
+  ['rw', 'Data it changes', (p) => /_rw_content_t$/.test(p), '/var/lib/%/',
+    'Files and directories the scripts create, change and delete: uploads, caches, its data directory.'],
+  ['ra', 'Data it only adds to', (p) => /_ra_content_t$/.test(p), '',
+    'Files the scripts may create and append to but not rewrite or delete, e.g. their own logs.'],
+  ['htaccess', '.htaccess files', (p) => /_htaccess_t$/.test(p), '',
+    'Apache .htaccess files in the application’s directories: Apache reads them, the scripts can’t change them.'],
+];
+/** The template's name patterns ($1 = the application's name), or null when the tree has no such template. */
+function webPatterns(ctx) {
+  if (!ctx || !ctx.has || !ctx.has(WEB_TEMPLATE) || !ctx.declares) return null;
+  const ps = ctx.declares(WEB_TEMPLATE) || [];
+  const d = ps.find(p => /_script_t$/.test(p)), e = ps.find(p => /_script_exec_t$/.test(p));
+  if (!d || !e) return null;
+  return { template: WEB_TEMPLATE, d, e, content: Object.fromEntries(WEB_KINDS.map(([id, , test]) => [id, ps.find(test) || null])) };
+}
+const webStem = (model) => (model.declaredBy && model.declaredBy.web ? model.declaredBy.args[0] : model.name);
+/** A web application's content types: [{ id, type }]. */
+function webTypes(model) {
+  const w = model.webapp;
+  if (!w) return [];
+  return WEB_KINDS.filter(([id]) => w.content[id]).map(([id]) => ({ id, type: w.content[id].replace(/\$1/g, webStem(model)) }));
+}
+
 /** The resolved names for a model: domain, exec type, file types. */
 function names(model) {
   const n = model.name;
+  if (model.webapp && model.webapp.d) return { D: model.domain || model.webapp.d.replace(/\$1/g, webStem(model)), E: model.execType || model.webapp.e.replace(/\$1/g, webStem(model)) };
   return { D: model.domain || `${n}_t`, E: model.execType || `${n}_exec_t` };
 }
 /*
@@ -443,9 +484,10 @@ function unitsOf(model, ctx) {
   const callOf = call;
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
 
-  const by = model.declaredBy || null;
+  // A new web application is declared by apache_content_template(NAME); Apache runs its scripts, nothing else starts it.
+  const by = model.declaredBy || (model.webapp ? { name: model.webapp.template, args: [model.name], execToo: true, web: true } : null);
   // Started by the template that declares it (by.starts), or by its own start calls (init_daemon_domain by default).
-  const entries = model.entries && model.entries.length ? model.entries : by && by.starts ? [] : [{ name: 'init_daemon_domain', args: [] }];
+  const entries = model.entries && model.entries.length ? model.entries : by && (by.starts || by.web) ? [] : [{ name: 'init_daemon_domain', args: [] }];
   // Further ways to start it (D-Bus activation, cron) go in optional_policy when their module may be off;
   // the main one stays at the top level, since without it the type isn't a domain at all.
   const entryStmt = (e) => {
@@ -709,6 +751,17 @@ function daemonDomains(teText, ctx) {
     if (!have) out.push({ domain: c.args[0], exec, via: c.name });
     else if (rank(c.name) < rank(have.via)) Object.assign(have, { exec, via: c.name });
   }
+  // Web applications: apache_content_template(NAME) declares the script domain Apache runs CGI scripts in.
+  const web = ctx ? (ctx.web !== undefined ? ctx.web : webPatterns(ctx)) : null;
+  if (web) {
+    for (const c of calls) {
+      if (c.inDef || c.name !== web.template || !/^\w+$/.test(c.args[0] || '')) continue;
+      const domain = web.d.replace(/\$1/g, c.args[0]), exec = web.e.replace(/\$1/g, c.args[0]);
+      const have = out.find(o => o.domain === domain);
+      // Also started by a call of its own (e.g. cron_system_entry): still a web application.
+      if (have) { if (have.exec === exec) have.web = { name: c.name, args: c.args }; } else out.push({ domain, exec, via: web.template, web: { name: c.name, args: c.args } });
+    }
+  }
   if (ctx && ctx.startsVia) {
     const sub = (s, args) => s.replace(/\$(\d+)/g, (m, n) => (args[n - 1] !== undefined ? args[n - 1] : m));
     for (const c of calls) {
@@ -754,8 +807,12 @@ function recognize(texts, ctx, opts = {}) {
   const own = new Map();
   const ownAdd = (u, s) => { if (!own.has(u)) own.set(u, []); own.get(u).push(s); claimed.add(s); };
   const fc = parseFcLines(texts.fc);
-  const pathsOf = (T) => fc.filter(e => e.type === T).map(e => pathFromFc(e.spec));
-  const model = { name: mod, domain: D, execType: E, summary: '', exec: pathsOf(E), files: [], self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], permissive: false };
+  // Paths as shown, with the file type flag when the path doesn't imply it (exec: a program path of a service).
+  const pathsOf = (T, exec = false) => fc.filter(e => e.type === T).map(e => {
+    const p = pathFromFc(e.spec);
+    return e.ftype && e.ftype !== impliedFtype(p, exec) ? `${p} ${e.ftype}` : p;
+  });
+  const model = { name: mod, domain: D, execType: E, summary: '', exec: pathsOf(E, !dom.web), files: [], self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], permissive: false };
   const m = /^##\s*<summary>\s*([^<]*?)\s*(<\/summary>)?\s*$/m.exec(texts.if || '');
   if (m) model.summary = m[1];
   const claim = (pred) => { for (const s of editable) if (!claimed.has(s) && pred(s)) claimed.add(s); };
@@ -778,6 +835,16 @@ function recognize(texts, ctx, opts = {}) {
     if (t) {
       claimed.add(t);
       model.declaredBy = { name: t.name, args: t.args, execToo: !editable.some(st => st.kind === 'type' && st.name === E), starts: dom.via };
+    }
+  }
+  // A web application: apache_content_template(NAME) declares the script domain and the content types.
+  if (dom.web) {
+    const t = editable.find(st => st.kind === 'call' && !st.bool && !claimed.has(st) && st.name === dom.web.name && st.args.join() === dom.web.args.join());
+    if (t) {
+      claimed.add(t);
+      model.declaredBy = { name: t.name, args: t.args, execToo: !editable.some(st => st.kind === 'type' && st.name === E), web: true };
+      model.webapp = webPatterns(ctx);
+      model.content = Object.fromEntries(webTypes(model).map(({ id, type }) => [id, pathsOf(type)]));
     }
   }
   // A domain declared by a template (e.g. ssh_server_template(sshd) declares sshd_t).
@@ -821,7 +888,7 @@ function recognize(texts, ctx, opts = {}) {
     if (pats.has('manage_files_pattern')) access = 'manage';
     else if (pats.has('append_files_pattern')) access = 'append';
     else if (pats.has('read_files_pattern')) access = 'read';
-    const row = { kind: k.id, type: T, paths: pathsOf(T), access };
+    const row = { kind: k.id, type: T, paths: pathsOf(T, !!k.file), access };
     model.files.push(row);
     ownAdd(u, t);
     // Declaration helpers on the type, rules from the domain to it.
@@ -881,7 +948,7 @@ function recognize(texts, ctx, opts = {}) {
     const typeE = editable.find(s => s.kind === 'type' && s.top && s.name === HE);
     if (!typeE || !(app || (dt && de))) continue;
     const u = `helper:${H}`;
-    const h = { name: H.replace(/_t$/, ''), domain: H, execType: HE, exec: pathsOf(HE), decl: app && !(dt && de) ? 'application_domain' : 'domain_type', signal: false, files: [], ...emptyGrants() };
+    const h = { name: H.replace(/_t$/, ''), domain: H, execType: HE, exec: pathsOf(HE, true), decl: app && !(dt && de) ? 'application_domain' : 'domain_type', signal: false, files: [], ...emptyGrants() };
     if (h.domain === `${h.name}_t`) delete h.domain;
     if (h.execType === `${h.name}_exec_t`) delete h.execType;
     model.helpers.push(h);
@@ -1157,12 +1224,13 @@ function fcLine(spec, ftype, type) {
 function fcEntries(model, ctx) {
   const { E } = names(model);
   const out = [];
-  for (const p of model.exec || []) if (p.trim()) out.push({ type: E, path: sub(p.trim(), model.name), exec: true });
+  for (const p of model.exec || []) if (p.trim()) out.push({ type: E, path: sub(p.trim(), model.name), exec: true, web: !!model.webapp });
+  for (const { id, type } of webTypes(model)) for (const p of (model.content || {})[id] || []) if (p.trim()) out.push({ type, path: sub(p.trim(), model.name) });
   for (const h of model.helpers || []) for (const p of h.exec || []) if (p.trim()) out.push({ type: helperNames(model, h).HE, path: sub(p.trim(), model.name), exec: true });
   for (const row of model.files || []) for (const p of row.paths || []) if (p.trim()) out.push({ type: fileType(model, row, ctx), path: sub(p.trim(), model.name), file: KIND[row.kind] && KIND[row.kind].file });
   return out.map(e => {
     const f = fcFromPath(e.path);
-    return { ...e, spec: f.spec, ftype: f.file || e.exec || e.file ? '--' : '' };
+    return { ...e, spec: f.spec, ftype: f.ftype !== undefined ? f.ftype : f.file || (e.exec && !e.web) || e.file ? '--' : '' };
   });
 }
 function renderFc(model, ctx) {
@@ -1501,11 +1569,13 @@ function editFc(text, rec, model, ctx) {
   oldTypes.set(rec.model.execType, (rec.model.exec || []).join('\n'));
   for (const r of rec.model.files) oldTypes.set(r.type, (r.paths || []).join('\n'));
   for (const h of rec.model.helpers || []) oldTypes.set(helperNames(rec.model, h).HE, (h.exec || []).join('\n'));
+  for (const { id, type } of webTypes(rec.model)) oldTypes.set(type, ((rec.model.content || {})[id] || []).join('\n'));
   const newTypes = new Map();
   const { E } = names(model);
   newTypes.set(E, (model.exec || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
   for (const r of model.files || []) newTypes.set(fileType(model, r, ctx), (r.paths || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
   for (const h of model.helpers || []) newTypes.set(helperNames(model, h).HE, (h.exec || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
+  for (const { id, type } of webTypes(model)) newTypes.set(type, ((model.content || {})[id] || []).map(p => sub(p.trim(), model.name)).filter(Boolean).join('\n'));
   const edits = [];
   const changed = new Set();
   for (const [t, p] of oldTypes) if (newTypes.get(t) !== p) changed.add(t);
@@ -1588,17 +1658,20 @@ function validate(model, ctx, opts = {}) {
     const P = `${names(model).D.replace(/_t$/, '')}_devpts_t`;
     if ((model.files || []).some(r => fileType(model, r, ctx) === P)) out.push(`${P} is already one of this module's file types, so “Pseudo-terminals for logins” can't declare it again; untick it, or remove that file type first.`);
   }
-  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []))) if (p.trim() && !/^(\/|HOME_DIR(\/|$)|HOME_ROOT(\/|$))/.test(p.trim())) out.push(`Path "${p}" must be absolute (or start with HOME_DIR/ or HOME_ROOT/, the home directory placeholders of .fc files).`);
+  for (const p of (model.exec || []).concat(...(model.files || []).map(r => r.paths || []), ...(model.helpers || []).map(h => h.exec || []), ...Object.values(model.content || {}))) if (p.trim() && !/^(\/|HOME_DIR(\/|$)|HOME_ROOT(\/|$))/.test(p.trim())) out.push(`Path "${p}" must be absolute (or start with HOME_DIR/ or HOME_ROOT/, the home directory placeholders of .fc files).`);
   // One path, one label: setfiles refuses a file_contexts with two specifications for the same path.
   const specType = new Map();
   for (const e of fcEntries(model, ctx)) {
-    const t = specType.get(e.spec);
+    const key = `${e.spec}\t${e.ftype}`; // the same path for directories (-d) and for files (--) is two specifications
+    const t = specType.get(key);
     if (t && t !== e.type) out.push(`${e.path} is labeled both ${t} and ${e.type}; a path can have only one type, so remove it from one of them.`);
-    else specType.set(e.spec, e.type);
+    else specType.set(key, e.type);
   }
   // How it is started: one main way at most, and only calls this policy has.
   const entries = model.entries || [];
-  if (opts.isNew && !entries.length) out.push('Nothing starts the service: choose how it is started (Started by).');
+  if (opts.isNew && !entries.length && !model.webapp) out.push('Nothing starts the service: choose how it is started (Started by).');
+  const webOff = model.webapp && opts.isNew && ctx.off && ctx.off(model.webapp.template);
+  if (webOff) out.push(`${model.webapp.template} belongs to the ${webOff} module, which is off in this policy (modules.conf); turn ${webOff} on to add a web application.`);
   for (const e of entries) if (ctx.has && !ctx.has(e.name)) out.push(`${e.name} doesn't exist in this policy, so it can't start the service.`);
   const picked = [...new Set(entries.filter(e => STARTS.main.some(s => s[0] === e.name)).map(e => e.name))];
   const sameAsBefore = opts.baseline && JSON.stringify((opts.baseline.entries || []).map(e => e.name).sort()) === JSON.stringify(entries.map(e => e.name).sort());
@@ -1608,7 +1681,7 @@ function validate(model, ctx, opts = {}) {
     const off = !ALSO.has(e.name) && ctx.off && ctx.off(e.name);
     if (off && !sameAsBefore) out.push(`${e.name} belongs to the ${off} module, which is off in this policy (modules.conf), so the build would fail to link. Turn ${off} on, or choose another way under Started by.`);
   }
-  if (!(model.exec || []).some(p => p.trim())) out.push('Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
+  if (!(model.exec || []).some(p => p.trim())) out.push(model.webapp ? 'Note: no CGI script paths, so no script gets the script label and none runs in the application’s domain.' : 'Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
   ctx = portCtx(model, ctx);
   // Port types of the service.
@@ -1782,6 +1855,11 @@ function catalog(ctx) {
     caps: CAPS.map(([name, cls, label, risky]) => ({ name, cls, label, help: HELP.cap[name], risky: !!risky })),
     provides: PROVIDES.map(([id, name, label, needs]) => ({ id, name, label, help: HELP.provides[id], needs: needs || null })),
     // How the service is started: the main ways and further ones (only those this tree has).
+    // Web applications (apache_content_template): the template's name patterns and the content kinds.
+    webapp: (() => {
+      const w = webPatterns(ctx);
+      return w ? { ...w, off: (ctx.off && ctx.off(w.template)) || null, kinds: WEB_KINDS.filter(([id]) => w.content[id]).map(([id, label, , path, help]) => ({ id, label, path, help })) } : null;
+    })(),
     // off: the module that provides it is off in this tree (modules.conf), named.
     starts: { main: STARTS.main.filter(([n]) => ctx.has(n)).map(([name, label, help]) => ({ name, label, help, off: (ctx.off && ctx.off(name)) || null })),
       also: STARTS.also.filter(([n]) => ctx.has(n)).map(([name, label, help]) => ({ name, label, help, optional: !!ctx.optional(name), off: (ctx.off && ctx.off(name)) || null })) },
@@ -1794,5 +1872,5 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia,
+  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia, webPatterns, webTypes, WEB_TEMPLATE,
 };

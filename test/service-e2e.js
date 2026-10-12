@@ -385,6 +385,53 @@ const build = async (te) => {
       check(back.model && back.model.caps.includes(cap) && back.model.declaredBy && back.model.declaredBy.starts, `${mod} ${dom} reads back with ${cap}, still started by its template`);
     }
   }
+  // 9. Web applications (apache_content_template): bugzilla listed, no-op unchanged, a capability and a content
+  // path added; a new web application created; one build.
+  const list9 = await conn.sendRequest('selinux/serviceList');
+  const webs = list9.modules.flatMap(m => m.domains.filter(d => d.web).map(d => [m.module, d.domain]));
+  const bzd = webs.find(x => x[0] === 'bugzilla');
+  check(bzd, `${webs.length} web applications are listed (${webs.slice(0, 8).map(x => x[1]).join(', ')}, …)`, webs);
+  let built9 = null;
+  if (bzd) {
+    const x = await conn.sendRequest('selinux/serviceInfo', { module: 'bugzilla', domain: bzd[1] });
+    const same = await conn.sendRequest('selinux/servicePlan', { model: x.model, module: 'bugzilla' });
+    const m9 = JSON.parse(JSON.stringify(x.model));
+    m9.caps.push(['ipc_lock', 'fsetid'].find(c => !m9.caps.includes(c)));
+    m9.content.ra = [...(m9.content.ra || []), '/var/log/bugzilla-e2e/'];
+    const p9 = await conn.sendRequest('selinux/servicePlan', { model: m9, module: 'bugzilla' });
+    const d9 = p9.files.filter(f => f.changed).map(f => [f.kind, f.diff.filter(d => d[0] !== ' ' && d[1].trim()).length]);
+    check(x.model.webapp && x.model.declaredBy && x.model.declaredBy.web && same.files.every(f => !f.changed) && !blocking(p9).length && d9.length === 2 && d9[0][0] === 'te' && d9[0][1] <= 2 && d9[1][0] === 'fc' && d9[1][1] === 1,
+      `bugzilla ${bzd[1]} (content ${Object.entries(x.model.content).filter(([, v]) => v.length).map(([k, v]) => `${k}: ${v.join(' ')}`).join('; ')}; scripts ${x.model.exec.join(' ')}): no-op unchanged; +capability, +append-only path = one .te line, one .fc line`,
+      { problems: p9.problems, same: same.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')), diff: p9.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')) });
+    await write(p9);
+    built9 = p9.files.find(f => f.kind === 'te').path;
+  }
+  const wa9 = info.catalog.webapp;
+  check(wa9 && wa9.kinds.length === 4, `new web applications offered (${wa9 && `${wa9.template}: ${wa9.d}, ${wa9.e}${wa9.off ? `; ${wa9.off} is off` : ''}`})`);
+  if (wa9 && !wa9.off) {
+    const wmod = (await conn.sendRequest('selinux/serviceInfo', {})).model;
+    Object.assign(wmod, { name: 'webtest', summary: 'Web application test', webapp: { template: wa9.template, d: wa9.d, e: wa9.e, content: wa9.content }, exec: ['/usr/share/%/cgi-bin/'],
+      content: { content: ['/usr/share/%/'], rw: ['/var/lib/%/'], ra: ['/var/log/%/'], htaccess: [] }, files: [], entries: [], provides: [], access: ['syslog'], self: [], net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] } });
+    const pw = await conn.sendRequest('selinux/servicePlan', { model: wmod, module: null, where: info.defaultLayer });
+    const tw = pw.files.find(f => f.kind === 'te');
+    check(!blocking(pw).length && /apache_content_template\(webtest\)/.test(tw.text), 'a new web application planned', pw.problems || tw.text);
+    await write(pw);
+    built9 = tw.path;
+  }
+  if (built9) {
+    r = await build(built9);
+    check(r.ok && r.validated, `tree with the web applications builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
+    if (wa9 && !wa9.off) {
+      const bw = await conn.sendRequest('selinux/serviceInfo', { module: 'webtest' });
+      // The built file contexts: tmp/all_mods.fc (CLIP) or file_contexts (RHEL builds).
+      const fcFiles = [path.join(r.workDir, 'tmp', 'all_mods.fc'), path.join(r.workDir, 'file_contexts'), path.join(r.workDir, 'tmp', 'webtest.mod.fc')].filter(f => fs.existsSync(f));
+      const rwT = wa9.content.rw.replace('$1', 'webtest');
+      const labeled = fcFiles.some(f => new RegExp(`/var/lib/webtest\\(/\\.\\*\\)\\?\\s+\\S*:${rwT}\\b`).test(fs.readFileSync(f, 'utf8')));
+      check(bw.model && bw.model.webapp && bw.model.content.ra.join() === '/var/log/webtest/' && !bw.kept.length && labeled,
+        `webtest reads back as a web application; its content is labeled in the built file contexts (${rwT})`,
+        bw.model && { content: bw.model.content, kept: bw.kept, fcFiles, lines: fcFiles.map(f => fs.readFileSync(f, 'utf8').split('\n').filter(l => /webtest/.test(l)).slice(0, 6)) });
+    }
+  }
   if (main7 === 'inetd_tcp_service_domain') check(tmp8 && fs.existsSync(tmp8) && /type_transition inetd_t starttest_exec_t:process starttest_t\s*;/.test(fs.readFileSync(tmp8, 'utf8')), 'built: inetd enters starttest_t');
 
   await conn.sendRequest('shutdown');

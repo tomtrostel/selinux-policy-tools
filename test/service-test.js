@@ -450,6 +450,45 @@ auth_login_pgm_domain(dm_t)
     const em = JSON.parse(JSON.stringify(rm.model)); em.caps.push('kill');
     check(!/type sendmail_exec_t/.test(svc.plan(em, sctx, sm).te), 'an edit doesn’t declare sendmail_exec_t');
   }
+  // Web applications: apache_content_template(NAME) declares the script domain and content types.
+  {
+    const FED = ['$1_content_t', '$1_htaccess_t', '$1_script_t', '$1_script_exec_t', '$1_rw_content_t', '$1_ra_content_t'];
+    const UP = ['allow_httpd_$1_script_anon_write', 'httpd_$1_content_t', 'httpd_$1_htaccess_t', 'httpd_$1_script_t', 'httpd_$1_script_exec_t', 'httpd_$1_rw_content_t', 'httpd_$1_ra_content_t'];
+    const wctx = (pats) => ({ ...ctx, has: (n) => KNOWN.has(n) || n === 'apache_content_template' || n === 'sysnet_dns_name_resolve', declares: (n) => (n === 'apache_content_template' ? pats : []) });
+    const fctx = wctx(FED), uctx = wctx(UP);
+    const cat = svc.catalog(fctx).webapp;
+    check(cat && cat.d === '$1_script_t' && cat.e === '$1_script_exec_t' && cat.kinds.map(k => k.id).join() === 'content,rw,ra,htaccess' && cat.kinds.every(k => k.help), 'catalog: the template’s names and content kinds', cat);
+    check(svc.catalog(uctx).webapp.content.rw === 'httpd_$1_rw_content_t', 'upstream refpolicy names (httpd_NAME_…)');
+    // A new web application (as the form makes it).
+    const wm = { ...svc.newModel(), name: 'wiki', summary: 'A wiki', webapp: { template: cat.template, d: cat.d, e: cat.e, content: cat.content }, exec: ['/usr/share/%/cgi-bin/'],
+      content: { content: ['/usr/share/%/'], rw: ['/var/lib/%/'], ra: [], htaccess: [] }, files: [], entries: [], provides: [], access: ['syslog'], net: { listen: [], connect: [{ proto: 'tcp', port: 'postgresql' }] } };
+    check(svc.validate(wm, fctx, { isNew: true }).length === 0, 'new web application validates', svc.validate(wm, fctx, { isNew: true }));
+    const ow = svc.plan(wm, fctx, null);
+    check(/\napache_content_template\(wiki\)\n/.test(ow.te) && !/type wiki_script_t|init_daemon_domain/.test(ow.te) && /logging_send_syslog_msg\(wiki_script_t\)/.test(ow.te) && /corenet_tcp_connect_postgresql_port\(wiki_script_t\)/.test(ow.te),
+      '.te: declared by apache_content_template, the rules on the script domain', ow.te);
+    check(ow.fc.includes('/usr/share/wiki/cgi-bin(/.*)?\t\tgen_context(system_u:object_r:wiki_script_exec_t,s0)') && ow.fc.includes('/usr/share/wiki(/.*)?\t\tgen_context(system_u:object_r:wiki_content_t,s0)') && ow.fc.includes('/var/lib/wiki(/.*)?\t\tgen_context(system_u:object_r:wiki_rw_content_t,s0)'),
+      '.fc: script directory (all files) and content types', ow.fc);
+    const rw = svc.recognize(ow, fctx, {});
+    check(!rw.error && rw.model.domain === 'wiki_script_t' && rw.model.webapp && rw.model.declaredBy.web && JSON.stringify(rw.model.content) === '{"content":["/usr/share/wiki/"],"rw":["/var/lib/wiki/"],"ra":[],"htaccess":[]}' && rw.model.exec[0] === '/usr/share/wiki/cgi-bin/' && !rw.kept.length,
+      'reads back as a web application: domain, scripts, content', rw.error || [rw.model, rw.kept]);
+    check(svc.plan(JSON.parse(JSON.stringify(rw.model)), fctx, ow).te === ow.te && svc.plan(JSON.parse(JSON.stringify(rw.model)), fctx, ow).fc === ow.fc, 'web application: no-op unchanged');
+    // CLIP's bugzilla (upstream names, the same path for -d content and -- scripts).
+    const bz = { te: 'policy_module(bugzilla)\n\napache_content_template(bugzilla)\n\nallow httpd_bugzilla_script_t self:capability setuid;\nsysnet_dns_name_resolve(httpd_bugzilla_script_t)\n',
+      if: '', fc: '/usr/share/bugzilla(/.*)?\t-d\tgen_context(system_u:object_r:httpd_bugzilla_content_t,s0)\n/usr/share/bugzilla(/.*)?\t--\tgen_context(system_u:object_r:httpd_bugzilla_script_exec_t,s0)\n\n/var/lib/bugzilla(/.*)?\tgen_context(system_u:object_r:httpd_bugzilla_rw_content_t,s0)\n' };
+    check(svc.daemonDomains(bz.te, uctx).map(d => `${d.domain}:${d.exec}:${d.web && d.web.name}`).join() === 'httpd_bugzilla_script_t:httpd_bugzilla_script_exec_t:apache_content_template', 'bugzilla is a web application (httpd_bugzilla_script_t)');
+    const rb = svc.recognize(bz, uctx, {});
+    check(!rb.error && rb.model.content.content.join() === '/usr/share/bugzilla/ -d' && rb.model.exec.join() === '/usr/share/bugzilla/ --' && rb.model.access.includes('dns') && rb.model.caps.join() === 'setuid' && !rb.kept.length,
+      'read back: paths keep the -d / -- the path doesn’t imply; its rules', rb.error || rb.model);
+    check(!svc.validate(rb.model, uctx, { baseline: rb.model }).some(p => /labeled both/.test(p)), 'the same path for directories (-d) and files (--) isn’t two labels for one path');
+    const pb = JSON.parse(JSON.stringify(rb.model)); pb.content.ra = ['/var/log/bugzilla/']; pb.caps.push('setgid');
+    const ob = svc.plan(pb, uctx, bz);
+    check(svc.lineDiff(bz.fc, ob.fc).filter(x => x[0] !== ' ').map(x => x.join('')).sort().join('|') === '+|+/var/log/bugzilla(/.*)?\t\tgen_context(system_u:object_r:httpd_bugzilla_ra_content_t,s0)' &&
+      /self:capability \{ setuid setgid \}/.test(ob.te) && /apache_content_template\(bugzilla\)/.test(ob.te), 'adding append-only content: one .fc line; the other lines (with -d / --) untouched', [svc.lineDiff(bz.fc, ob.fc).filter(x => x[0] !== ' '), ob.te]);
+    const rb2 = svc.recognize(ob, uctx, {});
+    check(rb2.model.content.ra.join() === '/var/log/bugzilla/' && svc.plan(JSON.parse(JSON.stringify(rb2.model)), uctx, ob).fc === ob.fc, 'reads back with it; idempotent');
+    const offW = { ...fctx, off: (n) => (n === 'apache_content_template' ? 'apache' : false) };
+    check(svc.validate(wm, offW, { isNew: true }).some(p => /belongs to the apache module, which is off/.test(p)) && svc.catalog(offW).webapp.off === 'apache', 'a new web application when apache is off: refused');
+  }
   // Daemons a template of the module declares and starts (rpc_domain_template(nfsd) style).
   {
     const zif = "template(`zz_domain_template',`\n\ttype zz_$1_t;\n\ttype zz_$1_exec_t;\n\tzz_base($1)\n\tkernel_read_system_state(zz_$1_t)\n')\n\ninterface(`zz_base',`\n\tinit_daemon_domain(zz_$1_t, zz_$1_exec_t)\n')\n";
@@ -623,7 +662,7 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
 (async () => {
   check(posted[0] && posted[0].cmd === 'ready', 'webview asks for data when loaded');
   const startsCat = svc.catalog({ ...ctx, has: (n) => ctx.has(n) || ['dbus_system_domain', 'cron_system_entry', 'inetd_tcp_service_domain'].includes(n), optional: () => true }).starts;
-  const info = { isNew: true, catalog: { ...svc.catalog(ctx), starts: startsCat }, ports: [{ name: 'http', nums: 'tcp 80,443' }, { name: 'ntp', nums: 'udp 123' }],
+  const info = { isNew: true, catalog: { ...svc.catalog(ctx), starts: startsCat, webapp: svc.catalog({ ...ctx, has: (n) => ctx.has(n) || n === 'apache_content_template', declares: (n) => (n === 'apache_content_template' ? ['$1_content_t', '$1_htaccess_t', '$1_script_t', '$1_script_exec_t', '$1_rw_content_t', '$1_ra_content_t'] : []) }).webapp }, ports: [{ name: 'http', nums: 'tcp 80,443' }, { name: 'ntp', nums: 'udp 123' }],
     interfaces: [{ n: 'dev_read_urand', s: 'Read from pseudo random number generator devices (e.g., /dev/urandom).', m: 'devices' }, { n: 'nis_use_ypbind', s: 'Use the ypbind service.', m: 'nis' }],
     layers: ['contrib', 'services', 'system'], defaultLayer: 'contrib', mode: 'tree', model: svc.newModel() };
   send({ cmd: 'init', info });
@@ -642,6 +681,16 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(JSON.stringify(last('plan').model.entries.map(e => e.name)) === '["inetd_tcp_service_domain","cron_system_entry"]', 'Started by inetd, also cron: in the planned model', last('plan').model.entries);
   startSel().value = 'init_daemon_domain'; startSel().fire('change');
   cronBox().checked = false; cronBox().fire('change');
+  // A web application instead: scripts, content types; then back to a system service.
+  const whatRadio = (label) => find(e => e.tag === 'label' && e.textContent.startsWith(label))[0].all(e => e.tag === 'input')[0];
+  whatRadio('Web application').checked = true; whatRadio('Web application').fire('change');
+  const contentSec = find(e => e.tag === 'details' && /^Web content/.test(e.children[0].textContent))[0];
+  check(byId.title.textContent === 'New web application' && contentSec && /webby_rw_content_t/.test(contentSec.textContent) && /when Apache runs them/.test(form.textContent) && !startSel(), 'web application: scripts, Run by Apache, content types named after the module');
+  await wait(400);
+  const pw = last('plan').model;
+  check(pw.webapp && pw.webapp.template === 'apache_content_template' && pw.content.rw.join() === '/var/lib/%/' && pw.exec.join() === '/usr/share/%/cgi-bin/' && !pw.entries.length && !pw.files.some(f => f.kind === 'unit'), 'the planned model is a web application', pw);
+  whatRadio('System service').checked = true; whatRadio('System service').fire('change');
+  check(byId.title.textContent === 'New service' && startSel() && !find(e => e.tag === 'details' && /^Web content/.test(e.children[0].textContent)).length && /systemd unit file/.test(form.textContent) && /Runtime files/.test(form.textContent), 'back to a system service: Started by, unit and runtime files again');
   buttonText('+ State data').fire('click');
   checkbox('Bind ports below 1024').checked = true; checkbox('Bind ports below 1024').fire('change');
   checkbox('Use the D-Bus system bus').checked = true; checkbox('Use the D-Bus system bus').fire('change');
@@ -723,7 +772,7 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(last('apply') && last('apply').model.name === 'webby', 'apply posts the model');
   // In a tree workspace: in the tree or a standalone module (RPM); switching keeps the form.
   send({ cmd: 'init', info: { ...info, canStandalone: true, standalone: false }, keep: true });
-  const radios = find(e => e.tag === 'input' && e.attrs.type === 'radio');
+  const radios = find(e => e.tag === 'input' && e.attrs.type === 'radio' && e.attrs.name === 'kind');
   check(radios.length === 2 && radios[0].checked && !radios[1].checked && radios.every(r => r.parent && r.parent.attrs.title), 'kind: in the tree / standalone, with hover help');
   radios[1].fire('change');
   check(last('standalone') && last('standalone').on === true, 'choosing standalone asks for the devel-header catalog');
@@ -917,7 +966,9 @@ async function survey(root) {
     m => { const t = m.name.replace(/-/g, '_') + '_cache_t'; if (!m.files.some(f => f.type === t)) m.files.push({ kind: 'cache', type: t, paths: [`/var/cache/${m.name}/`], access: 'manage' }); },
     m => { const i = m.files.findIndex(f => f.kind === 'tmp'); if (i >= 0) { const [r] = m.files.splice(i, 1); for (const h of m.helpers) h.files = h.files.filter(x => x.type !== r.type); } },
     m => { const f = m.files.find(x => x.access === 'manage' && x.kind !== 'tmp'); if (f) f.access = 'read'; },
-    m => { const f = m.files.find(x => x.paths.length); if (f) f.paths.push(f.paths[0].endsWith('/') ? f.paths[0].slice(0, -1) + '2/' : f.paths[0] + '2'); },
+    m => { const f = m.files.find(x => x.paths.length); if (!f) return; const p0 = f.paths[0].replace(/\s+-[-dlbcsp]$/, ''); f.paths.push(p0.endsWith('/') ? p0.slice(0, -1) + '2/' : p0 + '2'); },
+    // Web applications: a path added to the data it changes.
+    m => { if (m.webapp && m.content) m.content.rw = [...(m.content.rw || []), `/var/lib/${m.name}-e2e/`]; },
     m => { if (!m.net.listen.some(x => x.port === 'http')) m.net.listen.push({ proto: 'tcp', port: 'http' }); },
     m => { m.net.listen.splice(0, 1); },
     m => { if (!m.access.includes('dbus')) m.access.push('dbus'); },
@@ -959,8 +1010,9 @@ async function survey(root) {
   const tnorm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), [...m.self].sort(), [...m.caps].sort(),
     m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m),
     (m.helpers || []).map(h => [svc.helperNames(m, h).H, !!h.signal, [...h.exec].sort(), h.files.map(x => x.type + x.access).sort(), JSON.stringify(grantsNorm(h))]).sort(),
-    !!m.loginPty, JSON.stringify(m.entries || []), JSON.stringify(m.declaredBy || null)]);
-  let mods = 0, same = 0, edits = 0, good = 0, doms = 0, viaTemplate = 0, otherEntry = 0, startedByTemplate = 0;
+    !!m.loginPty, JSON.stringify(m.entries || []), JSON.stringify(m.declaredBy || null),
+    m.content ? Object.entries(m.content).map(([k, v]) => `${k}:${[...v].sort().join(',')}`).sort() : null]);
+  let mods = 0, same = 0, edits = 0, good = 0, doms = 0, viaTemplate = 0, otherEntry = 0, startedByTemplate = 0, webApps = 0;
   const bad = [];
   for (const f of idx.files.values()) {
     if (!f.path.endsWith('.te') || !/modules/.test(f.path)) continue;
@@ -979,6 +1031,7 @@ async function survey(root) {
     doms++;
     if (r.model.declaredBy) viaTemplate++;
     if (r.model.declaredBy && r.model.declaredBy.starts) startedByTemplate++;
+    if (r.model.webapp) webApps++;
     if ((r.model.entries || []).length && !(r.model.entries || []).some(e => e.name.startsWith('init_')) && !(r.model.declaredBy && r.model.declaredBy.starts)) otherEntry++;
     const o = svc.plan(JSON.parse(JSON.stringify(r.model)), tctx, texts);
     if (o.te === texts.te && o.if === texts.if && o.fc === texts.fc) same++; else bad.push(`unchanged ${f.path} ${dom}`);
@@ -994,6 +1047,6 @@ async function survey(root) {
     }
     }
   }
-  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by D-Bus, inetd, cron or as a mail server only, ${viaTemplate} declared by a template, ${startedByTemplate} of them also started by it)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
+  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${webApps} web applications, ${otherEntry} started by D-Bus, inetd, cron or as a mail server only, ${viaTemplate} declared by a template, ${startedByTemplate} of them also started by it)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
   check(good === edits, `${root}: ${good} of ${edits} edits read back as the edited model and are idempotent`, bad.filter(b => b.startsWith('edit')).slice(0, 10));
 }

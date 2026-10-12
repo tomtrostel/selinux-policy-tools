@@ -141,6 +141,14 @@
           onchange: () => { if (!!info.standalone !== val) vscode.postMessage({ cmd: 'standalone', on: val }); } }), h('span', {}, label));
         rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl', title: KIND_TIP }, 'Module'), radio(false, 'In the policy tree'), radio(true, 'Standalone module (packaged as an RPM)')));
       }
+      // A system service, or a web application (CGI scripts Apache runs: apache_content_template).
+      const wa = info.catalog.webapp;
+      if (wa) {
+        const kindRadio = (web, label, tip) => h('label', { class: 'check', title: tip }, h('input', { type: 'radio', name: 'what', checked: !!model.webapp === web, disabled: web && !!wa.off && !model.webapp,
+          onchange: () => { if (!!model.webapp !== web) { setWebapp(web); render(); changed(); } } }), h('span', {}, label));
+        rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl', title: WHAT_TIP }, 'What'), kindRadio(false, 'System service', 'A program started by systemd (or D-Bus, inetd, cron) that runs in a domain of its own'),
+          kindRadio(true, `Web application (CGI scripts)${wa.off ? ` (${wa.off} is off here)` : ''}`, wa.off ? `${wa.template} belongs to the ${wa.off} module, which is off in this policy` : WEB_TIP)));
+      }
       rows.push(h('div', { class: 'row' }, h('label', { class: 'lbl', for: 'name', title: NAME_TIP }, 'Module name'),
         h('input', { id: 'name', type: 'text', value: model.name, placeholder: 'e.g. mydaemon', spellcheck: 'false', size: 24, title: NAME_TIP,
           oninput: (e) => { model.name = e.target.value.trim(); refreshTypes(); changed(); } }),
@@ -164,14 +172,64 @@
     rows.push(h('div', { class: 'row' }, h('label', { class: 'lbl', title: DESC_TIP }, 'Description'),
       h('input', { type: 'text', value: model.summary || '', placeholder: 'What the service does (one line)', size: 50, disabled: !info.isNew,
         title: info.isNew ? DESC_TIP : 'The summary at the top of the .if; edit it there', oninput: (e) => { model.summary = e.target.value; changed(); } })));
-    rows.push(h('div', { class: 'row top' }, h('label', { class: 'lbl', title: PROG_TIP }, 'Program'),
-      h('textarea', { title: PROG_TIP, rows: Math.max(1, (model.exec || []).length), cols: 40, spellcheck: 'false', placeholder: '/usr/bin/%', oninput: (e) => { model.exec = unlines(e.target.value); changed(); } }, lines(model.exec)),
-      h('span', { class: 'muted' }, ' one path per line; it runs in ', h('code', {}, model.domain || `${model.name || 'NAME'}_t`), ' when systemd starts it')));
-    const starts = startsRows();
-    if (starts) rows.push(...starts);
+    if (model.webapp) {
+      rows.push(h('div', { class: 'row top' }, h('label', { class: 'lbl', title: SCRIPTS_TIP }, 'CGI scripts'),
+        h('textarea', { title: SCRIPTS_TIP, rows: Math.max(1, (model.exec || []).length), cols: 40, spellcheck: 'false', placeholder: '/usr/share/%/cgi-bin/', oninput: (e) => { model.exec = unlines(e.target.value); changed(); } }, lines(model.exec)),
+        h('span', { class: 'muted' }, ' one path per line; they run in ', h('code', {}, domainName()), ' when Apache runs them')));
+      const by = model.declaredBy || { name: model.webapp.template, args: [model.name || 'NAME'] };
+      rows.push(h('div', { class: 'row' }, h('span', { class: 'lbl', title: START_TIP }, 'Run by'), h('span', { title: WEB_TIP }, 'Apache, as CGI scripts: ', h('code', { class: 'code' }, `${by.name}(${by.args.join(', ')})`),
+        h('span', { class: 'muted' }, ' declares the domain and the content types below'))));
+    } else {
+      rows.push(h('div', { class: 'row top' }, h('label', { class: 'lbl', title: PROG_TIP }, 'Program'),
+        h('textarea', { title: PROG_TIP, rows: Math.max(1, (model.exec || []).length), cols: 40, spellcheck: 'false', placeholder: '/usr/bin/%', oninput: (e) => { model.exec = unlines(e.target.value); changed(); } }, lines(model.exec)),
+        h('span', { class: 'muted' }, ' one path per line; it runs in ', h('code', {}, model.domain || `${model.name || 'NAME'}_t`), ' when systemd starts it')));
+      const starts = startsRows();
+      if (starts) rows.push(...starts);
+    }
     rows.push(check('Permissive while testing (denials are logged, not enforced)', model.permissive, (v) => { model.permissive = v; }, { help: PERM_TIP }));
     if (info.isNew) rows.push(h('div', { class: 'muted small' }, '% in paths and names stands for the module name.'));
-    return section('Service', null, rows);
+    return section(model.webapp ? 'Web application' : 'Service', null, rows);
+  }
+
+  const WHAT_TIP = 'What the module is for: a system service (a daemon), or a web application whose CGI scripts Apache runs';
+  const WEB_TIP = 'apache_content_template(NAME) declares the domain Apache runs the application’s CGI scripts in, and types for its content: files it reads, data it changes, data it only adds to, .htaccess files. Apache and the scripts get the usual access to them; what you choose below adds to the scripts’ domain';
+  const SCRIPTS_TIP = 'The application’s CGI scripts, one path per line (a path ending in / is a directory and everything in it). They get the script type; when Apache runs them, the process enters the application’s domain';
+  /** Switch a new module between a system service and a web application. */
+  function setWebapp(on) {
+    const wa = info.catalog.webapp;
+    if (on) {
+      const { template, d, e, content } = wa;
+      model.webapp = { template, d, e, content };
+      model.exec = ['/usr/share/%/cgi-bin/'];
+      model.content = Object.fromEntries(wa.kinds.map(k => [k.id, k.path ? [k.path] : []]));
+      model.files = model.files.filter(r => !['unit', 'runtime', 'initrc'].includes(r.kind));
+      model.entries = [];
+      model.provides = [];
+    } else {
+      delete model.webapp; delete model.content;
+      model.exec = ['/usr/bin/%'];
+      model.entries = [{ name: 'init_daemon_domain', args: [] }];
+      const fresh = info.model.files || [];
+      model.files = [...fresh.filter(r => !model.files.some(x => x.kind === r.kind)), ...model.files];
+      model.provides = ['domtrans', 'admin'];
+    }
+  }
+
+  /** A web application's content types (declared by its template), with their paths in the .fc. */
+  function contentSection() {
+    if (!model.webapp || !info.catalog.webapp) return null;
+    model.content = model.content || {};
+    const kinds = info.catalog.webapp.kinds;
+    const rows = kinds.map(k => {
+      const t = model.webapp.content[k.id] && model.webapp.content[k.id].replace(/\$1/g, webStem());
+      return h('div', { class: 'row top' }, h('span', { class: 'lbl', title: k.help }, k.label),
+        h('code', { class: 'code', title: `${t}: declared by ${model.webapp.template}` }, t || '?'), ' ',
+        h('textarea', { rows: Math.max(1, (model.content[k.id] || []).length), cols: 36, spellcheck: 'false', placeholder: k.path || '(none)',
+          title: `${k.help} One path per line, written to the .fc; a path ending in / is the directory and everything in it; add -d or -- after a path for directories or files only`,
+          oninput: (e) => { model.content[k.id] = unlines(e.target.value); changed(); } }, lines(model.content[k.id])));
+    });
+    const n = kinds.reduce((a, k) => a + (model.content[k.id] || []).length, 0);
+    return section('Web content', `${n} path${n === 1 ? '' : 's'}`, [h('div', { class: 'muted small' }, 'Types the template declares for the application’s files. Apache serves them; the scripts read, change or append to them as each type says.'), ...rows]);
   }
 
   function filesSection() {
@@ -352,7 +410,8 @@
 
   const grantsInfo = new Map();   // interface → { rules, attrs, cond } | 'loading' | { error }
   let grantsSlots = new Map();    // interface → [elements showing its rules] (rebuilt by each render)
-  const domainName = () => model.domain || `${model.name || 'NAME'}_t`;
+  const webStem = () => (model.declaredBy && model.declaredBy.web ? model.declaredBy.args[0] : model.name || 'NAME');
+  const domainName = () => model.domain || (model.webapp ? model.webapp.d.replace(/\$1/g, webStem()) : `${model.name || 'NAME'}_t`);
   function fillGrants(el, n) {
     const g = grantsInfo.get(n);
     el.textContent = '';
@@ -833,11 +892,11 @@
     grantsSlots = new Map();
     const open = [...form.querySelectorAll('.card')].map(d => d.open); // the sections (not groups inside them)
     form.textContent = '';
-    const secs = [serviceSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     if (grantsInfo.domain !== domainName()) { grantsInfo.clear(); grantsInfo.domain = domainName(); }
-    $('title').textContent = info.isNew ? 'New service' : `Service: ${model.name}`;
+    $('title').textContent = info.isNew ? (model.webapp ? 'New web application' : 'New service') : `${model.webapp ? 'Web application' : 'Service'}: ${model.name}`;
   }
 
   window.addEventListener('message', (e) => {

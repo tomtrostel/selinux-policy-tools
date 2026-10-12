@@ -1684,7 +1684,7 @@ function serviceModules() {
     const text = readSource(m.files.te);
     const st = startingTemplates();
     if (!text || !(service.ENTRY_RE.test(text) || st.re.test(text))) continue;
-    const domains = service.daemonDomains(text, { startsVia: st.startsVia });
+    const domains = service.daemonDomains(text, { startsVia: st.startsVia, web: st.web });
     if (!domains.length) continue;
     out.push({ module: m.module, layer: m.layer, files: m.files, domains });
   }
@@ -1701,8 +1701,11 @@ function startingTemplates() {
   if (startingCache && startingCache.defs === idx.defs) return startingCache;
   const startsVia = service.makeStartsVia((n) => (idx.defs.get(n) || [])[0]);
   const names = [...idx.defs.keys()].filter(n => /^\w+$/.test(n) && !service.ENTRY_CALLS.includes(n) && startsVia(n).length);
+  // Web applications: apache_content_template declares the domain Apache runs the scripts in.
+  const web = service.webPatterns({ has: (n) => idx.defs.has(n), declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(p => p.pattern) });
+  if (web) names.push(web.template);
   const re = names.length ? new RegExp(`\\b(${names.join('|')})\\s*\\(`) : /$^/;
-  startingCache = { defs: idx.defs, startsVia, names, re };
+  startingCache = { defs: idx.defs, startsVia, names, re, web };
   return startingCache;
 }
 
