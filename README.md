@@ -394,7 +394,17 @@ as is*, each line clickable. Removing a file type, a boolean or a helper that th
 it. A path given for two types (say the service's program and a helper's)
 is refused too, since `setfiles` rejects the build.
 
-**Finding interfaces.** *Other interfaces* has, besides the keyword search,
+**Finding interfaces.** The keyword search in *Other interfaces* ranks
+results instead of listing them alphabetically: whole parts of an interface
+name count most, then the types it requires (a type such as `etc_t` puts
+the interfaces using exactly that type first), its module and its summary;
+a few other spellings help (password → shadow/passwd, random → urand, pid
+→ runtime, log → logging, …); among equal matches, interfaces called by
+more modules come first (`logging_send_syslog_msg` is used by 310 of
+CLIP's), `dontaudit` ones and rarely needed ones (`*_stub`, `mounton`,
+`relabel`, …) last unless typed. It shows 25 at a time with a button for
+the rest, and only offers interfaces whose argument is a domain (not
+`files_pid_file`-style ones that take a type). Besides it,
 **Find by need**: a type (`etc_t`, a port type such as `http_port_t`, a
 domain such as `syslogd_t`) or an absolute path (looked up in the tree
 build's file contexts, else this host's), the kind of object (file, dir,
@@ -472,7 +482,13 @@ interface counts when its rules (plus the rules of attributes it gives the
 domain, from the compiled policy) cover every denied permission; the
 others it grants are counted per type (attributes by their member count),
 writes weighing three times and executes or transitions five times as much
-as reads. Each suggestion shows what else it grants (`user_home_type (85
+as reads. When only reading was denied, an interface that would also let
+the domain write, create, delete or run things ranks as if its other rights
+were 20 times larger, and is tagged *writes*: for reading `user_home_t`,
+`userdom_read_user_home_content_files` (reads 85 home types) comes before
+`userdom_manage_user_home_content_files` (also writes `user_home_t`), while
+a read-only interface over a very large attribute still loses to a narrow
+one. Each suggestion shows what else it grants (`user_home_type (85
 types) dir, file: read …` against `user_home_t file: create unlink write
 …`), and is tagged *owner* (the target type's module), *broad* (far more
 than the best one), *module off*, or what it lacks if nothing covers it

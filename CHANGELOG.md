@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**Changed**
+
+* **Read-only denials**: an interface that would also let the domain write,
+  create, delete or run things now ranks below read-only ones (tagged
+  *writes*), unless the read-only one covers a far larger set of types.
+  Reading `user_home_t` now suggests `userdom_read_user_home_content_files`
+  first.
+* **Keyword search for interfaces** (service editor): ranked by name parts,
+  the types an interface requires, module and summary, with a few
+  synonyms; widely used interfaces first among equals, `dontaudit` and
+  rarely needed ones last; 25 results at a time with more on demand;
+  interfaces that take a type instead of a domain are no longer offered.
+
 ## 0.10.0 (2026-10-11)
 
 **New**

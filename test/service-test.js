@@ -611,6 +611,34 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(licSelect().children.some(o => o.textContent === 'LicenseRef-Acme (saved)' && o.attrs.selected !== undefined) && !licInput(), 'saved: offered in the list and selected');
   byId.apply.disabled = false; byId.apply.fire('click');
   check(last('apply').standalone === true && last('apply').license === 'LicenseRef-Acme', 'apply says standalone, with the license');
+  // Keyword search: ranked (name parts, types, synonyms, how widely used), dontaudit last, more on demand.
+  const KI = [
+    { n: 'logging_read_syslog_pid', s: 'Read the syslog pid files.', m: 'logging', t: ['syslogd_var_run_t'], c: 3 },
+    { n: 'logging_send_syslog_msg', s: 'Connect to the syslog control unix stream socket.', m: 'logging', t: ['devlog_t'], c: 400 },
+    { n: 'logging_dontaudit_search_syslog', s: 'Do not audit searching syslog.', m: 'logging', c: 50 },
+    { n: 'files_read_etc_files', s: 'Read generic files in /etc.', m: 'files', t: ['etc_t'], c: 500 },
+    { n: 'files_stub_etc', s: 'Stub etc.', m: 'files', t: ['etc_t'] },
+    { n: 'tuned_read_etc', s: 'Read tuned etc files.', m: 'tuned', t: ['tuned_etc_t'], c: 1 },
+    { n: 'auth_read_shadow', s: 'Read the shadow file.', m: 'authlogin', t: ['shadow_t'], c: 20 },
+    ...Array.from({ length: 40 }, (_, i) => ({ n: `filler_${i}_thing`, s: 'Filler thing.', m: 'filler' })),
+  ];
+  send({ cmd: 'init', info: { ...info, interfaces: KI, licenses: null, standalone: false, canStandalone: false }, keep: true });
+  const ks = () => find(e => e.tag === 'input' && /Search interfaces/.test(e.attrs.placeholder || ''))[0];
+  const hitNames = () => find(e => e.attrs.class === 'hit').map(e => e.all(x => x.tag === 'code')[0].textContent);
+  ks().value = 'syslog'; ks().fire('input');
+  check(hitNames()[0] === 'logging_send_syslog_msg' && hitNames()[hitNames().length - 1] === 'logging_dontaudit_search_syslog', `"syslog": the widely used one first, dontaudit last (${hitNames().join(', ')})`);
+  ks().value = 'etc_t'; ks().fire('input');
+  check(hitNames()[0] === 'files_read_etc_files' && hitNames().indexOf('files_stub_etc') > 0 && hitNames().indexOf('tuned_read_etc') > hitNames().indexOf('files_stub_etc'), `a type: interfaces using exactly etc_t first (the stub after), then ones only named after etc (${hitNames().join(', ')})`);
+  ks().value = 'password'; ks().fire('input');
+  check(hitNames()[0] === 'auth_read_shadow', `"password" finds auth_read_shadow through the synonym shadow (${hitNames().join(', ')})`);
+  ks().value = 'thing'; ks().fire('input');
+  check(hitNames().length === 25 && buttonText('15 more…'), 'the first 25 matches, and a button for the rest');
+  buttonText('15 more…').fire('click');
+  check(hitNames().length === 40, 'More shows them');
+  ks().value = 'connect http'; ks().fire('input');
+  check(/ports are in Network/.test(form.textContent), 'no match for a port: points to Network');
+  ks().value = ''; ks().fire('input');
+  send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });
   // Other interfaces: what one compiles to (on demand), and finding one by what the service needs.
   const extraChip = () => find(e => (e.attrs.class || '').split(' ').includes('extra'))[0];
   check(!!extraChip(), 'existing other interfaces are listed');

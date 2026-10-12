@@ -95,6 +95,7 @@
         k === 0 && x.covers ? h('span', { class: 'tag best', title: 'Covers every denied permission with the fewest other rights' }, 'narrowest') : null,
         x.owner ? h('span', { class: 'tag', title: `Defined by the module that owns ${g.target}` }, 'owner') : null,
         x.broad ? h('span', { class: 'tag warn', title: 'Grants far more than the narrowest suggestion; use it only if the service needs all of it' }, 'broad') : null,
+        x.writes && g.perms.every(p => ['read', 'open', 'getattr', 'lock', 'ioctl', 'map', 'search', 'watch', 'watch_reads', 'name_connect', 'connectto', 'sendto', 'signal', 'signull'].includes(p)) ? h('span', { class: 'tag warn', title: 'Also lets the domain write, create, delete or run things, though only this access was denied; ranked lower for that' }, 'writes') : null,
         x.off ? h('span', { class: 'tag warn', title: `Module ${x.module} is off in modules.conf: calling it needs optional_policy or turning the module on` }, 'module off') : null,
         !x.covers ? h('span', { class: 'tag warn', title: 'Grants only part of what was denied' }, `lacks ${x.missing.join(' ')}`) : null,
         x.cond ? h('span', { class: 'tag', title: 'Some of its rules are under a boolean (not counted here)' }, 'has boolean rules') : null,

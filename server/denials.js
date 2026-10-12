@@ -449,9 +449,19 @@ function rankInterfaces(need, cands, stmts, types, attrRules = {}) {
     if (missing.length === need.perms.length) continue;
     const grants = [...byType].sort((a, b) => b[1].weight - a[1].weight).slice(0, 4).map(([t, e]) =>
       `${t}${types[t] && types[t].attr ? ` (${e.size} types)` : ''} ${[...e.classes].join(', ')}: ${[...e.perms].sort((a, b) => permWeight(b) - permWeight(a)).slice(0, 8).join(' ')}${e.perms.size > 8 ? ' …' : ''}`);
-    out.push({ ...c, covers: !missing.length, missing, extra: total, grants, cond, attrs: [...added] });
+    // Writes, creates or executes anything (beyond the need): matters when only reading was denied.
+    let writes = false;
+    for (const [k, perms] of granted) {
+      const t = k.slice(0, k.indexOf('|')), cl = k.slice(k.indexOf('|') + 1);
+      const isNeed = (tAttrs.has(t) || (t === 'self' && need.domain === need.target)) && cl === need.tclass;
+      if ([...perms].some(p => permWeight(p) > 1 && !(isNeed && need.perms.includes(p)))) { writes = true; break; }
+    }
+    out.push({ ...c, covers: !missing.length, missing, extra: total, grants, cond, attrs: [...added], writes });
   }
-  const score = (x) => x.extra * (x.owner ? 0.8 : 1) + (x.off ? 1e7 : 0);
+  // Only reading was denied: an interface that can also change things ranks as if its extra
+  // rights were 20 times larger (a read-only one over many types can still lose to it).
+  const readOnly = need.perms.every(p => permWeight(p) === 1);
+  const score = (x) => x.extra * (x.owner ? 0.8 : 1) * (readOnly && x.writes ? 20 : 1) + (x.off ? 1e7 : 0);
   out.sort((a, b) => (b.covers - a.covers) || (a.missing.length - b.missing.length) || (score(a) - score(b)) || a.name.length - b.name.length || a.name.localeCompare(b.name));
   // Far broader than the best: shown, but flagged.
   const best = out.length ? out[0].extra : 0;
@@ -619,4 +629,4 @@ ${call}
 
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-module.exports = { parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, newInterfaceText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };
+module.exports = { permWeight, parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, newInterfaceText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };

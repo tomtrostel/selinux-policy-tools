@@ -82,6 +82,10 @@ const build = async (te) => {
 
   // 1. A new service.
   const info = await conn.sendRequest('selinux/serviceInfo', {});
+  const send0 = info.interfaces.find(i => i.n === 'logging_send_syslog_msg');
+  const rdetc = info.interfaces.find(i => i.n === 'files_read_etc_files');
+  check(send0 && send0.c > 50 && rdetc && (rdetc.t || []).includes('etc_t') && !info.interfaces.some(i => ['files_pid_file', 'files_type', 'term_login_pty'].includes(i.n)),
+    `interfaces for the keyword search: ${info.interfaces.length}, use counts (logging_send_syslog_msg in ${send0 && send0.c} modules) and types; type-taking ones (files_type, …) left out`);
   check(info.isNew && info.layers && info.ports.some(p => p.name === 'http' && /tcp 80/.test(p.nums)) && info.interfaces.length > 500,
     `new-service info: ${info.catalog.fileKinds.length} file kinds, ${info.ports.length} port types, ${info.interfaces.length} interfaces, layers ${info.layers.join(' ')}`);
   const has = (id) => info.catalog.access.some(g => g.items.some(i => i.id === id));

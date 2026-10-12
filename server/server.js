@@ -1704,13 +1704,25 @@ function servicePorts() {
 /** Interfaces taking just a domain, for the "other interfaces" picker. */
 function serviceInterfaces(condSafe) {
   const out = [];
+  // How many modules call each interface (a hint of what services usually need).
+  const uses = new Map();
+  for (const file of idx.files.values()) {
+    if (!/\.te$/.test(file.path)) continue;
+    for (const n of new Set((file.calls || []).map(c => c.name))) uses.set(n, (uses.get(n) || 0) + 1);
+  }
   for (const [n, list] of idx.defs) {
     const d = list[0];
     if (d.generated || d.kind !== 'interface' || !/\.if(\.in)?$/.test(d.path)) continue;
     const ps = d.doc && d.doc.params;
     if (!(ps ? ps.length === 1 : d.maxArg === 1)) continue;
+    // Its one argument is a domain (not a type, role or name prefix: files_pid_file, term_login_pty, …).
+    if (ps && ps[0] && ps[0].name && (!/domain|^user/i.test(ps[0].name) || /prefix/i.test(ps[0].name))) continue;
     const f = idx.files.get(d.path);
     const it = { n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '' };
+    // The types it requires itself (not through other interfaces): the keyword search matches them too.
+    const ts = [...new Set((d.requires || []).filter(r => r.kind === 'type' && /^\w+$/.test(r.name)).map(r => r.name))].slice(0, 8);
+    if (ts.length) it.t = ts;
+    if (uses.get(n)) it.c = uses.get(n);
     if (condSafe && !condSafe(n)) it.u = 1; // not allowed under a boolean
     out.push(it);
   }
@@ -2550,7 +2562,7 @@ connection.onRequest('selinux/findInterfaces', async ({ domain, target, path: p,
   const notes = [];
   const g = { kind: 'deny', source: domain, target, tclass, perms, v: { verdict: 'missing', needed: `allow ${domain} ${target}:${tclass} { ${perms.join(' ')} };` } };
   await suggestInterfaces([g], bin, notes, ['missing'], 1, 12);
-  return { target, resolved, suggest: g.suggest || null, notes };
+  return { target, resolved, suggest: g.suggest || null, notes, readOnly: perms.every(x => denials.permWeight(x) === 1) };
 });
 
 let grantsCache = { key: null, map: new Map() };

@@ -189,6 +189,25 @@ check(!pr.some(x => x.covers) && pr.combos.length === 2 && pr.combos[0].items.ma
 const one = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['write'] }, ['b_write', 'c_append'].map(n => cand(n)), st2, { x_t: { attr: false, size: 1, attrs: [] } });
 check(one.combos.length === 0, 'no pairs when one interface covers it');
 
+// Only reading was denied: interfaces that can also change things rank lower.
+const st3 = d.probeStatements(`##### begin manage_x(myd_t) depth: 1
+	allow myd_t x_t:file { create open getattr read write unlink };
+##### end manage_x(myd_t) depth: 0
+##### begin read_some(myd_t) depth: 1
+	allow myd_t some_types:file { read open getattr };
+##### end read_some(myd_t) depth: 0
+##### begin read_many(myd_t) depth: 1
+	allow myd_t many_types:file { read open getattr };
+##### end read_many(myd_t) depth: 0
+`);
+const ty3 = { x_t: { attr: false, size: 1, attrs: ['some_types', 'many_types'] }, some_types: { attr: true, size: 30 }, many_types: { attr: true, size: 900 } };
+let ro = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['read', 'open'] }, ['manage_x', 'read_some'].map(n => cand(n)), st3, ty3);
+check(ro[0].name === 'read_some' && ro[1].name === 'manage_x' && ro[1].writes && !ro[0].writes, `read-only denial: a read-only interface over 30 types first, the one that also writes the type second (${ro.map(x => `${x.name} ${x.extra}${x.writes ? ' writes' : ''}`).join(', ')})`);
+ro = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['read', 'open'] }, ['manage_x', 'read_many'].map(n => cand(n)), st3, ty3);
+check(ro[0].name === 'manage_x', `... but reading 900 types is broader still (${ro.map(x => `${x.name} ${x.extra}`).join(', ')})`);
+ro = d.rankInterfaces({ domain: 'myd_t', target: 'x_t', tclass: 'file', perms: ['write'] }, ['manage_x', 'read_some'].map(n => cand(n)), st3, ty3);
+check(ro.length === 1 && ro[0].name === 'manage_x' && ro[0].writes, 'a write denial: no read-only penalty (it still creates and deletes, which is noted)');
+
 // A new interface for the owner module.
 let ni = d.newInterfaceText({ module: 'notesd', target: 'notesd_var_lib_t', tclass: 'file', perms: ['read', 'open'] });
 check(ni.name === 'notesd_read_var_lib_files' && /interface\(`notesd_read_var_lib_files',`/.test(ni.text) && /gen_require\(`\n\t\ttype notesd_var_lib_t;\n\t'\)/.test(ni.text) && /allow \$1 notesd_var_lib_t:file \{ read open \};/.test(ni.text) && /## <param name="domain">/.test(ni.text),

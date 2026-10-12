@@ -356,8 +356,24 @@ so far covered by the e2e tests only.
    keyword hits and found rows (grantsInfo / grantsSlots, refilled on the
    'grants' message, reset when the domain name changes). Fixed on the way:
    ownReq in suggestInterfaces spread idx.generatedAt()'s Set (crashed in
-   trees for port types). Not done: better keyword ranking, grouping long
-   lists by module (items 2 and 4).
+   trees for port types). Keyword ranking (item 2, done, unreleased):
+   serviceInterfaces drops interfaces whose doc param isn't a domain
+   (/domain|^user/ and not /prefix/), adds `t` (types of the def's own
+   gen_require, 8 max) and `c` (number of .te files calling it); webview
+   `ifaceScore(it, words)`: per word the best of name part 4, module 3.5,
+   type part 3, name substring 2, summary word 2, type substring 1.5,
+   summary substring 1 (SYNONYMS alternatives ×0.6; a word ending _t that
+   is exactly a required type 6); every word must match; +3 when the name
+   is or starts with the words joined by _; −3 dontaudit, −1.5 RARE parts
+   unless typed; + 0.8·log10(1 + uses); − length/100. 25 shown, "N more…".
+   Not done: grouping long lists by module (item 4).
+   Read-only denials (done, unreleased; the user's open question, answered
+   "do it"): rankInterfaces sets `writes` (perm weight > 1 beyond the need)
+   and, when every denied perm has weight 1, scores writes candidates ×20;
+   tag *writes* in both UIs (service editor: when findInterfaces says
+   `readOnly`). Benchmark: exact 57%, top 3 90%, top 5 98%; "original or
+   narrower first" 95% (was 98%: a read-only one may now beat a narrower
+   writing one, by design).
    Standalone modules as RPMs (done, 0.10.0; user: "make them a stand
    alone module … package the service and the policy in an RPM"; target =
    the build host's devel headers): `isStandaloneModule(p)` = module file in

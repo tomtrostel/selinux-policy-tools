@@ -338,6 +338,7 @@
       const tags = [k === 0 && x.covers ? h('span', { class: 'tag best', title: 'Covers it with the fewest other rights' }, 'narrowest') : null,
         x.owner ? h('span', { class: 'tag', title: `Defined by the module that owns ${r.target}` }, 'owner') : null,
         x.broad ? h('span', { class: 'tag warn', title: 'Grants far more than the narrowest one' }, 'broad') : null,
+        x.writes && r.readOnly ? h('span', { class: 'tag warn', title: 'Also lets the service write, create, delete or run things beyond what you asked for' }, 'writes') : null,
         !x.covers ? h('span', { class: 'tag warn', title: 'Grants only part of it' }, `lacks ${x.missing.join(' ')}`) : null];
       const have = exclude.includes(x.name) || model.extra.includes(x.name);
       results.append(h('div', { class: 'iface' },
@@ -355,19 +356,76 @@
     if (s.note && !(s.list || []).length) results.append(h('div', { class: 'muted' }, s.note));
   }
 
+  /* ---------- keyword search, ranked ---------- */
+
+  // Words people type → how refpolicy names things.
+  const SYNONYMS = {
+    password: ['shadow', 'passwd', 'chkpwd'], passwords: ['shadow', 'passwd'], random: ['urand', 'rand', 'urandom'], log: ['logs', 'logging'], logs: ['log', 'logging'],
+    config: ['conf', 'etc'], configuration: ['conf', 'etc'], temp: ['tmp'], temporary: ['tmp'], pid: ['runtime', 'pids', 'run'], runtime: ['pid', 'pids', 'run'],
+    socket: ['sock', 'stream', 'dgram'], sockets: ['sock', 'stream', 'dgram'], dns: ['name_resolve', 'resolve'], resolve: ['name_resolve', 'dns'],
+    write: ['rw', 'manage', 'append'], delete: ['manage', 'unlink'], create: ['manage'], run: ['exec', 'domtrans'], execute: ['exec'], start: ['domtrans', 'exec'],
+    home: ['userdom', 'home'], user: ['userdom'], users: ['userdom'], certificate: ['cert', 'certs'], certificates: ['cert', 'certs'], tls: ['cert', 'certs'], ssl: ['cert', 'certs'],
+    terminal: ['tty', 'pty', 'term'], terminals: ['tty', 'pty', 'term'], kernel: ['kernel'], network: ['corenet', 'net'], mail: ['mta', 'sendmail'],
+  };
+  /**
+   * How well an interface matches the words: whole parts of its name count most, then
+   * parts of the types it uses, the summary, and other spellings (SYNONYMS); every word must
+   * match somewhere. dontaudit interfaces sink unless asked for. 0 = no match.
+   */
+  const RARE = new Set(['stub', 'mounton', 'relabel', 'relabelfrom', 'relabelto', 'execmod', 'kill', 'sigchld', 'signull', 'sigkill', 'sigstop', 'ptrace', 'noatsecure', 'rlimitinh', 'siginh', 'unconfined', 'filetrans', 'transition', 'watch', 'quotaon', 'swapon']);
+  function ifaceScore(it, words) {
+    const parts = it.n.split('_');
+    const typeParts = (it.t || []).flatMap(t => t.replace(/_t$/, '').split('_'));
+    const sum = it.s.toLowerCase();
+    const sumWords = sum.split(/[^a-z0-9]+/);
+    let score = 0;
+    for (const raw of words) {
+      // A type name (etc_t): interfaces that use exactly that type first; then like the word "etc".
+      const w = raw.replace(/_t$/, '');
+      const alts = [w, ...(SYNONYMS[w] || [])];
+      let best = raw !== w && (it.t || []).includes(raw) ? 6 : 0;
+      for (const [k, a] of alts.entries()) {
+        const f = k ? 0.6 : 1; // another spelling counts a bit less
+        let v = 0;
+        if (parts.includes(a)) v = 4;
+        else if (it.m === a) v = 3.5;
+        else if (typeParts.includes(a)) v = 3;
+        else if (it.n.includes(a)) v = 2;
+        else if (sumWords.includes(a)) v = 2;
+        else if ((it.t || []).some(t => t.includes(a))) v = 1.5;
+        else if (sum.includes(a)) v = 1;
+        best = Math.max(best, v * f);
+      }
+      if (!best) return 0;
+      score += best;
+    }
+    const joined = words.map(x => x.replace(/_t$/, '')).join('_');
+    if (it.n === joined || it.n.startsWith(`${joined}_`)) score += 3;
+    score += Math.log10(1 + (it.c || 0)) * 0.8; // widely used interfaces first among equals (up to ~2 for hundreds of modules)
+    if (/(^|_)dontaudit(_|$)/.test(it.n) && !words.includes('dontaudit')) score -= 3;
+    // Rarely what a service needs, unless asked for by name.
+    const rare = parts.find(p => RARE.has(p));
+    if (rare && !words.includes(rare)) score -= 1.5;
+    return score - it.n.length / 100;
+  }
+
   function ifaceSearch(exclude, onPick, keep = () => true) {
     const results = h('div', { class: 'results' });
-    const search = h('input', { type: 'text', size: 40, spellcheck: 'false', placeholder: 'Search interfaces: name or words from the summary', title: 'Type part of an interface name or words from its description, then click a result to add it. Only interfaces that take just the domain are listed', oninput: () => {
-      const q = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 25;
+    const search = h('input', { type: 'text', size: 40, spellcheck: 'false', placeholder: 'Search interfaces: words, a name, a type or a module', title: 'Words from what it should do (“read shadow”, “write logs”), part of an interface name, a type (etc_t) or a module name; best matches first, matching names, the types interfaces use and their descriptions. Click a result to add it. Only interfaces that take just the domain are listed', oninput: () => { shown = 25; list(); } });
+    const list = () => {
+      const q = search.value.trim().toLowerCase().split(/[\s,]+/).filter(Boolean);
       results.textContent = '';
       if (!q.length) return;
-      const hits = info.interfaces.filter(i => !exclude.includes(i.n) && keep(i) && q.every(w => i.n.includes(w) || i.s.toLowerCase().includes(w))).slice(0, 40);
+      const scored = info.interfaces.filter(i => !exclude.includes(i.n) && keep(i)).map(i => [i, ifaceScore(i, q)]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1] || a[0].n.localeCompare(b[0].n));
+      const hits = scored.slice(0, shown).map(([i]) => i);
       for (const it of hits) {
         const g = grantsToggle(it.n);
         results.append(h('div', {}, h('div', { class: 'hit', title: `Add ${it.n}: ${it.s}`, onclick: () => { search.value = ''; onPick(it.n); } }, g.btn, h('code', {}, it.n), h('span', { class: 'muted' }, ` ${it.m} — ${it.s}`)), g.box));
       }
-      if (!hits.length) results.append(h('div', { class: 'muted' }, 'No interface taking just a domain matches.'));
-    } });
+      if (scored.length > shown) results.append(h('button', { class: 'chip', title: 'Show the next matches', onclick: () => { shown += 50; list(); } }, `${scored.length - shown} more…`));
+      if (!hits.length) results.append(h('div', { class: 'muted' }, `No interface taking just a domain matches. Try other words, or Find by need below${q.some(w => /^(port|ports|connect|bind|listen|http|tcp|udp)$/.test(w)) ? '; ports are in Network (port types such as http)' : ''}.`));
+    };
     return [search, results];
   }
 
