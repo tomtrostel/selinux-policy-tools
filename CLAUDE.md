@@ -375,8 +375,13 @@ so far covered by the e2e tests only.
    unit's own statements include rules from D (calls with D first, allow
    from D); unitsOf renders custom like none (decl only), so the kept rules
    survive while the sig is unchanged and are deleted when another level is
-   chosen. ACCESS_LABELS/HELP.level custom; the form lists row.rules under
-   the row (.frules) and warns when another level is picked. validate
+   chosen. ACCESS_LABELS/HELP.level custom; row.ruleLines (0-based .te
+   lines). The form (customRules) lists them under the row: click opens
+   the line, ▸ / "Show what they allow" ask server `selinux/expandStatements`
+   {items} (the statements written into the probe .te between "# zzitem N"
+   comments, which m4 copies unexpanded; parseStatements per chunk +
+   type_transition lines) and show the compiled rules / a per-class
+   summary for the domain; warns when another level is picked. validate
    refuses loginPty when <D-stem>_devpts_t is a file type already (found by
    the survey: ipsec_mgmt_devpts_t). Fedora: 313 file types custom, 0 left
    "label only" with access; survey mutation 30 = custom → read.

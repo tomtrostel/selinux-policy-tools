@@ -722,7 +722,9 @@ function recognize(texts, ctx, opts = {}) {
       const rules = (own.get(u) || []).filter(x => (x.kind === 'call' && x.args[0] === D) || ((x.kind === 'allow' || x.kind === 'rule') && (x.src === D || new RegExp(`^\\w+\\s+${D}\\b`).test(x.text || ''))));
       if (rules.length) {
         row.access = 'custom';
-        row.rules = rules.sort((a, b) => a.l - b.l).map(x => te.lines.slice(x.l, x.endL + 1).map(ln => ln.trim()).join(' '));
+        rules.sort((a, b) => a.l - b.l);
+        row.rules = rules.map(x => te.lines.slice(x.l, x.endL + 1).map(ln => ln.trim()).join(' '));
+        row.ruleLines = rules.map(x => x.l); // 0-based lines in the .te, to open them
       }
     }
   }

@@ -676,10 +676,27 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
     const base = last('plan').model;
     const crules = ['manage_dirs_pattern(webby_t, webby_cache_t, webby_cache_t)', 'mmap_manage_files_pattern(webby_t, webby_cache_t, webby_cache_t)'];
     send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false, isNew: false, module: 'webby', layer: 'contrib', files: { te: '/t/webby.te' }, kept: [], provided: [], domains: [{ domain: 'webby_t' }],
-      model: { ...base, files: [{ kind: 'cache', type: 'webby_cache_t', paths: ['/var/cache/webby/'], access: 'custom', rules: crules }] } }, keep: false });
+      model: { ...base, files: [{ kind: 'cache', type: 'webby_cache_t', paths: ['/var/cache/webby/'], access: 'custom', rules: crules, ruleLines: [20, 21] }] } }, keep: false });
     const fr = () => find(e => e.attrs.class === 'frules')[0];
     const accSel = () => find(e => e.tag === 'select' && /What the service may do with these files/.test(e.attrs.title || ''))[0];
     check(fr() && /kept as written/.test(fr().textContent) && /mmap_manage_files_pattern/.test(fr().textContent) && accSel().children[0].textContent === 'custom (kept as written)', 'custom access: its rules are listed under the row, the level reads "custom (kept as written)"');
+    // Click a rule to open it; expand them to see what they allow.
+    {
+      const ruleLine = fr().all(e => e.attrs.class === 'keptline')[1];
+      ruleLine.fire('click');
+      check(last('open') && last('open').path === '/t/webby.te' && last('open').line === 21, 'clicking a kept rule opens it in the .te', last('open'));
+    }
+    buttonText('Show what they allow').fire('click');
+    check(last('expand') && last('expand').items.join('\n') === crules.join('\n'), 'Show what they allow asks for their expansion');
+    send({ cmd: 'expanded', key: last('expand').key, result: { results: [
+      { rules: [{ text: 'allow webby_t webby_cache_t:dir { add_name create getattr };', rt: 'allow', s: ['webby_t'], t: ['webby_cache_t'], c: ['dir'], perms: ['add_name', 'create', 'getattr'] }], attrs: [] },
+      { rules: [{ text: 'allow webby_t webby_cache_t:file { create map write };', rt: 'allow', s: ['webby_t'], t: ['webby_cache_t'], c: ['file'], perms: ['create', 'map', 'write'] },
+        { text: 'allow webby_t webby_cache_t:dir { search };', rt: 'allow', s: ['webby_t'], t: ['webby_cache_t'], c: ['dir'], perms: ['search'] },
+        { text: 'type_transition webby_t var_t:dir webby_cache_t;', rt: 'type_transition' }], attrs: [] }] } });
+    check(/Together they let webby_t:/.test(fr().textContent) && /webby_cache_t dir: add_name create getattr search/.test(fr().textContent) && /webby_cache_t file: create map write/.test(fr().textContent) && /type_transition webby_t var_t:dir webby_cache_t/.test(fr().textContent),
+      'the summary: per class what the domain may do with the type, and the type transitions', fr().textContent.slice(0, 600));
+    fr().all(e => e.attrs.class === 'keptline')[1].all(e => e.tag === 'button' && e.textContent === '▸')[0].fire('click');
+    check(/allow webby_t webby_cache_t:file \{ create map write \};/.test(fr().all(e => e.attrs.class === 'grantsbox')[1].textContent), '▸ on a rule shows what that line compiles to');
     accSel().value = 'read'; accSel().fire('change');
     check(/replaces these rules/.test(fr().textContent) && fr().children[0].attrs.class === 'warn small', 'choosing a level warns the rules will be replaced');
     send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false }, keep: true });

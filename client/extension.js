@@ -864,6 +864,7 @@ function showServiceEditor(context, mod, prefill = null) {
       else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
       else if (m.cmd === 'standalone') { current.standalone = !!m.on; await load(true); }
       else if (m.cmd === 'find') post({ cmd: 'found', id: m.id, result: await client.sendRequest('selinux/findInterfaces', m.query) });
+      else if (m.cmd === 'expand') post({ cmd: 'expanded', key: m.key, result: await client.sendRequest('selinux/expandStatements', { items: m.items }) });
       else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
       else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone, license: m.license }) });

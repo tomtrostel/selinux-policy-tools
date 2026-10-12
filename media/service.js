@@ -150,14 +150,8 @@
         h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; if (row.rules) render(); changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
           accessOpts.map(a => h('option', { value: a, selected: a === row.access, title: accessHelp(a) }, info.catalog.accessLabels[a] || a))),
         h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { const t = typeOf(row); model.files.splice(i, 1); for (const hp of model.helpers || []) hp.files = (hp.files || []).filter(x => x.type !== t); render(); changed(); } }, '✕')));
-      // Rules that match no level: kept as written, shown so the choice is informed.
-      if (row.rules && row.rules.length) {
-        table.append(h('div', { class: 'frules', title: accessHelp('custom') },
-          h('div', { class: row.access === 'custom' ? 'muted small' : 'warn small' }, row.access === 'custom'
-            ? `The service's access to ${row.type}, kept as written:`
-            : `Choosing “${info.catalog.accessLabels[row.access] || row.access}” replaces these rules with its standard ones (see the preview):`),
-          h('pre', { class: 'grants' }, row.rules.join('\n'))));
-      }
+      // Rules that match no level: kept as written, shown (and openable, and expandable) so the choice is informed.
+      if (row.rules && row.rules.length) table.append(customRules(row));
     });
     const add = h('div', { class: 'adds' }, h('span', { class: 'muted' }, 'Add: '),
       kinds.map(k => h('button', { class: 'chip', ...tipOf(k.help || k.where || k.label), onclick: () => {
@@ -166,6 +160,62 @@
       } }, '+ ' + k.label)));
     const hint = `${model.files.length} file type${model.files.length === 1 ? '' : 's'}`;
     return section('Files', hint, [h('div', { class: 'muted small' }, 'A path ending in / means the directory and everything in it. Types the service creates at run time (in /run, /tmp, …) get their label automatically.'), table, add]);
+  }
+
+  /* ---------- custom file access: the rules, where they are, what they allow ---------- */
+
+  const expanded = new Map(); // row type → { result } | 'loading'
+  const ruleKey = (row) => `${row.type}|${row.rules.join('\n')}`;
+  /** What the kept rules allow together: per target and class, the permissions (from their m4 expansion). */
+  function allowSummary(row, result) {
+    const D = domainName();
+    const by = new Map();
+    const tt = [];
+    for (const r of result.results || []) for (const x of r.rules) {
+      if (x.rt === 'type_transition') { tt.push(x.text); continue; }
+      if (x.rt !== 'allow' || !x.s.includes(D)) continue;
+      for (const t of x.t) for (const c of x.c) {
+        const k = `${t === 'self' ? D : t} ${c}`;
+        if (!by.has(k)) by.set(k, new Set());
+        for (const p of x.perms) by.get(k).add(p);
+      }
+    }
+    const lines = [...by].sort((a, b) => (b[0].startsWith(row.type) - a[0].startsWith(row.type)) || a[0].localeCompare(b[0])).map(([k, ps]) => `${k}: ${[...ps].sort().join(' ')}`);
+    return [h('div', { class: 'small' }, h('b', {}, `Together they let ${D}:`)), h('pre', { class: 'grants' }, lines.join('\n') || 'nothing for the domain itself'),
+      tt.length ? [h('div', { class: 'small muted' }, 'and give new files these types (type transitions):'), h('pre', { class: 'grants' }, tt.join('\n'))] : null];
+  }
+  function customRules(row) {
+    const ex = expanded.get(ruleKey(row));
+    const custom = row.access === 'custom';
+    const te = info.files && info.files.te;
+    const ruleRows = row.rules.map((txt, i) => {
+      const box = h('div', { class: 'grantsbox' });
+      box.hidden = true;
+      const fill = () => {
+        box.textContent = '';
+        const r = ex && ex !== 'loading' && ex.result && ex.result.results ? ex.result.results[i] : null;
+        box.append(r ? h('pre', { class: 'grants' }, r.rules.map(x => x.text).join('\n') || 'no rules') : h('div', { class: 'muted small' }, ex && ex.result && ex.result.error ? ex.result.error : 'Use “Show what they allow”.'));
+      };
+      const tog = h('button', { class: 'icon', title: 'Show the rules this line compiles to', onclick: (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        if (!ex) { expanded.set(ruleKey(row), 'loading'); vscode.postMessage({ cmd: 'expand', key: ruleKey(row), items: row.rules }); }
+        box.hidden = !box.hidden; tog.textContent = box.hidden ? '▸' : '▾'; fill();
+      } }, '▸');
+      const line = row.ruleLines && row.ruleLines[i] != null ? row.ruleLines[i] : null;
+      return h('div', {}, h('div', { class: 'keptline', title: line != null && te ? `Open line ${line + 1} of ${te.split(/[\\/]/).pop()}` : '', onclick: () => { if (line != null && te) vscode.postMessage({ cmd: 'open', path: te, line }); } },
+        tog, line != null ? h('span', { class: 'ln' }, line + 1) : null, h('code', {}, txt)), box);
+    });
+    return h('div', { class: 'frules', title: accessHelp('custom') },
+      h('div', { class: custom ? 'muted small' : 'warn small' }, custom
+        ? `The service's access to ${row.type}, kept as written (click a line to open it):`
+        : `Choosing “${info.catalog.accessLabels[row.access] || row.access}” replaces these rules with its standard ones (see the preview):`),
+      ruleRows,
+      ex === 'loading' ? h('div', { class: 'muted small' }, 'Expanding them with m4…')
+        : ex && ex.result && ex.result.error ? h('div', { class: 'warn small' }, ex.result.error)
+        : ex ? allowSummary(row, ex.result)
+        : h('button', { class: 'chip', title: `Expand these rules with this policy's m4 and show, per class, what ${domainName()} may do with ${row.type} and anything else they touch`, onclick: () => {
+          expanded.set(ruleKey(row), 'loading'); vscode.postMessage({ cmd: 'expand', key: ruleKey(row), items: row.rules }); render();
+        } }, 'Show what they allow'));
   }
 
   /** The service's own port types (resolved names), which the port pickers offer too. */
@@ -740,6 +790,9 @@
     } else if (m.cmd === 'stale') {
       if (dirty) $('stale').hidden = false;
       else vscode.postMessage({ cmd: 'reload' });
+    } else if (m.cmd === 'expanded') {
+      expanded.set(m.key, { result: m.result || {} });
+      render();
     } else if (m.cmd === 'found') {
       showFound(m.id, m.result);
     } else if (m.cmd === 'grants') {

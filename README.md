@@ -263,8 +263,12 @@ writes. It offers what the existing service modules use (taken from the
   rules match none of them (CLIP's `httpd_cache_t`:
   `mmap_manage_files_pattern`, `manage_lnk_files_pattern`,
   `files_var_filetrans`; plain `allow` rules) reads back as **custom (kept as
-  written)**, with those rules listed under it; they are kept exactly as
-  they are, and choosing a level instead says it replaces them with that
+  written)**, with those rules listed under it: click one to open it in the
+  `.te`, ▸ to see what it compiles to, and **Show what they allow** for a
+  summary from their m4 expansion (CLIP's `httpd_cache_t`: dir, file and
+  lnk_file create, write, rename, unlink …, file map, and the type
+  transition `httpd_t var_t:dir httpd_cache_t`). They are kept exactly as
+  they are; choosing a level instead says it replaces them with that
   level's standard rules (the preview shows the change).
 * **Network:** ports it listens on and ports it connects to (TCP/UDP, any
   port type in the tree, shown with its port numbers, or any port), and

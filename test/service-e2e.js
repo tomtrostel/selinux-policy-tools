@@ -272,6 +272,16 @@ const build = async (te) => {
     const cache = ap.model.files.find(f => f.type === 'httpd_cache_t');
     check(cust.length > 0 && cust.every(f => f.rules && f.rules.length) && cache && cache.access !== 'none',
       `apache httpd_t: ${cust.length} file types with custom access (httpd_cache_t: ${cache && cache.access}${cache && cache.rules ? `, ${cache.rules.length} rules kept` : ''})`, cust.map(f => [f.type, f.rules]));
+    // Where the kept rules are, and what they allow (m4).
+    const cr = cust.find(f => f.type === 'httpd_cache_t') || cust[0];
+    const apTe = fs.readFileSync(ap.files.te, 'utf8').split('\n');
+    check(cr.ruleLines && cr.ruleLines.length === cr.rules.length && cr.ruleLines.every((l, i) => apTe[l].trim().startsWith(cr.rules[i].split('(')[0].split(' ')[0])), `${cr.type}: each kept rule has its line in apache.te (${cr.ruleLines.map(l => l + 1).join(', ')})`, { lines: cr.ruleLines, rules: cr.rules });
+    const exs = await conn.sendRequest('selinux/expandStatements', { items: cr.rules });
+    const allowed = new Map();
+    for (const r of exs.results || []) for (const x of r.rules) if (x.rt === 'allow' && x.s.includes('httpd_t')) for (const t of x.t) for (const c of x.c) allowed.set(`${t} ${c}`, new Set([...(allowed.get(`${t} ${c}`) || []), ...x.perms]));
+    const filePerms = allowed.get(`${cr.type} file`);
+    check(!exs.error && exs.results.length === cr.rules.length && filePerms && (cr.type !== 'httpd_cache_t' || (filePerms.has('create') && filePerms.has('map') && filePerms.has('unlink'))),
+      `${cr.type}: the kept rules expand to ${[...allowed].map(([k, v]) => `${k} (${v.size})`).join(', ')}`, exs.error || [...allowed].map(([k, v]) => `${k}: ${[...v].join(' ')}`));
     const pn = await conn.sendRequest('selinux/servicePlan', { model: ap.model, module: 'apache' });
     check(pn.files.every(f => !f.changed), 'apache unchanged when saved as read back (custom rules kept)', pn.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')));
   }

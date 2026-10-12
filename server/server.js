@@ -2565,6 +2565,42 @@ connection.onRequest('selinux/findInterfaces', async ({ domain, target, path: p,
   return { target, resolved, suggest: g.suggest || null, notes, readOnly: perms.every(x => denials.permWeight(x) === 1) };
 });
 
+/**
+ * What policy statements written in a module compile to (m4 with the policy's own Makefile):
+ * items = statement texts (calls like mmap_manage_files_pattern(D, T, T), allow rules with
+ * permission macros) → [{ rules: [text], attrs }]. Marker comments between the items (m4
+ * copies comments unexpanded) split the output.
+ */
+connection.onRequest('selinux/expandStatements', async ({ items } = {}) => {
+  await indexing;
+  const list = (items || []).filter(x => typeof x === 'string' && x.length < 2000 && !/^\s*#/.test(x)).slice(0, 200);
+  if (!list.length) return { results: [] };
+  const cfg = probeConfig();
+  if (cfg.unavailable) return { error: cfg.unavailable };
+  const lines = list.flatMap((x, i) => [`# zzitem ${i}`, x.replace(/\n/g, ' ')]);
+  lines.push(`# zzitem ${list.length}`);
+  const ex = await build.expandCalls(lines, cfg);
+  if (!ex.ok) return { error: `m4 failed: ${ex.log.trim().split('\n').slice(-2).join(' ')}` };
+  const parts = ex.text.split(/^# zzitem (\d+)\s*$/m);
+  const chunks = new Map();
+  for (let i = 1; i + 1 < parts.length; i += 2) chunks.set(+parts[i], parts[i + 1]);
+  const fmt = (x) => (x.length === 1 ? x[0] : `{ ${x.join(' ')} }`);
+  return { results: list.map((_, i) => {
+    const text = (chunks.get(i) || '').split('\n').filter(l => !l.startsWith('#')).join('\n');
+    const st = denials.parseStatements(text);
+    const seen = new Set(), rules = [], attrs = [];
+    for (const s of st) {
+      if (s.rt === 'typeattribute') { attrs.push(`${s.s[0]}: ${s.attrs.join(', ')}`); continue; }
+      if (!['allow', 'dontaudit', 'auditallow'].includes(s.rt)) continue;
+      const t = `${s.rt} ${fmt(s.s)} ${fmt(s.t)}:${fmt(s.c)} ${fmt(s.perms)};`;
+      if (!seen.has(t)) { seen.add(t); rules.push({ text: t, rt: s.rt, s: s.s, t: s.t, c: s.c, perms: s.perms, cond: !!s.cond }); }
+    }
+    // type_transition lines (file type transitions) are worth showing too.
+    for (const m of text.matchAll(/^\s*type_transition\s+([^;]+);/gm)) rules.push({ text: `type_transition ${m[1].replace(/\s+/g, ' ').trim()};`, rt: 'type_transition' });
+    return { rules, attrs };
+  }) };
+});
+
 let grantsCache = { key: null, map: new Map() };
 /** What interface calls really compile to for a domain (m4 with the policy's own Makefile): name → { rules, attrs, cond }. */
 connection.onRequest('selinux/interfaceGrants', async ({ domain, names } = {}) => {
