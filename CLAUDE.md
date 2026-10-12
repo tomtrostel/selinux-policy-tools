@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-11: **v0.10.0 released** (GitHub release `v0.10.0`;
+Status as of 2026-10-11: **v0.10.1 released** (GitHub release `v0.10.1`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -26,6 +26,8 @@ standalone service modules packaged as RPMs with a license picker, more
 services (all init_*domain variants, template-declared domains) and login
 services, and finding interfaces by need (step 6). The user looked at it
 before the release ("looks okay"); not clicked through feature by feature.
+0.10.1: read-only denials rank read-only interfaces first (writes tag),
+ranked keyword search for interfaces.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -356,7 +358,7 @@ so far covered by the e2e tests only.
    keyword hits and found rows (grantsInfo / grantsSlots, refilled on the
    'grants' message, reset when the domain name changes). Fixed on the way:
    ownReq in suggestInterfaces spread idx.generatedAt()'s Set (crashed in
-   trees for port types). Keyword ranking (item 2, done, unreleased):
+   trees for port types). Keyword ranking (item 2, done, 0.10.1):
    serviceInterfaces drops interfaces whose doc param isn't a domain
    (/domain|^user/ and not /prefix/), adds `t` (types of the def's own
    gen_require, 8 max) and `c` (number of .te files calling it); webview
@@ -367,7 +369,7 @@ so far covered by the e2e tests only.
    is or starts with the words joined by _; −3 dontaudit, −1.5 RARE parts
    unless typed; + 0.8·log10(1 + uses); − length/100. 25 shown, "N more…".
    Not done: grouping long lists by module (item 4).
-   Read-only denials (done, unreleased; the user's open question, answered
+   Read-only denials (done, 0.10.1; the user's open question, answered
    "do it"): rankInterfaces sets `writes` (perm weight > 1 beyond the need)
    and, when every denied perm has weight 1, scores writes candidates ×20;
    tag *writes* in both UIs (service editor: when findInterfaces says
