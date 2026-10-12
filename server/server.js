@@ -1930,15 +1930,33 @@ function effectiveUsersFile(root) {
   return { path: p, text: readSource(p) };
 }
 
-/** The service context plus the role catalog (userfiles.userTreeCtx), cached per index generation. */
-let userCtxCache = null;
-function userCtx() {
-  const base = serviceCtx(false);
-  if (!userCtxCache || userCtxCache.defs !== idx.defs) {
-    const u = userfiles.userTreeCtx(idx, {});
-    userCtxCache = { defs: idx.defs, extra: { params: u.params, roleIfaces: u.roleIfaces, roleExists: u.roleExists, roleCalls: u.roleCalls } };
+/*
+ * The role catalog of the user editor (userfiles.userTreeCtx) comes from the tree's index, or for a
+ * standalone module from an index of the build host's devel headers (the interfaces it is built
+ * against: RHEL's role interfaces take other arguments than upstream's), cached per source.
+ */
+let develIdx = { key: null, idx: null };
+function develIndex() {
+  if (!develInterfaces()) return null;
+  if (develIdx.key !== develIfCache.key) {
+    const { PolicyIndex } = require('./indexer');
+    const di = new PolicyIndex(() => {});
+    di.scanRoots([path.join(path.dirname(settings.build.develMakefile), 'include')]);
+    develIdx = { key: develIfCache.key, idx: di };
   }
-  return { ...base, ...userCtxCache.extra };
+  return develIdx.idx;
+}
+const userCtxCache = new WeakMap(); // defs map → role catalog
+function userCtx(standalone = false) {
+  const sa = standalone && !usingDevel;
+  const base = serviceCtx(sa);
+  const src = (sa && develIndex()) || idx;
+  if (!userCtxCache.has(src.defs)) {
+    const u = userfiles.userTreeCtx(src, { ...base, has: (n) => src.defs.has(n) });
+    userCtxCache.set(src.defs, { params: u.params, roleIfaces: u.roleIfaces, roleExists: u.roleExists, roleCalls: u.roleCalls });
+  }
+  const extra = userCtxCache.get(src.defs);
+  return { ...base, ...extra, standalone: sa || usingDevel, roleExists: (r) => extra.roleExists(r) || (idx.decls.get(r) || []).some(d => d.kind === 'role') };
 }
 
 /** The tree's login configuration files for a user: seusers and <user>_default_contexts in config/appconfig-<TYPE>. */
@@ -1947,28 +1965,51 @@ function userConfigPaths(name) {
   return { seusers: path.join(dir, 'seusers'), contexts: path.join(dir, `${name}_u_default_contexts`) };
 }
 
-/** The tree's user role modules: a .te with a userdomain template call on a name (staff, sysadm, webadm, …). */
+/** This host's running policy: its seusers (logins already mapped), SELinux users and which of `types` it has. */
+async function hostUsers(types = []) {
+  const active = build.installedPolicies().find(p => p.active);
+  if (!active) return { seusers: [], users: [], types: new Set(types), name: null };
+  const se = readSource(path.join('/etc/selinux', active.name, 'seusers'));
+  const r = await policyQuery.request({ op: 'users', bin: active.policy, types: [], names: types });
+  return { seusers: userfiles.parseSeusers(se || ''), users: r.error ? [] : Object.keys(r.users || {}).filter(u => u !== 'system_u').sort(), types: new Set(r.error ? types : r.exists || []), name: active.name };
+}
+
+/** User role modules: in the tree (staff, sysadm, webadm, …) and standalone ones in the workspace. */
 function userModules() {
   const out = [];
   const re = new RegExp(`\\b(${service.USER_TEMPLATES.join('|')})\\s*\\(`);
   for (const m of idx.modules()) {
-    if (!m.files.te || !treeRoot || !m.files.te.startsWith(treeRoot + path.sep)) continue;
+    if (!m.files.te) continue;
+    const inTree = !!treeRoot && !usingDevel && m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te);
+    const sa = usingDevel ? roots.some(r => m.files.te.startsWith(r + path.sep)) : isStandaloneModule(m.files.te);
+    if (!inTree && !sa) continue;
     const text = readSource(m.files.te);
     if (!text || !re.test(text)) continue;
     const u = service.userDomainOf(text);
-    if (u) out.push({ module: m.module, layer: m.layer, files: m.files, stem: u.stem, user: `${u.stem}_u`, kind: u.kind });
+    if (u) out.push({ module: m.module, layer: m.layer, files: m.files, stem: u.stem, user: `${u.stem}_u`, kind: u.kind, standalone: sa });
   }
   return out.sort((a, b) => a.module.localeCompare(b.module));
 }
 
-/** An existing user's files: the module's, the users file, seusers, its contexts file and default_contexts. */
+/**
+ * An existing user's files. In a tree: the module's, the users file, seusers, its contexts file and
+ * default_contexts. Standalone: the module's and the contexts file next to it (its SELinux user and
+ * logins are created by the spec's %post).
+ */
 function userTexts(m) {
+  const base = { te: readSource(m.files.te) || '', if: (m.files.if && readSource(m.files.if)) || '', fc: (m.files.fc && readSource(m.files.fc)) || '' };
+  const files = { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc') };
+  if (m.standalone) {
+    const dir = path.dirname(m.files.te);
+    const contexts = path.join(dir, `${m.stem}_u_default_contexts`), spec = path.join(dir, `${m.module}-selinux.spec`);
+    return { paths: { ...files, contexts, spec }, ...base, users: null, seusers: null, contexts: readSource(contexts), defaults: null, spec: readSource(spec) };
+  }
   const cp = userConfigPaths(m.stem);
   const uf = effectiveUsersFile(treeRoot);
+  const defaults = path.join(path.dirname(cp.seusers), 'default_contexts');
   return {
-    paths: { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc'), users: uf.path, seusers: cp.seusers, contexts: cp.contexts, defaults: path.join(path.dirname(cp.seusers), 'default_contexts') },
-    te: readSource(m.files.te) || '', if: (m.files.if && readSource(m.files.if)) || '', fc: (m.files.fc && readSource(m.files.fc)) || '',
-    users: uf.text, seusers: readSource(cp.seusers), contexts: readSource(cp.contexts), defaults: readSource(path.join(path.dirname(cp.seusers), 'default_contexts')),
+    paths: { ...files, users: uf.path, seusers: cp.seusers, contexts: cp.contexts, defaults },
+    ...base, users: uf.text, seusers: readSource(cp.seusers), contexts: readSource(cp.contexts), defaults: readSource(defaults),
   };
 }
 
@@ -1978,6 +2019,8 @@ function readExistingUser(m, ctx) {
   const rec = service.recognize({ te: t.te, if: t.if, fc: t.fc }, ctx, { user: true, module: m.module });
   if (rec.error) return { error: rec.error };
   userfiles.readUser(rec.model, t);
+  // A standalone user: its levels, logins and granted users are in the spec's %post (shown, edited there).
+  if (m.standalone) Object.assign(rec.model, { standalone: true }, userfiles.readSpecUser(t.spec || '', `${m.stem}_u`, `${m.stem}_r`));
   const prov = new Set(rec.provided);
   rec.model.provides = ['role_change', 'role_change_to'].filter(id => prov.has(`${m.module}_${id}`));
   return { rec, texts: t };
@@ -1985,31 +2028,60 @@ function readExistingUser(m, ctx) {
 
 connection.onRequest('selinux/userList', async () => {
   await indexing;
-  return { modules: userModules().map(({ module, layer, stem, user, kind }) => ({ module, layer, stem, user, kind })) };
+  return { modules: userModules().map(({ module, layer, stem, user, kind, standalone }) => ({ module, layer, stem, user, kind, standalone })) };
 });
 
-connection.onRequest('selinux/userInfo', async ({ module: mod } = {}) => {
+/** What the form needs besides the model: catalog, interfaces, users, files, licenses. */
+function userFormInfo(ctx, sa, ways) {
+  return {
+    catalog: service.userCatalog(ctx, userfiles.WAYS.filter(([, , sources]) => sources.some(s => ways(s)))),
+    interfaces: (sa && !usingDevel ? serviceInterfaces(ctx.condSafe).filter(x => ctx.has(x.n)) : serviceInterfaces(ctx.condSafe)),
+    standalone: sa,
+    licenses: sa ? { common: packaging.LICENSES, custom: [...new Set((settings.packaging.customLicenses || []).map(x => String(x).trim()).filter(Boolean))], default: (settings.packaging.license || '').trim() || 'MIT' } : null,
+  };
+}
+
+connection.onRequest('selinux/userInfo', async ({ module: mod, standalone } = {}) => {
   await indexing;
-  if (!treeRoot || usingDevel) return { unavailable: 'The user editor works on a policy source tree (open one as the workspace).' };
-  const ctx = userCtx();
+  if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree, or a folder for standalone modules, first.' };
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
   if (mod) {
     const m = userModules().find(x => x.module === mod);
     if (!m) return { unavailable: `${mod} isn't a user role module (no userdomain template call on a name in its .te).` };
+    const ctx = userCtx(m.standalone);
     const r = readExistingUser(m, ctx);
     if (r.error) return { unavailable: r.error };
+    if (m.standalone) {
+      const host = await hostUsers(userfiles.WAYS.flatMap(w => w[2]));
+      return {
+        isNew: false, module: mod, model: r.rec.model, kept: r.rec.kept, files: r.texts.paths, ...userFormInfo(ctx, true, (s) => host.types.has(s)),
+        users: host.users.filter(u => u !== `${m.stem}_u`), usersFile: null, configDir: path.dirname(m.files.te), prefixDefault: r.rec.model.prefix || 'user',
+        seusers: host.seusers, licenses: null, specFile: r.texts.paths.spec,
+      };
+    }
     const uf = effectiveUsersFile(treeRoot);
     return {
-      isNew: false, module: mod, model: r.rec.model, kept: r.rec.kept, files: r.texts.paths,
-      catalog: service.userCatalog(ctx, userfiles.WAYS.filter(([, , sources]) => sources.some(s => ctx.typeExists(s)))),
-      interfaces: serviceInterfaces(ctx.condSafe),
+      isNew: false, module: mod, model: r.rec.model, kept: r.rec.kept, files: r.texts.paths, ...userFormInfo(ctx, false, (s) => ctx.typeExists(s)),
       users: [...new Set(userfiles.parseGenUsers(uf.text || '').map(u => u.name))].filter(n => n !== 'system_u' && n !== `${m.stem}_u`).sort(),
       usersFile: uf.path, configDir: path.dirname(r.texts.paths.seusers), prefixDefault: r.rec.model.prefix || m.stem,
-      seusers: userfiles.parseSeusers(r.texts.seusers || ''),
+      seusers: userfiles.parseSeusers(r.texts.seusers || ''), licenses: null,
+    };
+  }
+  const sa = usingDevel || (canStandalone && !!standalone);
+  const ctx = userCtx(sa);
+  const model = service.newUserModel();
+  if (sa) {
+    // Built against this host's devel headers and installed here: its users and seusers.
+    const host = await hostUsers(userfiles.WAYS.flatMap(w => w[2]));
+    model.prefix = 'user';
+    return {
+      isNew: true, model, ...userFormInfo(ctx, true, (s) => host.types.has(s)), canStandalone,
+      users: host.users, usersFile: null, configDir: null, prefixDefault: 'user', seusers: host.seusers,
+      folder: roots[0] || null, folderSuffix: usingDevel ? '' : '-selinux',
     };
   }
   const uf = effectiveUsersFile(treeRoot);
   const genUsers = userfiles.parseGenUsers(uf.text || '');
-  // The home directory prefix most users of this tree have (Fedora/RHEL: user; upstream: the role's name).
   // A prefix shared by most users (Fedora/RHEL: user) is the default; when most users have their own (upstream), none.
   const counts = new Map();
   let own = 0;
@@ -2019,13 +2091,10 @@ connection.onRequest('selinux/userInfo', async ({ module: mod } = {}) => {
     else counts.set(u.prefix, (counts.get(u.prefix) || 0) + 1);
   }
   const prefix = [...counts].sort((a, b) => b[1] - a[1])[0];
-  const model = service.newUserModel();
   if (prefix && prefix[1] > 1 && prefix[1] > own) model.prefix = prefix[0];
   const cp = userConfigPaths('x');
   return {
-    isNew: true, model,
-    catalog: service.userCatalog(ctx, userfiles.WAYS.filter(([, , sources]) => sources.some(s => ctx.typeExists(s)))),
-    interfaces: serviceInterfaces(ctx.condSafe),
+    isNew: true, model, ...userFormInfo(ctx, false, (s) => ctx.typeExists(s)), canStandalone,
     users: [...new Set(genUsers.map(u => u.name))].filter(n => n !== 'system_u').sort(),
     usersFile: uf.path, configDir: path.dirname(cp.seusers), prefixDefault: model.prefix || '(the user’s name)',
     seusers: userfiles.parseSeusers(readSource(cp.seusers) || ''),
@@ -2036,6 +2105,7 @@ connection.onRequest('selinux/userInfo', async ({ module: mod } = {}) => {
  * Minimal edits for an existing user: its module through the service editor's unit diff, the
  * gen_user line (fields that changed; role switches added or removed; other users' lines for
  * grantUsers), seusers lines of its user, its contexts file (ways and sudo/su lines toggled).
+ * Standalone: the module and its contexts file; logins and levels stay in the spec.
  */
 function existingUserPlan(model, m, ctx) {
   const r = readExistingUser(m, ctx);
@@ -2052,10 +2122,15 @@ function existingUserPlan(model, m, ctx) {
   for (const k of ['te', 'if', 'fc']) push(P[k], k, t[k], out[k]);
   const switched = JSON.stringify([...(model.switchTo || [])].sort()) !== JSON.stringify([...(prev.switchTo || [])].sort());
   const fields = ['prefix', 'level', 'range', 'cats'].some(k => (model[k] || '') !== (prev[k] || ''));
-  if (!prev.genUser.exists && (fields || (model.logins || []).some(l => (l.login || '').trim()))) problems.push(`${U} has no gen_user line in ${rel(P.users)}, so it has no levels or logins of its own; users get ${m.stem}_r through their own lines (below).`);
-  if (prev.genUser.exists && !prev.genUser.simple && (switched || fields)) problems.push(`${U}'s gen_user line in ${rel(P.users)} is written with ifdef() or more than once, so the editor doesn't rewrite it; change its roles or levels there by hand.`);
-  if (t.users != null) push(P.users, 'users', t.users, userfiles.editUsers(t.users, model, { prev, prevGrant: prev.grantUsers, prefix: prev.prefix }));
-  if (t.seusers != null && prev.genUser.exists) push(P.seusers, 'seusers', t.seusers, userfiles.editSeusers(t.seusers, model));
+  const loginsChanged = JSON.stringify(model.logins || []) !== JSON.stringify(prev.logins || []) || JSON.stringify([...(model.grantUsers || [])].sort()) !== JSON.stringify([...(prev.grantUsers || [])].sort());
+  if (m.standalone) {
+    if (switched || fields || loginsChanged) problems.push(`${U}'s roles, levels, logins and the users who get ${m.stem}_r are created by the %post of ${rel(P.spec)}; change them there (the form changes the module and its contexts file).`);
+  } else {
+    if (!prev.genUser.exists && (fields || (model.logins || []).some(l => (l.login || '').trim()))) problems.push(`${U} has no gen_user line in ${rel(P.users)}, so it has no levels or logins of its own; users get ${m.stem}_r through their own lines (below).`);
+    if (prev.genUser.exists && !prev.genUser.simple && (switched || fields)) problems.push(`${U}'s gen_user line in ${rel(P.users)} is written with ifdef() or more than once, so the editor doesn't rewrite it; change its roles or levels there by hand.`);
+    if (t.users != null) push(P.users, 'users', t.users, userfiles.editUsers(t.users, model, { prev, prevGrant: prev.grantUsers, prefix: prev.prefix }));
+    if (t.seusers != null && prev.genUser.exists) push(P.seusers, 'seusers', t.seusers, userfiles.editSeusers(t.seusers, model));
+  }
   const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
   const ctxNew = userfiles.editContexts(t.contexts, model, prev, { typeExists: ctx.typeExists, level });
   if (ctxNew != null && ctxNew !== (t.contexts || '')) push(P.contexts, 'contexts', t.contexts, ctxNew);
@@ -2065,15 +2140,56 @@ function existingUserPlan(model, m, ctx) {
   return { problems, files };
 }
 
-connection.onRequest('selinux/userPlan', async ({ model, module: mod }) => {
+/** A new standalone user: the module, its contexts file, and once a spec that creates the user and its logins, and a Makefile. */
+async function standaloneUserPlan(model, ctx, where, license) {
+  const U = `${model.name}_u`;
+  const host = await hostUsers(userfiles.WAYS.flatMap(w => w[2]));
+  const taken = new Map(host.seusers.filter(x => x.user !== U).map(x => [x.login, x.user]));
+  const problems = service.validate(model, ctx, { isNew: true, loginTaken: (n) => taken.get(n) || null });
+  // semanage takes levels as written: no m4 macros (mls_systemhigh, mcs_allcats) outside a tree.
+  const lit = /^s\d+(:c\d+([.,]c\d+)*)?(\s*-\s*s\d+(:c\d+([.,]c\d+)*)?)?$/;
+  for (const [what, v] of [['Default level', model.level], ['Range', model.range]]) if ((v || '').trim() && !lit.test(v.trim())) problems.push(`${what} "${v}" must be a literal level like s0 or s0-s0:c0.c1023 for semanage (no m4 macros such as mls_systemhigh outside a tree).`);
+  if ((model.cats || '').trim()) problems.push('Categories (gen_user\'s 6th argument) only apply in a tree; put them into the range instead (s0-s0:c0.c1023).');
+  for (const u of model.grantUsers || []) if (!host.users.includes(u)) problems.push(`There is no SELinux user ${u} on this host.`);
+  if ((model.ways || []).includes('cron') && ctx.has('cron_role') && !(model.roleCalls || []).includes('cron_role')) problems.push('Note: cron jobs run in the user’s domain only with the cron role call (cron_role); add it under Programs.');
+  if (problems.some(p => /name must|already exists|already declared/.test(p))) return { problems, files: [] };
+  const paths = newServicePaths(model.name, where, true);
+  for (const k of ['te', 'if', 'fc']) if (fs.existsSync(paths[k])) { problems.push(`${rel(paths[k])} already exists.`); return { problems, files: [] }; }
+  const out = service.plan(model, ctx, null, null);
+  const dir = path.dirname(paths.te);
+  const files = [];
+  const add = (p, kind, text) => files.push({ path: p, kind, exists: false, text, changed: true, diff: service.lineDiff('', text) });
+  for (const k of ['te', 'if', 'fc']) add(paths[k], k, out[k]);
+  const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
+  const ctxText = userfiles.contextsText(model, { typeExists: (s) => host.types.has(s), level });
+  const ctxFile = path.join(dir, `${U}_default_contexts`);
+  if (ctxText) add(ctxFile, 'contexts', ctxText);
+  const spec = path.join(dir, `${model.name}-selinux.spec`), mk = path.join(dir, 'Makefile');
+  if (readSource(spec) == null) {
+    const lic = license != null ? String(license).trim() : ((settings.packaging.license || '').trim() || 'MIT');
+    const why = packaging.licenseProblem(lic);
+    if (why) problems.push(why);
+    const version = (/policy_module\(\s*\w+\s*,\s*([^)\s]+)\s*\)/.exec(out.te) || [])[1] || '1.0.0';
+    const range = (model.range || model.level || 's0').replace(/\s+/g, '');
+    const user = { U, roles: [`${model.name}_r`, ...(model.switchTo || [])], level: (model.level || 's0').trim(), range, prefix: (model.prefix || 'user').trim(),
+      logins: (model.logins || []).filter(l => (l.login || '').trim()).map(l => ({ login: l.login.trim(), range: (l.range || '').replace(/\s+/g, '') })), grant: model.grantUsers || [], contexts: !!ctxText };
+    add(spec, 'spec', packaging.specText({ name: model.name, version, summary: model.summary, packager: gitPackager(dir), license: lic, user }));
+  }
+  if (readSource(mk) == null) add(mk, 'make', packaging.makefileText(model.name, ctxText ? [`${U}_default_contexts`] : []));
+  return { problems, files };
+}
+
+connection.onRequest('selinux/userPlan', async ({ model, module: mod, standalone, where, license }) => {
   await indexing;
-  if (!treeRoot || usingDevel) return { problems: ['The user editor works on a policy source tree.'], files: [] };
-  const ctx = userCtx();
+  if (!treeRoot && !usingDevel) return { problems: ['Open a policy source tree, or a folder for standalone modules, first.'], files: [] };
   if (mod) {
     const m = userModules().find(x => x.module === mod);
     if (!m) return { problems: [`${mod} is no longer a user role module.`], files: [] };
-    return existingUserPlan(model, m, ctx);
+    return existingUserPlan(model, m, userCtx(m.standalone));
   }
+  const sa = usingDevel || (!!treeRoot && !!develInterfaces() && !!standalone);
+  const ctx = userCtx(sa);
+  if (sa) return standaloneUserPlan(model, ctx, where, license);
   const U = `${model.name}_u`;
   const cp = userConfigPaths(model.name);
   const seText = readSource(cp.seusers);

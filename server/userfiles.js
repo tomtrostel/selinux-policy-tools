@@ -276,6 +276,23 @@ function editContexts(text, model, prev, opts = {}) {
 }
 
 /**
+ * A standalone user's settings as its spec's %post creates them (packaging.specText's lines):
+ * { userRoles, level, range, prefix, logins, grantUsers }; {} when the spec has none.
+ */
+function readSpecUser(spec, U, R) {
+  const unq = (s) => (s || '').replace(/^'|'$/g, '').replace(/'\\''/g, "'");
+  const out = {};
+  const um = new RegExp(`^semanage user -a -R '([^']*)' -L '([^']*)' -r '([^']*)' -P '([^']*)' ${U}\\b`, 'm').exec(spec);
+  if (um) Object.assign(out, { userRoles: um[1].split(/\s+/).filter(Boolean), level: um[2], range: um[3], prefix: um[4] });
+  const logins = [];
+  for (const m of spec.matchAll(new RegExp(`^semanage login -a -s ${U}(?: -r ('[^']*'))? ('(?:[^']|'\\\\'')*') 2>`, 'gm'))) logins.push({ login: unq(m[2]).replace(/%%/g, '%'), range: unq(m[1]) });
+  if (um || logins.length) out.logins = logins;
+  const grant = [...spec.matchAll(new RegExp(`case " \\$r " in \\*" ${R} "\\*\\) ;; \\*\\) \\[ -n "\\$r" \\] && semanage user -m -R "\\$r ${R}" (\\w+)`, 'g'))].map(m => m[1]);
+  if (um) out.grantUsers = grant;
+  return out;
+}
+
+/**
  * default_contexts after ways in were turned off: for a source the user's own file no longer
  * lists, libselinux falls back to default_contexts, so NAME_r:NAME_t comes off that source's
  * line there (the line goes when nothing is left). Other roles' contexts stay.
@@ -341,4 +358,4 @@ function userTreeCtx(idx, base) {
   return ctx;
 }
 
-module.exports = { WAYS, WAY, userTreeCtx, parseGenUsers, readUser, genUserLine, editUsers, editKernelRoles, parseSeusers, editSeusers, contextsText, editContexts, editDefaults };
+module.exports = { WAYS, WAY, userTreeCtx, parseGenUsers, readUser, readSpecUser, genUserLine, editUsers, editKernelRoles, parseSeusers, editSeusers, contextsText, editContexts, editDefaults };

@@ -23,11 +23,11 @@
   const filters = { calls: '', ifaces: '' };
 
   $('apply').setAttribute('title', 'Write the files shown on the right (one undoable edit) and save them, which builds the tree');
-  $('apply').addEventListener('click', () => { if (model) { $('status').textContent = 'Writing…'; vscode.postMessage({ cmd: 'apply', model }); } });
+  $('apply').addEventListener('click', () => { if (model) { $('status').textContent = 'Writing…'; vscode.postMessage({ cmd: 'apply', model, ...extras() }); } });
 
   const changed = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model }), 250);
+    timer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, ...extras() }), 250);
   };
   const toggle = (list, v, on) => { const i = list.indexOf(v); if (on && i < 0) list.push(v); if (!on && i >= 0) list.splice(i, 1); };
   const kindOf = () => (info.catalog.kinds.find(k => k.id === model.user.kind) || info.catalog.kinds[0] || {});
@@ -46,6 +46,34 @@
     i.addEventListener('input', () => oninput(i.value));
     return i;
   };
+
+  // Standalone (new users): the license for the spec, as the service editor does.
+  let license = null;
+  const extras = () => ({ standalone: !!(info && info.standalone), license: info && info.standalone && info.isNew ? license : undefined });
+
+  /** In the tree, or a standalone module packaged as an RPM (new users, when the host has devel headers). */
+  function moduleRow() {
+    if (!info.canStandalone && !info.standalone) return null;
+    if (!info.canStandalone) return h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('span', { class: 'muted small' }, `standalone, built against this host's devel headers, in ${info.folder || 'the workspace folder'}`));
+    const opt = (on, label, title) => {
+      const r = h('input', { type: 'radio', name: 'where', checked: (!!info.standalone === on) || null });
+      r.addEventListener('change', () => vscode.postMessage({ cmd: 'standalone', on, model }));
+      return h('label', { class: 'check', title }, r, h('span', {}, label));
+    };
+    return h('div', { class: 'row top' }, h('span', { class: 'lbl' }, 'Module'), h('div', {},
+      opt(false, 'In the tree (policy/modules/roles, the users file, seusers, contexts)', 'The user is part of the tree\'s policy: its gen_user line, role in kernel.te, seusers and contexts files.'),
+      opt(true, `Standalone, packaged as an RPM (${(info.folder || '').split(/[\\/]/).pop() || 'workspace'}/${model.name || 'NAME'}${info.folderSuffix || ''}/)`, 'A module of its own built against this host\'s devel headers; the RPM installs it, creates the SELinux user and its logins with semanage, and installs its contexts file.')));
+  }
+
+  function licenseRow() {
+    if (!info.standalone || !info.isNew || !info.licenses) return null;
+    if (license == null) license = info.licenses.default;
+    const ids = [...new Set([...info.licenses.common.map(x => x.id), ...info.licenses.custom, license])];
+    const sel = h('select', { title: 'The License: tag of the RPM spec (SPDX identifier)' }, ids.map(id => h('option', { value: id, selected: id === license || null }, id)));
+    sel.addEventListener('change', () => { license = sel.value; changed(); });
+    const other = text('', (v) => { if (v.trim()) { license = v.trim(); changed(); } }, { size: 22, placeholder: 'or another SPDX expression', title: 'Any one-line license expression for the spec' });
+    return h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'License'), sel, other);
+  }
 
   function userCard() {
     const n = model.name || 'NAME';
@@ -71,12 +99,21 @@
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Name'), text(model.name, (v) => { model.name = v.trim(); $('title').textContent = model.name ? `New user: ${model.name}_u` : 'New User'; changed(); },
         { placeholder: 'e.g. ops', title: 'The name the user, role and domain are made from: NAME_u, NAME_r, NAME_t. Lowercase letters, digits and _.' })),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Summary'), text(model.summary, (v) => { model.summary = v; changed(); }, { size: 48, placeholder: 'e.g. Operators of the web servers', title: 'One line for the .if summary and the comment above its gen_user line' })),
+      moduleRow(), licenseRow(),
       h('div', { class: 'sub' }, 'Kind'), kinds,
     ]);
   }
 
   function loginsCard() {
     const k = kindOf();
+    if (!info.isNew && model.standalone) {
+      return card('logins', 'Logins', `${(model.logins || []).length} Linux login(s) · ${model.ways.length} way(s) in`, [
+        h('div', { class: 'muted small' }, `Created by the %post of ${(info.specFile || 'its spec').split(/[\\/]/).pop()} with semanage login; change them there:`),
+        (model.logins || []).length ? h('div', {}, model.logins.map(l => h('div', {}, h('code', {}, l.login), l.range ? h('span', { class: 'muted' }, ` ${l.range}`) : null))) : h('div', { class: 'muted' }, 'none'),
+        h('div', { class: 'sub' }, 'Ways in'), h('div', { class: 'muted small' }, `Its contexts file next to the module (installed as contexts/users/${model.name}_u).`),
+        h('div', { class: 'cols' }, info.catalog.ways.map(w => check(w.label, model.ways.includes(w.id), (on) => { toggle(model.ways, w.id, on); render(); changed(); }, { title: w.help, code: w.sources.join(', ') }))),
+      ]);
+    }
     if (!info.isNew && model.genUser && !model.genUser.exists) return card('logins', 'Logins', 'none: no user of its own', h('div', { class: 'muted' }, `There is no ${model.name}_u, so no login maps to this role directly; users who have ${model.name}_r (see Roles) switch to it.`));
     if (info.isNew && !k.login) return card('logins', 'Logins', 'none: switched to from another role', h('div', { class: 'muted' }, `A ${k.label.toLowerCase()} has no logins of its own: users reach it by switching role (see Roles).`));
     const taken = new Map((info.seusers || []).map(x => [x.login, x.user]));
@@ -108,7 +145,7 @@
       { code: r.change, title: `Lets ${R} change to ${r.role} (newrole -r, sudo -r): ${r.change}(${R}) in the .te, and ${r.role} in the user's gen_user line` }));
     const from = roles.filter(r => r.changeTo).map(r => check(r.role, model.enteredFrom.includes(r.role), (on) => { toggle(model.enteredFrom, r.role, on); changed(); },
       { code: r.changeTo, title: `Lets ${r.role} change to ${R}: ${r.changeTo}(${R}) in the .te` }));
-    const users = info.users.map(u => check(u, model.grantUsers.includes(u), (on) => { toggle(model.grantUsers, u, on); changed(); }, { title: `Adds ${R} to ${u}'s gen_user line, so ${u} may take the role` }));
+    const users = info.users.map(u => check(u, model.grantUsers.includes(u), (on) => { toggle(model.grantUsers, u, on); changed(); }, { title: info.standalone ? `The RPM adds ${R} to ${u}'s roles with semanage user -m when installed (and takes it away when removed)` : `Adds ${R} to ${u}'s gen_user line, so ${u} may take the role`, disabled: !info.isNew && model.standalone }));
     const prov = info.catalog.provides.map(p => check(p.label, model.provides.includes(p.id), (on) => { toggle(model.provides, p.id, on); changed(); }, { code: p.name.replace('%', model.name || 'NAME') }));
     return card('roles', 'Roles', `${model.switchTo.length} to · ${model.enteredFrom.length} from`, [
       h('div', { class: 'sub' }, 'May switch to'), h('div', { class: 'cols' }, to.length ? to : h('span', { class: 'muted' }, 'No role has a *_role_change interface in this tree.')),
@@ -177,6 +214,10 @@
   }
 
   function mlsCard() {
+    if (!info.isNew && model.standalone) {
+      return card('mls', 'Levels and home directory', `${model.level || ''} · ${model.range || ''}`, h('div', { class: 'muted' },
+        `Level ${model.level || '?'}, range ${model.range || '?'}, prefix ${model.prefix || '?'}: set by semanage user in the spec's %post; change them there.`), false);
+    }
     if (!info.isNew && !(model.genUser && model.genUser.exists && model.genUser.simple)) {
       return card('mls', 'Levels and home directory', model.genUser && model.genUser.exists ? 'as written' : 'none of its own', h('div', { class: 'muted' }, model.genUser && model.genUser.exists
         ? `${model.name}_u's gen_user line is written with ifdef() or more than once, so the editor leaves it as it is; edit its levels in ${info.usersFile} by hand.`
@@ -185,7 +226,7 @@
     return card('mls', 'Levels and home directory', `${model.level} · ${model.range}`, [
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Default level'), text(model.level, (v) => { model.level = v; changed(); }, { size: 10, title: 'The level sessions start at (gen_user’s 4th argument), s0 in MCS policies' })),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Range'), text(model.range, (v) => { model.range = v; changed(); }, { size: 22, title: 'The levels the user may have, e.g. s0, or s0 - mls_systemhigh for an administrator' })),
-      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Categories'), text(model.cats, (v) => { model.cats = v; changed(); }, { size: 22, placeholder: 'e.g. mcs_allcats', title: 'gen_user’s optional 6th argument (categories), e.g. mcs_allcats' })),
+      info.standalone ? null : h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Categories'), text(model.cats, (v) => { model.cats = v; changed(); }, { size: 22, placeholder: 'e.g. mcs_allcats', title: 'gen_user’s optional 6th argument (categories), e.g. mcs_allcats' })),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Home prefix'), text(model.prefix, (v) => { model.prefix = v; changed(); }, { size: 12, placeholder: info.prefixDefault, title: 'gen_user’s prefix: home directories of its logins are labeled PREFIX_home_t etc. This tree mostly uses the one shown.' })),
     ], false);
   }
@@ -217,9 +258,11 @@
     const m = ev.data;
     if (m.cmd === 'init') {
       info = m.info;
-      model = m.info.model;
+      // Switching between the tree and standalone keeps what was filled in (the prefix follows the place).
+      if (m.keep && m.model) model = { ...m.model, prefix: m.info.model.prefix, cats: m.info.standalone ? '' : m.model.cats };
+      else model = m.info.model;
       plan = null;
-      $('title').textContent = info.isNew ? 'New User' : `User: ${model.name}_${model.genUser && model.genUser.exists ? 'u' : 'r'} (${info.module})`;
+      $('title').textContent = info.isNew ? 'New User' : `User: ${model.name}_${model.standalone || (model.genUser && model.genUser.exists) ? 'u' : 'r'} (${info.module})`;
       $('apply').textContent = info.isNew ? 'Create' : 'Apply';
       $('status').textContent = '';
       render();

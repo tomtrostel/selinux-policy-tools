@@ -162,6 +162,58 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
   const st2 = (rep2.users || []).find(u => u.name === 'staff_u');
   check(st2 && !st2.entries.some(e => e.source === 'local_login_t' && e.contexts.some(c => c.type === 'staff_t')), 'the build\'s logins report: staff_u no longer lands in staff_t on the console', st2 && st2.entries);
 
+  // 6. A standalone user (built against this host's devel headers, packaged as an RPM).
+  const sai = await conn.sendRequest('selinux/userInfo', { standalone: true });
+  if (!sai.standalone) console.log(`SKIP standalone part: ${sai.unavailable || 'no devel headers'}`);
+  else {
+    const sudoT = sai.catalog.roleCalls.find(c => c.n === 'sudo_role_template');
+    check(sudoT && sai.users.includes('staff_u') && sai.licenses && sai.licenses.default, `standalone info: ${sai.catalog.roleCalls.length} role calls from the devel headers, host users ${sai.users.join(' ')}`);
+    const sm2 = sai.model;
+    Object.assign(sm2, { name: 'sadev', summary: 'Standalone test user', logins: [{ login: 'bob', range: '' }, { login: '%sadevs', range: 's0' }], ways: ['ssh'],
+      roleCalls: ['sudo_role_template'], switchTo: ['sysadm_r'], grantUsers: ['staff_u'] });
+    const macro = await conn.sendRequest('selinux/userPlan', { model: { ...sm2, range: 's0 - mls_systemhigh' }, standalone: true, license: 'MIT' });
+    check(blocking(macro).some(p => /literal level/.test(p)), `an m4 macro in the range is refused standalone: ${blocking(macro)[0]}`);
+    let sp2 = await conn.sendRequest('selinux/userPlan', { model: sm2, standalone: true, license: 'MIT' });
+    check(!blocking(sp2).length, `standalone plan: ${sp2.files.map(f => path.basename(f.path)).join(', ')}`, sp2.problems);
+    const S2 = (k) => sp2.files.find(f => f.kind === k);
+    check(S2('te') && /sudo_role_template\(sadev, sadev_r, sadev_t\)/.test(S2('te').text), 'the sudo call in the host\'s (RHEL) form, from its devel headers', S2('te') && S2('te').text);
+    check(!sp2.files.some(f => ['users', 'kernel', 'seusers', 'conf'].includes(f.kind)) && S2('contexts') && /system_r:sshd_t:s0\t\tsadev_r:sadev_t:s0/.test(S2('contexts').text), 'no tree files; its contexts file next to the module');
+    const spec = S2('spec') && S2('spec').text;
+    check(spec && /^semanage user -a -R 'sadev_r sysadm_r' -L 's0' -r 's0' -P 'user' sadev_u /m.test(spec) && /semanage login -a -s sadev_u 'bob'/.test(spec) && /'%%sadevs'/.test(spec) && /semanage user -m -R "\$r sadev_r" staff_u/.test(spec) && /contexts\/users\/sadev_u/.test(spec),
+      'spec: semanage user and logins (%group escaped), staff_u gets the role, the contexts file installed', spec && spec.split('\n').filter(l => /semanage|contexts/.test(l)));
+    await write(sp2);
+    const dir = path.dirname(S2('te').path);
+    const rb = await conn.sendRequest('selinux/build', { uri: uri(S2('te').path) });
+    check(rb.ok, `the standalone module builds against the devel headers (${rb.ms} ms)`, rb.log && rb.log.slice(-1500));
+    let rpmOut = '';
+    try { rpmOut = cp.execFileSync('make', ['-C', dir, 'rpm'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); } catch (e) { rpmOut = String(e.stdout || '') + String(e.stderr || ''); }
+    const rpm = (rpmOut.match(/\S+sadev-selinux-[^\s/]+\.rpm/g) || []).pop();
+    check(rpm && fs.existsSync(rpm), `make rpm: ${rpm ? path.basename(rpm) : rpmOut.slice(-800)}`);
+    if (rpm) {
+      const scripts = cp.execFileSync('rpm', ['-qp', '--scripts', rpm], { encoding: 'utf8' });
+      const list = cp.execFileSync('rpm', ['-qpl', rpm], { encoding: 'utf8' });
+      check(/semanage user -a -R 'sadev_r sysadm_r'/.test(scripts) && /semanage login -a -s sadev_u -r 's0' '%sadevs'/.test(scripts) && /semanage user -d sadev_u/.test(scripts) && /printf "%s "/.test(scripts),
+        'RPM scripts: user and logins created, removed on erase (rpm expanded %% to %)', scripts.split('\n').filter(l => /semanage/.test(l)).slice(0, 8));
+      check(/\/etc\/selinux\/targeted\/contexts\/users\/sadev_u/.test(list) && /sadev\.pp\.bz2/.test(list), 'RPM files: the module and contexts/users/sadev_u');
+    }
+    // Read back: the module, its contexts file, and the spec's settings.
+    const sl = await conn.sendRequest('selinux/userList');
+    check(sl.modules.some(m => m.module === 'sadev' && m.standalone), 'listed as a standalone user module');
+    const sb = await conn.sendRequest('selinux/userInfo', { module: 'sadev' });
+    check(!sb.unavailable && sb.model.standalone && sb.model.roleCalls.includes('sudo_role_template') && sb.model.switchTo.includes('sysadm_r') && sb.model.ways.join() === 'ssh'
+      && sb.model.logins.map(l => l.login).join() === 'bob,%sadevs' && sb.model.grantUsers.join() === 'staff_u', 'read back: role calls, switch, ways, and from the spec its logins and staff_u', sb.unavailable || sb.model);
+    let ep = await conn.sendRequest('selinux/userPlan', { model: sb.model, module: 'sadev' });
+    check(!blocking(ep).length && !ep.files.length, 'a no-op edit changes no file', ep.files.map(f => f.path));
+    const em = JSON.parse(JSON.stringify(sb.model));
+    em.caps.push('kill'); em.ways.push('console');
+    ep = await conn.sendRequest('selinux/userPlan', { model: em, module: 'sadev' });
+    check(!blocking(ep).length && ep.files.map(f => f.kind).sort().join() === 'contexts,te', `an edit changes the .te and its contexts file only: ${ep.files.map(f => path.basename(f.path)).join(', ')}`, ep.problems);
+    const lm = JSON.parse(JSON.stringify(sb.model));
+    lm.logins.push({ login: 'carol', range: '' });
+    ep = await conn.sendRequest('selinux/userPlan', { model: lm, module: 'sadev' });
+    check((ep.problems || []).some(p => /%post of .*sadev-selinux\.spec/.test(p)), 'logins of a standalone user: pointed to the spec');
+  }
+
   proc.kill();
   console.log(failures ? `${failures} FAILED` : 'all passed');
   process.exit(failures ? 1 : 0);

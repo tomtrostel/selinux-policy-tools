@@ -64,6 +64,19 @@ check(ct === 'system_r:sshd_t:s0\t\tops_r:ops_t:s0\nsystem_r:crond_t:s0\t\tops_r
 const K = 'policy_module(kernel)\n\nrole system_r;\nrole sysadm_r;\n\nifdef(`enable_mls\',`\n\trole secadm_r;\n\')\n';
 check(F.editKernelRoles(K, 'ops_r') === K.replace('role sysadm_r;\n', 'role sysadm_r;\nrole ops_r;\n') && F.editKernelRoles(K, 'sysadm_r') === K && F.editKernelRoles('x', 'a_r') === null, 'kernel.te: role added after the top-level ones, once');
 
+/* ---------- standalone: the RPM spec creates the user ---------- */
+
+const P = require('../server/packaging');
+const su = { U: 'ops_u', roles: ['ops_r', 'sysadm_r'], level: 's0', range: 's0-s0:c0.c1023', prefix: 'user', logins: [{ login: 'alice', range: '' }, { login: "%o'ps", range: 's0' }], grant: ['staff_u'], contexts: true };
+const spec = P.specText({ name: 'ops', user: su, date: new Date(2026, 9, 12) });
+check(/^Source3: +ops_u_default_contexts$/m.test(spec) && /%config\(noreplace\) %\{_sysconfdir\}\/selinux\/%\{selinuxtype\}\/contexts\/users\/ops_u/.test(spec) && /Requires\(post\): policycoreutils-python-utils/.test(spec), 'spec: contexts file shipped, semanage required');
+const post = spec.slice(spec.indexOf('%post\n'), spec.indexOf('%postun')), postun = spec.slice(spec.indexOf('%postun'), spec.indexOf('%posttrans'));
+check(post.indexOf('%selinux_modules_install') < post.indexOf('semanage user -a') && postun.indexOf('semanage user -d') < postun.indexOf('%selinux_modules_uninstall'), 'the user is created after the module, removed before it');
+check(/'%%o'\\''ps'/.test(spec) && /printf "%%s "/.test(spec) && !/[^%]%s /.test(spec), 'a %group and quotes escaped for rpm and the shell; no bare % macros');
+const back = F.readSpecUser(spec, 'ops_u', 'ops_r');
+check(JSON.stringify(back) === JSON.stringify({ userRoles: ['ops_r', 'sysadm_r'], level: 's0', range: 's0-s0:c0.c1023', prefix: 'user', logins: [{ login: 'alice', range: '' }, { login: "%o'ps", range: 's0' }], grantUsers: ['staff_u'] }), 'the spec reads back as written', back);
+check(/^rpm: .* ops_u_default_contexts$/m.test(P.makefileText('ops', ['ops_u_default_contexts'])), 'Makefile: rpm depends on the contexts file');
+
 /* ---------- webview ---------- */
 
 class El {

@@ -934,22 +934,24 @@ ${EDITOR_CSS}</style></head><body>
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
   const post = (m) => panel.webview.postMessage(m);
-  const load = async () => {
-    const info = await client.sendRequest('selinux/userInfo', { module: mod });
-    if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info });
+  let standalone = false;
+  const load = async (keepModel = null) => {
+    const info = await client.sendRequest('selinux/userInfo', { module: mod, standalone });
+    if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info, keep: !!keepModel, model: keepModel });
   };
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
       if (m.cmd === 'ready') await load();
-      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model, module: mod }) });
+      else if (m.cmd === 'standalone') { standalone = !!m.on; await load(m.model); }
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model, module: mod, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
       else if (m.cmd === 'apply') {
-        const plan = await client.sendRequest('selinux/userPlan', { model: m.model, module: mod });
+        const plan = await client.sendRequest('selinux/userPlan', { model: m.model, module: mod, standalone: !!m.standalone, license: m.license });
         if ((plan.problems || []).some(p => !p.startsWith('Note:'))) { post({ cmd: 'plan', plan }); return; }
         const n = await applyServicePlan(plan);
         if (!mod) {
           post({ cmd: 'done', text: `Created ${m.model.name}_u (${n} files).` });
-          vscode.window.showInformationMessage(`Created the ${m.model.name}_u user (${n} file${n > 1 ? 's' : ''}). Saving builds the tree; then SELinux: Logins and Users shows where its logins land and what it can reach.`, 'Logins and Users')
+          vscode.window.showInformationMessage(plan.files.some(f => f.kind === 'spec') ? `Created the ${m.model.name} user module (${n} files). Package it with SELinux: Build RPM (${m.model.name}-selinux); installing the RPM creates ${m.model.name}_u and its logins.` : `Created the ${m.model.name}_u user (${n} file${n > 1 ? 's' : ''}). Saving builds the tree; then SELinux: Logins and Users shows where its logins land and what it can reach.`, 'Logins and Users')
             .then(a => { if (a) showLogins(context); });
           panel.dispose();
           return;

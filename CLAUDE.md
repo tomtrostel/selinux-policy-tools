@@ -795,8 +795,30 @@ so far covered by the e2e tests only.
    no-op identical + 14 mutation kinds read back and idempotent: Fedora
    11/130, CLIP 11/126, RHEL 9 12/138, RHEL 10 12/141. e2e section 5 (edit
    staff, build, logins report) on CLIP, RHEL 9, RHEL 10.
-   Phase 2 (rest): standalone + RPM (2c), automation preset + reach
-   preview (2d). Plan agreed: kind of user from the tree's
+   Phase 2c, standalone users + RPM (done, unreleased; "yes lets do step
+   c"): server userCtx(standalone) takes the role catalog from
+   develIndex() (a PolicyIndex of the devel include dir, cached per
+   develIfCache key; RHEL's role calls differ from CLIP's), hostUsers()
+   (running policy's seusers, users via policy_query `users`, which way
+   sources exist), userModules() also standalone modules (m.standalone),
+   userTexts standalone = module + contexts file next to it + spec,
+   readExistingUser merges userfiles.readSpecUser (the spec's semanage
+   lines → userRoles, level, range, prefix, logins, grantUsers),
+   standaloneUserPlan (literal levels only, no categories, grantUsers on the
+   host; files te/if/fc, NAME_u_default_contexts, once spec + Makefile),
+   existingUserPlan standalone (module + contexts; logins/levels/grants →
+   note pointing to the spec). packaging.specText({ user }): Source3 contexts
+   file → /etc/selinux/%{selinuxtype}/contexts/users/NAME_u (%config
+   noreplace), userScripts %post (semanage user -a … || -m, login -a per
+   login with % → %%, role grant via `semanage user -l` awk with printf
+   "%%s"), %postun (logins, user, grant removal, then the module);
+   makefileText(name, extra deps). Webview: Module radio (standalone when
+   canStandalone; switch reloads info keeping the model), License select +
+   free text, standalone existing: logins/levels read-only, granted users
+   disabled. e2e section 6 (CLIP workspace on melody): plan, RHEL-form sudo
+   call, build, make rpm, rpm --scripts/-qpl, read back, no-op, edit; the
+   RPM wasn't installed (needs root).
+   Phase 2 (rest): automation preset + reach preview (2d). Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role

@@ -34,6 +34,11 @@
   gen_user line, seusers and contexts, and edits only what changed: a way in
   turned off also takes the user's context off that line in
   `default_contexts`; gen_user lines written with ifdef are left alone.
+  Standalone users: a new user can be a module of its own built against
+  the host's devel headers (role calls in their form), packaged with a spec
+  whose `%post` creates the SELinux user, its logins and role grants with
+  semanage and installs its contexts file (`%postun` removes them);
+  reopened, it reads back from the module, contexts file and spec.
 
 ## 0.11.0 (2026-10-12)
 

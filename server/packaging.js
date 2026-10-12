@@ -22,13 +22,43 @@ const changelogDate = (d) => `${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${Stri
  *   packager: "Name <email>"; date: Date;
  *   license: the License: tag (selinux.packaging.license, default MIT).
  */
-function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date(), license = 'MIT' }) {
-  const desc = summary || `SELinux policy for the ${name} service`;
-  const semanage = ports.length > 0;
+/*
+ * A user role module (user = { U, roles, level, range, prefix, logins: [{ login, range }],
+ * grant: [users that also get the role], contexts: true when NAME_u_default_contexts ships }):
+ * a loadable module can't declare SELinux users or login mappings, so %post creates them with
+ * semanage after the module (and its role) is installed, and %postun removes them first.
+ */
+function userScripts(user, R) {
+  const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+  const add = [], del = [];
+  const roles = user.roles.join(' ');
+  add.push(`# The SELinux user and its login mappings (a module can't declare them).`,
+    `semanage user -a -R ${q(roles)} -L ${q(user.level)} -r ${q(user.range)} -P ${q(user.prefix)} ${user.U} 2>/dev/null || semanage user -m -R ${q(roles)} -L ${q(user.level)} -r ${q(user.range)} -P ${q(user.prefix)} ${user.U} || :`);
+  for (const l of user.logins) {
+    const r = l.range ? ` -r ${q(l.range)}` : '';
+    const who = q(l.login.replace(/%/g, '%%')); // %group: %% is a literal % in a spec
+    add.push(`semanage login -a -s ${user.U}${r} ${who} 2>/dev/null || semanage login -m -s ${user.U}${r} ${who} || :`);
+    del.push(`    semanage login -d ${who} 2>/dev/null || :`);
+  }
+  del.push(`    semanage user -d ${user.U} 2>/dev/null || :`);
+  // Other users that get the role: their current roles plus this one (and without it again on removal).
+  const rolesOf = (u) => `$(semanage user -l | awk -v u=${u} '$1 == u { for (i = 5; i <= NF; i++) printf "%%s ", $i }')`; // %% = a literal % in a spec
+  for (const u of user.grant || []) {
+    add.push(`r=${rolesOf(u)}; case " $r " in *" ${R} "*) ;; *) [ -n "$r" ] && semanage user -m -R "$r ${R}" ${u} || : ;; esac`);
+    del.push(`    r=${rolesOf(u)}; n=$(echo " $r " | sed 's/ ${R} / /g'); [ "$n" != " $r " ] && semanage user -m -R "$n" ${u} || :`);
+  }
+  return { add: add.join('\n'), del: del.join('\n') };
+}
+
+function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date(), license = 'MIT', user = null }) {
+  const desc = summary || (user ? `SELinux user ${user.U} and its role ${name}_r` : `SELinux policy for the ${name} service`);
+  const semanage = ports.length > 0 || !!user;
   const portAdd = ports.map(p => `semanage port -a -t ${p.type} -p ${p.proto} ${p.port} 2>/dev/null || semanage port -m -t ${p.type} -p ${p.proto} ${p.port} || :`).join('\n');
   const portDel = ports.map(p => `    semanage port -d -t ${p.type} -p ${p.proto} ${p.port} 2>/dev/null || :`).join('\n');
-  return `# SELinux policy module for ${name}, packaged on its own so the service's
-# package can require it (Requires: ${name}-selinux).
+  const us = user ? userScripts(user, `${name}_r`) : null;
+  const ctxPath = user && user.contexts ? `%{_sysconfdir}/selinux/%{selinuxtype}/contexts/users/${user.U}` : null;
+  return `# SELinux policy module for ${name}, packaged on its own${user ? ` with the SELinux user ${user.U}` : ` so the service's
+# package can require it (Requires: ${name}-selinux)`}.
 # Build: make rpm   (or: rpmbuild -bb --define "_sourcedir $PWD" ${name}-selinux.spec)
 # Written by SELinux Policy Tools; edit freely (keep Version in step with
 # policy_module() in ${name}.te).
@@ -45,7 +75,7 @@ License:        ${license}
 Source0:        %{modulename}.te
 Source1:        %{modulename}.if
 Source2:        %{modulename}.fc
-BuildArch:      noarch
+${ctxPath ? `# Where its logins land (contexts/users/${user.U}).\nSource3:        ${user.U}_default_contexts\n` : ''}BuildArch:      noarch
 
 BuildRequires:  selinux-policy-devel
 BuildRequires:  make
@@ -70,16 +100,16 @@ bzip2 -9 %{modulename}.pp
 %install
 install -D -m 0644 %{modulename}.pp.bz2 %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
 install -D -p -m 0644 %{modulename}.if %{buildroot}%{_datadir}/selinux/devel/include/distributed/%{modulename}.if
-
+${ctxPath ? `install -D -p -m 0644 %{SOURCE3} %{buildroot}${ctxPath}\n` : ''}
 %pre
 %selinux_relabel_pre -s %{selinuxtype}
 
 %post
 %selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
-${semanage ? `# Port numbers for the module's port types.\n${portAdd}\n` : ''}
+${ports.length ? `# Port numbers for the module's port types.\n${portAdd}\n` : ''}${us ? `${us.add}\n` : ''}
 %postun
 if [ $1 -eq 0 ]; then
-${semanage ? `${portDel}\n` : ''}    %selinux_modules_uninstall -s %{selinuxtype} %{modulename}
+${ports.length ? `${portDel}\n` : ''}${us ? `${us.del}\n` : ''}    %selinux_modules_uninstall -s %{selinuxtype} %{modulename}
 fi
 
 %posttrans
@@ -88,7 +118,7 @@ fi
 %files
 %{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
 %{_datadir}/selinux/devel/include/distributed/%{modulename}.if
-%ghost %verify(not md5 size mode mtime) %{_sharedstatedir}/selinux/%{selinuxtype}/active/modules/200/%{modulename}
+${ctxPath ? `%config(noreplace) ${ctxPath}\n` : ''}%ghost %verify(not md5 size mode mtime) %{_sharedstatedir}/selinux/%{selinuxtype}/active/modules/200/%{modulename}
 
 %changelog
 * ${changelogDate(date)} ${packager} - ${version}-1
@@ -97,7 +127,7 @@ fi
 }
 
 /** A Makefile for the module's folder: `make` builds the .pp, `make rpm` the RPM (under ./rpmbuild). */
-function makefileText(name) {
+function makefileText(name, extra = []) {
   return `# Builds the ${name} policy module against this host's selinux-policy-devel,
 # and its RPM (${name}-selinux). Written by SELinux Policy Tools.
 NAME := ${name}
@@ -108,7 +138,7 @@ all: $(NAME).pp
 $(NAME).pp: $(NAME).te $(NAME).if $(NAME).fc
 \t$(MAKE) -f $(DEVEL_MAKEFILE) $@
 
-rpm: $(NAME).te $(NAME).if $(NAME).fc $(NAME)-selinux.spec
+rpm: $(NAME).te $(NAME).if $(NAME).fc $(NAME)-selinux.spec${extra.map(f => ` ${f}`).join('')}
 \trpmbuild -bb --define "_sourcedir $(CURDIR)" --define "_topdir $(CURDIR)/rpmbuild" $(NAME)-selinux.spec
 \t@find $(CURDIR)/rpmbuild/RPMS -name '$(NAME)-selinux-*.rpm'
 

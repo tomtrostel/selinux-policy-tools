@@ -754,6 +754,26 @@ as libselinux does). Edits change only what changed:
 A role without a user of its own (webadm_r) has no logins or levels to
 edit: the users who get it are listed under Roles.
 
+**Standalone users packaged as RPMs.** In a tree workspace whose host has
+`selinux-policy-devel`, a new user can be **Standalone** (the Module choice
+at the top), and in a folder of standalone modules it always is. The role
+calls and their arguments then come from the host's devel headers (so in a
+CLIP workspace on RHEL, `sudo_role_template(NAME, NAME_r, NAME_t)` in RHEL's
+form), and the editor writes into `<folder>/NAME-selinux/`: the module, its
+`NAME_u_default_contexts`, a Makefile and, once, `NAME-selinux.spec` with
+the License picked in the form. A loadable module can't declare SELinux
+users or login mappings, so the RPM's `%post` creates them after installing
+the module (`semanage user -a -R 'NAME_r …' -L … -r … -P …`, `semanage
+login -a` per login or `%group`, `semanage user -m` adding the role to the
+users who get it), installs the contexts file as
+`/etc/selinux/targeted/contexts/users/NAME_u`, and `%postun` undoes it all
+before removing the module. Levels must be literal (`s0-s0:c0.c1023`, no
+m4 macros); logins already mapped on this host are refused. *SELinux: Build
+RPM* (`make rpm`) packages it. Opened again, a standalone user reads back
+from its module, its contexts file and the spec's `%post` lines; the form
+edits the module and the contexts file, and points to the spec for logins,
+levels and granted users.
+
 **Compiled Policy view** (full trees; standalone modules linked with the
 installed policy)
 
@@ -1201,6 +1221,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   those lines (staff.te, its contexts file and its token in
   `default_contexts`), the tree builds, staff reads back as edited and the
   build's logins report no longer lands staff_u in staff_t on the console.
+  Standalone (CLIP workspace on Rocky 9.8): a new user with a login, a
+  `%group`, ssh, sudo, a switch to sysadm_r and staff_u granted; the sudo
+  call in RHEL's form; the module builds against the devel headers; `make
+  rpm` gives an RPM whose scripts create and remove the user, logins and
+  role grant and whose files include `contexts/users/sadev_u`; it reads back
+  (logins and staff_u from the spec), a no-op edit changes nothing and an
+  edit touches only the `.te` and its contexts file. Installing the RPM
+  needs root and wasn't part of the test.
   Survey (test/user-test.js with a tree): every user role module unchanged
   by a no-op edit (Fedora 11, CLIP 11, RHEL 9 12, RHEL 10 12) and every
   test edit read back as edited and idempotent (130, 126, 138, 141: role
@@ -1254,11 +1282,13 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   limits which categories it sees, not which domains it enters); pam and
   sudoers settings aren't read (sudo rules decide who may run what as
   root; the policy decides which domain that runs in).
-* The user editor works on trees; standalone user modules packaged as RPMs
-  are not there yet. A new user's role module is loadable, but its role is
-  also declared in `kernel.te` (base), as the users file requires. It
-  doesn't remove users or rename them, and a `gen_user` line written with
-  `ifdef()` or more than once is edited by hand.
+* A new tree user's role module is loadable, but its role is also declared
+  in `kernel.te` (base), as the users file requires. The editor doesn't
+  remove users or rename them, and a `gen_user` line written with `ifdef()`
+  or more than once is edited by hand. A standalone user's logins, levels
+  and granted users live in its spec's `%post` (written once, edited there);
+  the spec's `semanage user -l` parsing assumes an MLS/MCS policy (targeted,
+  mls).
 * `semanage login`/`user` changes that aren't in the files under
   `/etc/selinux/<name>` (the merged `seusers` is) and user roles added with
   `semanage user` show up only through the installed policy, not a tree
