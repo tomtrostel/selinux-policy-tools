@@ -540,7 +540,11 @@ so far covered by the e2e tests only.
    all six agreed kinds are done. Out of scope so far: application_domain /
    userdom_user_application_domain programs, domains entered directly
    (keyutils, passenger, openca), roles, kernel-layer modules.
-   Ideas not done: gen_bool.
+   gen_bool booleans / raw `if (...)` blocks: not needed (checked
+   2026-10-12). No module the editor opens uses them: Fedora/RHEL has 2
+   gen_bool, CLIP 3 (+4 if blocks), all in kernel-layer modules
+   (kernel.te, selinux.te); services use gen_tunable (Fedora 336, CLIP
+   270). Such blocks stay kept as is.
 
 7. **Tutorials** (done, 0.9.0; user request: "tutorials … integrate
    them into the vsix … how to use the add-on and how it can help them
