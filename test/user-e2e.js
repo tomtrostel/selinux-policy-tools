@@ -134,6 +134,34 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
   const lo = sreach.domains && sreach.domains.find(d => d.name === 'logops_t');
   check(lo && lo.role === 'logops_r', `staff_u reaches logops_t: ${lo && lo.path.map(s => s.text).join(' ; ')}`, sreach.error || (sreach.domains || []).length);
 
+  // 5. Editing an existing user: staff (CLIP and RHEL both have it).
+  const list = await conn.sendRequest('selinux/userList');
+  check(['staff', 'sysadm'].every(x => list.modules.some(m => m.module === x)) && list.modules.some(m => m.module === 'opsusr'), `user modules: ${list.modules.map(m => m.module).join(' ')}`);
+  const si = await conn.sendRequest('selinux/userInfo', { module: 'staff' });
+  check(!si.unavailable && !si.isNew && si.model.name === 'staff' && si.model.user.kind === 'unpriv', `staff read back: ${si.unavailable || `${si.model.roleCalls.length} role calls, switches to ${si.model.switchTo.join(' ')}, ways ${si.model.ways.join(' ')}, ${si.kept.length} kept`}`);
+  check(si.model.switchTo.includes('sysadm_r') && si.model.roleCalls.includes('sudo_role_template') && si.model.enteredFrom.length === 0, 'staff switches to sysadm_r and has sudo');
+  let sp = await conn.sendRequest('selinux/userPlan', { model: si.model, module: 'staff' });
+  check(!blocking(sp).length && sp.files.length === 0, 'a no-op edit changes no file', sp.files.map(f => f.path));
+  const sm = JSON.parse(JSON.stringify(si.model));
+  sm.caps.push(['sys_nice', 'kill', 'dac_read_search'].find(c => !sm.caps.includes(c)));
+  const rc = si.catalog.roleCalls.find(c => c.g === 'run' && !sm.roleCalls.includes(c.n));
+  sm.roleCalls.push(rc.n);
+  sm.ways = sm.ways.filter(w => w !== 'console');
+  sp = await conn.sendRequest('selinux/userPlan', { model: sm, module: 'staff' });
+  check(!blocking(sp).length, `edit: ${sp.files.map(f => `${path.basename(f.path)} ${diffOf(f).length} line(s)`).join(', ')} (+ ${rc.n})`, sp.problems);
+  const ste = sp.files.find(f => f.kind === 'te');
+  check(ste && diffOf(ste).every(l => l.startsWith('+')) && diffOf(ste).length <= 8 && diffOf(ste).some(l => l.includes(rc.n)), 'staff.te: lines added only', ste && diffOf(ste));
+  const cons = sp.files.filter(f => f.kind === 'contexts' || f.kind === 'defaults');
+  check(si.model.ways.includes('console') ? cons.length && cons.every(f => diffOf(f).every(l => /local_login_t/.test(l))) : true, `console logins taken away: ${cons.map(f => path.basename(f.path)).join(', ')}`, cons.map(diffOf));
+  await write(sp);
+  const r2 = await conn.sendRequest('selinux/build', { uri: uri(ste.path) });
+  check(r2.ok && r2.validated, `tree with the edited staff builds and links (${(r2.ms / 1000).toFixed(1)} s)`, { log: r2.log && r2.log.slice(-2500), errors: errors() });
+  const back = await conn.sendRequest('selinux/userInfo', { module: 'staff' });
+  check(back.model.roleCalls.includes(rc.n) && !back.model.ways.includes('console') && back.model.caps.length === sm.caps.length, 'staff reads back as edited');
+  const rep2 = await conn.sendRequest('selinux/logins', { against: 'build' });
+  const st2 = (rep2.users || []).find(u => u.name === 'staff_u');
+  check(st2 && !st2.entries.some(e => e.source === 'local_login_t' && e.contexts.some(c => c.type === 'staff_t')), 'the build\'s logins report: staff_u no longer lands in staff_t on the console', st2 && st2.entries);
+
   proc.kill();
   console.log(failures ? `${failures} FAILED` : 'all passed');
   process.exit(failures ? 1 : 0);

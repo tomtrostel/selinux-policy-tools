@@ -55,10 +55,45 @@ function parseGenUsers(text) {
   return out;
 }
 
+/**
+ * An existing user read back from the files (fills the model in place): its gen_user line
+ * (model.userRoles, all roles as written; level, range, categories, prefix; genUser = { simple }),
+ * its logins from seusers, the other users that have its role (grantUsers), and its ways in
+ * from its own contexts file, or from default_contexts when it has none (waysFrom).
+ */
+function readUser(model, texts) {
+  const U = `${model.name}_u`, R = `${model.name}_r`, D = `${model.name}_t`;
+  const users = parseGenUsers(texts.users || '');
+  const mine = users.filter(u => u.name === U);
+  if (mine.length) {
+    const u = mine[0];
+    model.genUser = { exists: true, simple: mine.length === 1 && u.simple, count: mine.length };
+    model.userRoles = u.simple ? u.roles.split(/\s+/).filter(Boolean) : null;
+    Object.assign(model, { prefix: u.prefix, level: u.level, range: u.range, cats: u.cats });
+  } else model.genUser = { exists: false };
+  const roleRe = new RegExp(`(^|\\s)${R}(\\s|$)`);
+  model.grantUsers = [...new Set(users.filter(u => u.name !== U && roleRe.test(u.roles)).map(u => u.name))];
+  model.logins = parseSeusers(texts.seusers || '').filter(x => x.user === U).map(x => ({ login: x.login, range: x.range }));
+  // Ways in: a source in its own file counts; one its file doesn't mention falls back to default_contexts
+  // (libselinux reads the user's file first), where it counts when it offers NAME_r:NAME_t.
+  const own = texts.contexts != null;
+  const split = (t) => String(t || '').split('\n').map(l => l.replace(/#.*$/, '').trim().split(/\s+/).filter(Boolean)).filter(p => p.length >= 2);
+  const ownLines = own ? split(texts.contexts) : [], defLines = split(texts.defaults);
+  const isSrc = (p, s) => p[0].startsWith(`system_r:${s}:`) || p[0] === `system_r:${s}`;
+  model.ways = WAYS.filter(([, , sources]) => sources.some(s => {
+    if (ownLines.some(p => isSrc(p, s))) return true;
+    return defLines.some(p => isSrc(p, s) && p.slice(1).some(c => c.startsWith(`${R}:${D}`)));
+  })).map(w => w[0]);
+  // Ways only default_contexts gives can't be taken away by its own file.
+  model.waysDefault = WAYS.filter(([, , sources]) => sources.some(s => !ownLines.some(p => isSrc(p, s)) && defLines.some(p => isSrc(p, s) && p.slice(1).some(c => c.startsWith(`${R}:${D}`))))).map(w => w[0]);
+  model.waysFrom = own ? 'own' : 'default';
+  return model;
+}
+
 /** The gen_user line of a user model. */
 function genUserLine(model, opts = {}) {
   const U = `${model.name}_u`;
-  const roles = [`${model.name}_r`, ...(model.switchTo || [])].join(' ');
+  const roles = (model.userRoles || [`${model.name}_r`, ...(model.switchTo || [])]).join(' ');
   const prefix = model.prefix || opts.prefix || model.name;
   const level = (model.level || 's0').trim();
   const range = (model.range || level).trim();
@@ -77,20 +112,30 @@ function editUsers(text, model, opts = {}) {
   const users = parseGenUsers(text);
   const U = `${model.name}_u`, R = `${model.name}_r`;
   const mine = users.filter(u => u.name === U);
+  // An existing user keeps the roles its line has; only switches added or removed in the form change them.
+  if (opts.prev && model.userRoles) {
+    const was = new Set(opts.prev.switchTo || []), now = new Set(model.switchTo || []);
+    const roles = model.userRoles.filter(r => !(was.has(r) && !now.has(r)));
+    for (const r of now) if (!was.has(r) && !roles.includes(r)) roles.push(r);
+    model = { ...model, userRoles: roles };
+  }
   const want = genUserLine(model, opts);
-  if (!mine.length) {
+  if (!mine.length && opts.prev) {
+    // An existing role without a user of its own (webadm_r): only other users' lines change.
+  } else if (!mine.length) {
     let at = lines.length;
     while (at > 0 && lines[at - 1].trim() === '') at--;
     const head = opts.comment ? [`# ${opts.comment}`] : [];
     lines.splice(at, 0, ...(at ? [''] : []), ...head, want);
   } else if (mine.length === 1 && mine[0].simple) {
+    // Rewritten only when one of its fields changed (so a no-op keeps its spacing).
     const u = mine[0];
     const cur = lines[u.l];
     const at = cur.indexOf('gen_user(');
     const close = cur.indexOf(')', at);
-    const now = cur.slice(at, close + 1);
-    const same = (a, b) => a.replace(/\s+/g, ' ') === b.replace(/\s+/g, ' ');
-    if (!same(now, want)) lines[u.l] = cur.slice(0, at) + want + cur.slice(close + 1);
+    const w = parseGenUsers(want)[0];
+    const norm = (x) => [x.prefix, x.roles.split(/\s+/).filter(Boolean).join(' '), x.level, x.range.replace(/\s+/g, ' '), x.cats].join('|');
+    if (norm(w) !== norm(u)) lines[u.l] = cur.slice(0, at) + want + cur.slice(close + 1);
   }
   // Other users that get (or no longer get) the role.
   const grant = new Set(model.grantUsers || []);
@@ -194,4 +239,106 @@ function contextsText(model, opts = {}) {
   return out.length ? out.join('\n') + '\n' : '';
 }
 
-module.exports = { WAYS, WAY, parseGenUsers, genUserLine, editUsers, editKernelRoles, parseSeusers, editSeusers, contextsText };
+/**
+ * An existing user's own contexts file after ways in or sudo/su were ticked or unticked
+ * (prev = the model as read back): lines of ways turned off go, ways turned on get a line
+ * landing in NAME_r:NAME_t, other lines stay. text null = it has no file yet (created only
+ * when something is added). Returns the new text, or null for "no file".
+ */
+function editContexts(text, model, prev, opts = {}) {
+  const R = `${model.name}_r`, D = `${model.name}_t`;
+  const has = opts.typeExists || (() => true);
+  const level = opts.level || 's0';
+  const lines = text == null ? [] : String(text).split('\n');
+  const src = (l) => (/^\s*(\S+)/.exec(l.replace(/#.*$/, '')) || [])[1] || '';
+  const add = [], del = new Set();
+  const was = new Set(prev.ways || []), now = new Set(model.ways || []);
+  for (const [id, , sources] of WAYS) {
+    if (now.has(id) && !was.has(id)) for (const s of sources) if (has(s) && !lines.some(l => src(l).startsWith(`system_r:${s}:`))) add.push(`system_r:${s}:${level}\t\t${R}:${D}:${level}`);
+    if (was.has(id) && !now.has(id)) lines.forEach((l, i) => { if (sources.some(s => src(l).startsWith(`system_r:${s}:`))) del.add(i); });
+  }
+  const others = (model.switchTo || []).map(r => `${r}:${r.replace(/_r$/, '_t')}:${level}`);
+  for (const [call, dom] of [['sudo_role_template', 'sudo'], ['su_role_template', 'su']]) {
+    const key = `${R}:${model.name}_${dom}_t:`;
+    const on = (model.roleCalls || []).includes(call), before = (prev.roleCalls || []).includes(call);
+    if (on && !before && !lines.some(l => src(l).startsWith(key))) add.push(`${key}${level}\t\t${[`${R}:${D}:${level}`, ...others].join(' ')}`);
+    if (!on && before) lines.forEach((l, i) => { if (src(l).startsWith(key)) del.add(i); });
+  }
+  if (!add.length && !del.size) return text;
+  const out = lines.filter((_, i) => !del.has(i));
+  if (!add.length) return out.join('\n');
+  // New lines go after the last non-blank one.
+  let at = out.length;
+  while (at > 0 && out[at - 1].trim() === '') at--;
+  out.splice(at, 0, ...add);
+  const t = out.join('\n');
+  return text == null || !/\n$/.test(t) ? `${t.replace(/\n*$/, '')}\n` : t;
+}
+
+/**
+ * default_contexts after ways in were turned off: for a source the user's own file no longer
+ * lists, libselinux falls back to default_contexts, so NAME_r:NAME_t comes off that source's
+ * line there (the line goes when nothing is left). Other roles' contexts stay.
+ */
+function editDefaults(text, model, prev) {
+  if (text == null) return text;
+  const R = `${model.name}_r`, D = `${model.name}_t`;
+  const off = (prev.ways || []).filter(w => !(model.ways || []).includes(w)).flatMap(w => (WAY[w] ? WAY[w].sources : []));
+  if (!off.length) return text;
+  const lines = String(text).split('\n');
+  const out = [];
+  let changed = false;
+  for (const l of lines) {
+    const code = l.replace(/#.*$/, '');
+    const parts = code.trim().split(/\s+/).filter(Boolean);
+    if (parts.length < 2 || !off.some(s => parts[0].startsWith(`system_r:${s}:`)) || !parts.slice(1).some(c => c.startsWith(`${R}:${D}:`) || c === `${R}:${D}`)) { out.push(l); continue; }
+    changed = true;
+    const keep = parts.slice(1).filter(c => !(c.startsWith(`${R}:${D}:`) || c === `${R}:${D}`));
+    if (!keep.length) continue;
+    // Remove the token in place, keeping the line's spacing.
+    out.push(l.replace(new RegExp(`[ \\t]+${R}:${D}(:\\S*)?(?=\\s|$)`), ''));
+  }
+  return changed ? out.join('\n') : text;
+}
+
+/**
+ * The user editor's additions to a tree context, from a PolicyIndex: params(n) (doc parameter
+ * names), roleIfaces (role → { change, changeTo, module } from the *_role_change(_to) interfaces'
+ * required role), roleExists, roleCalls ([{ n, s, m, g }]: sudo/su/ssh role templates, *_role
+ * application roles, *_admin and <rolecap/> interfaces whose arguments the editor can fill).
+ */
+function userTreeCtx(idx, base) {
+  const service = require('./service');
+  const params = (n) => {
+    const d = (idx.defs.get(n) || [])[0];
+    return d && d.doc && d.doc.params && d.doc.params.length ? d.doc.params.map(p => p.name || '') : null;
+  };
+  const moduleOf = (d) => { const f = idx.files.get(d.path); return f ? f.module : ''; };
+  const roleIfaces = {};
+  for (const [n, list] of idx.defs) {
+    const m = /^\w+_role_change(_to)?$/.exec(n);
+    const d = list[0];
+    if (!m || d.generated || !/\.if$/.test(d.path)) continue;
+    const roles = (d.requires || []).filter(r => r.kind === 'role' && /^\w+_r$/.test(r.name)).map(r => r.name);
+    if (roles.length !== 1) continue;
+    const e = roleIfaces[roles[0]] || (roleIfaces[roles[0]] = { module: moduleOf(d) });
+    e[m[1] ? 'changeTo' : 'change'] = n;
+  }
+  const ctx = { ...base, params, roleIfaces, roleExists: (r) => (idx.decls.get(r) || []).some(d => d.kind === 'role') };
+  const probe = { user: { kind: 'unpriv' }, name: 'zzprobe' };
+  const calls = [];
+  for (const [n, list] of idx.defs) {
+    const d = list[0];
+    if (d.generated || !/\.if$/.test(d.path) || /_role_change(_to)?$/.test(n)) continue;
+    const role = /_role(_template)?$/.test(n), admin = /_admin$/.test(n);
+    if (!role && !admin && !(d.doc && d.doc.rolecap)) continue;
+    if (!service.roleCallArgs(n, probe, ctx)) continue;
+    if (!role && !(params(n) || []).some(p => /role/i.test(p) && !/prefix/i.test(p))) continue; // admin interfaces without a role argument aren't role calls
+    const g = /^(sudo|su|ssh)_role_template$/.test(n) ? 'login' : admin ? 'admin' : role ? 'apps' : 'run';
+    calls.push({ n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: moduleOf(d), g });
+  }
+  ctx.roleCalls = calls.sort((a, b) => a.n.localeCompare(b.n));
+  return ctx;
+}
+
+module.exports = { WAYS, WAY, userTreeCtx, parseGenUsers, readUser, genUserLine, editUsers, editKernelRoles, parseSeusers, editSeusers, contextsText, editContexts, editDefaults };

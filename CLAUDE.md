@@ -763,8 +763,40 @@ so far covered by the e2e tests only.
    editor), `selinux.newUser`, New User… in Logins and Users. Tests:
    test/user-test.js (npm test), test/user-e2e.js (CLIP + RHEL 9 spec: new
    login user + confined role, built, checked with the logins report).
-   Phase 2 (rest): opening existing users (2b), standalone + RPM (2c),
-   automation preset + reach preview (2d). Plan agreed: kind of user from the tree's
+   Phase 2b, existing users (done, unreleased; "lets continue with step b
+   of the user editor"): recognize(texts, ctx, {user: true, module}) uses
+   userDomain(te) (top-level USER_TEMPLATES call on one name → stem, kind;
+   base template reads as 'confined') instead of daemonDomains; model.name =
+   stem, model.module = module (role interfaces named after the module:
+   unprivuser_role_change), declaredBy = the template call; role calls /
+   switchTo / enteredFrom read back where the call's args equal
+   roleCallArgs (catalog ctx.roleCalls, ctx.roleIfaces); mentionsD includes
+   R. plan() passes user/module to recognize. userfiles.readUser fills
+   genUser {exists, simple}, userRoles (all roles as written), level/range/
+   cats/prefix, grantUsers, logins (seusers), ways (own contexts file, else
+   default_contexts lines offering R:D, as libselinux falls back), waysDefault;
+   editUsers with opts.prev: own line rewritten only when a field changed,
+   roles = written roles ± switches added/removed (only newly added ones;
+   staff.te switches to roles its line lacks); no new line for a role
+   without a user (webadm); editContexts (ways/sudo/su toggled, lines
+   added after the last non-blank, other lines and trailing blanks kept);
+   editDefaults (a way turned off: R:D token off that source's
+   default_contexts line, line dropped when empty — found by the survey:
+   removing the own-file line alone falls back to default_contexts).
+   userfiles.userTreeCtx(idx, base) (params, roleIfaces, roleExists,
+   roleCalls; server userCtx caches it per idx.defs). Server userModules,
+   userTexts, readExistingUser, existingUserPlan (notes: no gen_user line;
+   ifdef line not rewritten), requests `selinux/userList`, `userInfo`
+   {module}, `userPlan` {model, module}. Client: userPanels per module,
+   `selinux.editUser` (quick pick, or a user name from Logins and Users'
+   "Edit user…" on build reports), reload after Apply. Webview: name/kind
+   fixed, ways from default_contexts marked, levels read-only for ifdef
+   lines, Kept as is. Survey (`node test/user-test.js <tree>/policy`):
+   no-op identical + 14 mutation kinds read back and idempotent: Fedora
+   11/130, CLIP 11/126, RHEL 9 12/138, RHEL 10 12/141. e2e section 5 (edit
+   staff, build, logins report) on CLIP, RHEL 9, RHEL 10.
+   Phase 2 (rest): standalone + RPM (2c), automation preset + reach
+   preview (2d). Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role

@@ -415,6 +415,18 @@ const USER_KINDS = [
 const USER_KIND = Object.fromEntries(USER_KINDS.map(([id, label, templates, login, help]) => [id, { id, label, templates, login, help }]));
 const USER_TEMPLATES = USER_KINDS.flatMap(k => k[2]);
 
+/**
+ * The user domain of a role module (scanTe result): its top-level userdomain template call with one
+ * name → { domain, exec: null, stem, kind, call }, or null. The kind follows the template (the first
+ * kind listing it; userdom_base_user_template, also used for unconfined_u, reads as "confined").
+ */
+function userDomain(te) {
+  const call = te.stmts.find(s => s.kind === 'call' && s.top && USER_TEMPLATES.includes(s.name) && s.args.length === 1 && /^\w+$/.test(s.args[0]));
+  if (!call) return null;
+  const k = USER_KINDS.find(x => x[2].includes(call.name));
+  return { domain: `${call.args[0]}_t`, exec: null, stem: call.args[0], kind: k[0], call };
+}
+
 /** Arguments of a role call by its parameter names (ctx.params), or null when one can't be filled. */
 function roleCallArgs(name, model, ctx) {
   const ps = ctx.params ? ctx.params(name) : null;
@@ -864,8 +876,10 @@ function parseFcLines(text) {
  */
 function recognize(texts, ctx, opts = {}) {
   const te = scanTe(texts.te || '');
-  const domains = daemonDomains(texts.te || '', ctx);
+  const userDom = opts.user ? userDomain(te) : null;
+  const domains = opts.user ? (userDom ? [userDom] : []) : daemonDomains(texts.te || '', ctx);
   const mod = te.parse.module || opts.module;
+  if (opts.user && !userDom) return { error: `${mod}.te calls none of ${USER_TEMPLATES.join(', ')} with a name, so it isn't a user role module the editor understands.` };
   if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() (or another call that starts a service: init_system_domain(), dbus_system_domain(), inetd_service_domain(), cron_system_entry(), …), so it isn't a service module the editor understands.` };
   const dom = domains.find(x => x.domain === opts.domain) || domains.find(x => x.domain === `${mod}_t`) || domains[0];
   const D = dom.domain, E = dom.exec;
@@ -884,6 +898,26 @@ function recognize(texts, ctx, opts = {}) {
   if (m) model.summary = m[1];
   const claim = (pred) => { for (const s of editable) if (!claimed.has(s) && pred(s)) claimed.add(s); };
   claim(s => s.kind === 'type' && (s.name === D || s.name === E));
+  // A user role module: `role NAME_r;` and the userdomain template declare it; role calls and role changes by their arguments.
+  if (userDom) {
+    const stem = userDom.stem, R = `${stem}_r`;
+    Object.assign(model, { name: stem, module: mod, user: { kind: userDom.kind }, exec: [], roleCalls: [], switchTo: [], enteredFrom: [] });
+    delete model.domain; delete model.execType;
+    model.declaredBy = { name: userDom.call.name, args: userDom.call.args };
+    claimed.add(userDom.call);
+    claim(s => (s.kind === 'roledecl' && s.name === R && s.top) || (s.kind === 'role' && s.role === R && s.name === D && s.top));
+    const want = (n, args) => { const a = roleCallArgs(n, model, ctx); return a && a.length === args.length && a.every((x, i) => x === args[i]); };
+    const callNames = new Set((ctx.roleCalls || []).map(c => c.n));
+    const ifs = ctx.roleIfaces || {};
+    for (const s of editable) {
+      if (s.kind !== 'call' || s.bool || claimed.has(s)) continue;
+      const sw = Object.entries(ifs).find(([, x]) => x.change === s.name);
+      const fr = Object.entries(ifs).find(([, x]) => x.changeTo === s.name);
+      if (sw && want(s.name, s.args) && !model.switchTo.includes(sw[0])) model.switchTo.push(sw[0]);
+      else if (fr && want(s.name, s.args) && !model.enteredFrom.includes(fr[0])) model.enteredFrom.push(fr[0]);
+      else if (callNames.has(s.name) && want(s.name, s.args) && !model.roleCalls.includes(s.name)) model.roleCalls.push(s.name);
+    }
+  }
   // How it is started (init_daemon_domain, init_system_domain, a ranged variant, D-Bus activation, inetd, cron, …),
   // at the top level or in optional_policy, kept as written.
   model.entries = [];
@@ -1106,7 +1140,7 @@ function recognize(texts, ctx, opts = {}) {
   function emptyGrants() { return { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], files: [] }; }
   function mentionsD(s) {
     const text = te.lines.slice(s.l, s.endL + 1).join('\n');
-    return [D, ...(model.helpers || []).map(h => h.domain || `${h.name}_t`)].some(x => new RegExp(`\\b${x}\\b`).test(text));
+    return [D, ...(model.user ? [`${model.name}_r`] : []), ...(model.helpers || []).map(h => h.domain || `${h.name}_t`)].some(x => new RegExp(`\\b${x}\\b`).test(text));
   }
   // Self rules of the service's domain (top level or directly under a boolean), or of a helper (S; top level only).
   function isSelf(s, S = D) { return s.kind === 'allow' && s.src === S && s.tgt === 'self' && (s.top || (S === D && s.bool && !s.opt)); }
@@ -1326,7 +1360,7 @@ function roleIfaceText(id, model) {
     '## <param name="role">', '##\t<summary>', to ? '##\tRole allowed access.' : '##\tRole allowed to change to it.', '##\t</summary>', '## </param>',
     '## <rolecap/>',
     '#',
-    `interface(\`${model.name}_${id}',\``,
+    `interface(\`${model.module || model.name}_${id}',\``,
     '\tgen_require(`',
     `\t\trole ${R};`,
     "\t')",
@@ -1719,7 +1753,7 @@ function editCorenet(text, before, model) {
 
 function editIf(text, rec, model, ctx) {
   const have = new Set(rec.provided);
-  const add = (model.provides || []).filter(id => providesOf(model).some(p => p[0] === id)).map(id => [id, sub(providesOf(model).find(p => p[0] === id)[1], model.name)]).filter(([, n]) => !have.has(n));
+  const add = (model.provides || []).filter(id => providesOf(model).some(p => p[0] === id)).map(id => [id, sub(providesOf(model).find(p => p[0] === id)[1], model.user ? model.module || model.name : model.name)]).filter(([, n]) => !have.has(n));
   if (!add.length) return text;
   const blocks = add.map(([id]) => ifaceText(id, model, ctx)).filter(Boolean);
   return text.replace(/\s*$/, '\n') + '\n' + blocks.join('\n\n') + '\n';
@@ -1916,7 +1950,7 @@ function plan(model, ctx, existing, corenet = null) {
   // Work on LF text; files with CRLF line endings get them back.
   const crlf = {}, lf = {};
   for (const k of ['te', 'if', 'fc']) { const t = existing[k] || ''; crlf[k] = t.includes('\r\n'); lf[k] = t.replace(/\r\n/g, '\n'); }
-  const rec = recognize(lf, ctx, { domain: model.domain, ports: corenet ? corenet.ports : [] });
+  const rec = recognize(lf, ctx, { domain: model.domain, ports: corenet ? corenet.ports : [], user: !!model.user, module: model.module });
   if (rec.error) return { error: rec.error };
   const out = { te: editTe(lf.te, rec, model, ctx), if: editIf(lf.if, rec, model, ctx), fc: editFc(lf.fc, rec, model, ctx), net };
   for (const k of ['te', 'if', 'fc']) out[k] = out[k] === lf[k] ? existing[k] || '' : crlf[k] ? out[k].replace(/\n/g, '\r\n') : out[k];
@@ -2022,6 +2056,6 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  USER_KINDS, USER_TEMPLATES, newUserModel, userCatalog, roleCallArgs, names,
+  USER_KINDS, USER_TEMPLATES, newUserModel, userCatalog, roleCallArgs, names, userDomainOf: (text) => userDomain(scanTe(text)),
   fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia, webPatterns, webTypes, WEB_TEMPLATE,
 };

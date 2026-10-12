@@ -29,6 +29,11 @@
   It writes the role module, the gen_user line (into the spec's users file
   on RHEL), the role in kernel.te, seusers, the user's contexts file and
   modules.conf, with a preview of each.
+  *SELinux: Edit User…* opens existing role modules (staff, sysadm, user,
+  guest, the confined admin roles, …) read back from the module, its
+  gen_user line, seusers and contexts, and edits only what changed: a way in
+  turned off also takes the user's context off that line in
+  `default_contexts`; gen_user lines written with ifdef are left alone.
 
 ## 0.11.0 (2026-10-12)
 

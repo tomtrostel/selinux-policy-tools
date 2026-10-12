@@ -727,6 +727,33 @@ refpolicy does for staff_r), the seusers lines, the contexts file in
 *Logins and Users* on the build shows where its logins land and what it can
 reach.
 
+**Editing an existing user** (*SELinux: Edit User…*, or *Edit user…* on a
+card in Logins and Users on a build) opens any role module of the tree
+whose `.te` calls a userdomain template on a name: staff, sysadm, user,
+guest, xguest, the confined admin roles, unconfined, CLIP's and RHEL's
+alike. It reads back the role calls, role switches, extra rights and
+booleans from the module, and from the other files: the `gen_user` line
+(its roles, levels, prefix), seusers lines, the users who have the role,
+and the ways in (its own contexts file, falling back to `default_contexts`
+as libselinux does). Edits change only what changed:
+
+* the module through the service editor's unit diff (new calls after the
+  domain's rules or in their own `optional_policy` blocks; removed ones
+  deleted; everything the form doesn't model listed under **Kept as is**,
+  with the line to open);
+* its `gen_user` line only when its roles, levels or prefix change, and only
+  when it is a single plain line (CLIP's staff_u, written with `ifdef()`, is
+  left alone with a note); a role switch added or removed adds or removes
+  that role there; other users' lines for the users who get the role;
+* seusers lines of its user;
+* its contexts file: a way in turned off loses its lines, and its context
+  comes off that source's line in `default_contexts` too (libselinux falls
+  back to it), leaving the other roles there; a way turned on, or sudo / su
+  added, gets a line.
+
+A role without a user of its own (webadm_r) has no logins or levels to
+edit: the users who get it are listed under Roles.
+
 **Compiled Policy view** (full trees; standalone modules linked with the
 installed policy)
 
@@ -1169,6 +1196,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   landing in its domain, sysadm_t reached through newrole, and staff_u
   reaching the new role's domain. On RHEL the gen_user lines go into the
   spec's `users-targeted` and the module into `modules-targeted-contrib.conf`.
+  Editing staff (CLIP, RHEL 9, RHEL 10): a no-op edit changes no file; a
+  capability, an admin program and console logins taken away change only
+  those lines (staff.te, its contexts file and its token in
+  `default_contexts`), the tree builds, staff reads back as edited and the
+  build's logins report no longer lands staff_u in staff_t on the console.
+  Survey (test/user-test.js with a tree): every user role module unchanged
+  by a no-op edit (Fedora 11, CLIP 11, RHEL 9 12, RHEL 10 12) and every
+  test edit read back as edited and idempotent (130, 126, 138, 141: role
+  calls, switches, capabilities, interfaces, ways in, logins, granted
+  users, booleans).
 * Module Preview on CLIP: `cron` off (links; 22 dependent optional blocks;
   removed rules traced into them), `mta` off (link error on the requiring
   interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
@@ -1217,10 +1254,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   limits which categories it sees, not which domains it enters); pam and
   sudoers settings aren't read (sudo rules decide who may run what as
   root; the policy decides which domain that runs in).
-* The user editor creates new users in a tree; opening existing users
-  (staff, sysadm, webadm, …) and standalone user modules packaged as RPMs
+* The user editor works on trees; standalone user modules packaged as RPMs
   are not there yet. A new user's role module is loadable, but its role is
-  also declared in `kernel.te` (base), as the users file requires.
+  also declared in `kernel.te` (base), as the users file requires. It
+  doesn't remove users or rename them, and a `gen_user` line written with
+  `ifdef()` or more than once is edited by hand.
 * `semanage login`/`user` changes that aren't in the files under
   `/etc/selinux/<name>` (the merged `seusers` is) and user roles added with
   `semanage user` show up only through the installed policy, not a tree

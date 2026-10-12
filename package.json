@@ -259,6 +259,10 @@
         "icon": "$(person-add)"
       },
       {
+        "command": "selinux.editUser",
+        "title": "SELinux: Edit User…"
+      },
+      {
         "command": "selinux.buildRpm",
         "title": "SELinux: Build RPM",
         "icon": "$(package)"
@@ -907,7 +911,7 @@
           {
             "id": "users",
             "title": "Users, roles and logins",
-            "description": "gen_user lines are checked as you type; Logins and Users shows who logs in as what and what their sessions can reach.\n[Logins and Users…](command:selinux.showLogins)\n[New User…](command:selinux.newUser)\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)",
+            "description": "gen_user lines are checked as you type; Logins and Users shows who logs in as what and what their sessions can reach.\n[Logins and Users…](command:selinux.showLogins)\n[New User…](command:selinux.newUser)\n[Edit User…](command:selinux.editUser)\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)",
             "media": {
               "markdown": "media/walkthroughs/lockdown/users.md"
             },

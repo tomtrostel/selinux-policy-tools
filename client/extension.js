@@ -433,6 +433,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('selinux.showLogins', () => showLogins(context)),
     vscode.commands.registerCommand('selinux.newUser', () => showUserEditor(context)),
+    vscode.commands.registerCommand('selinux.editUser', (user) => editUserCommand(context, typeof user === 'string' ? user : null)),
     vscode.commands.registerCommand('selinux.buildRpm', async () => {
       // The standalone module of the active editor, or one picked from the workspace's *-selinux.spec files.
       const specs = (await vscode.workspace.findFiles('**/*-selinux.spec', '**/{rpmbuild,node_modules,tmp}/**', 100)).map(u => u.fsPath);
@@ -909,14 +910,15 @@ ${EDITOR_CSS}</style></head><body>
   panel.onDidDispose(() => { watch.dispose(); for (const [k, p] of servicePanels) if (p === panel) servicePanels.delete(k); }, undefined, context.subscriptions);
 }
 
-let userPanel = null;
+const userPanels = new Map(); // module ('' = new user) → panel
 
-/** User editor (media/user.js): a new SELinux user in the tree, with its role module, logins and contexts. */
-function showUserEditor(context) {
-  if (userPanel) { userPanel.reveal(); return; }
-  const panel = vscode.window.createWebviewPanel('selinuxUser', 'New User', vscode.ViewColumn.Active,
+/** User editor (media/user.js): a new SELinux user in the tree, or an existing user role module (mod). */
+function showUserEditor(context, mod = null) {
+  const key = mod || '';
+  if (userPanels.has(key)) { userPanels.get(key).reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxUser', mod ? `User: ${mod}` : 'New User', vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
-  userPanel = panel;
+  userPanels.set(key, panel);
   const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
   const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'user.js'));
   panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
@@ -932,27 +934,51 @@ ${EDITOR_CSS}</style></head><body>
 <script nonce="${nonce}" src="${script}"></script>
 </body></html>`;
   const post = (m) => panel.webview.postMessage(m);
+  const load = async () => {
+    const info = await client.sendRequest('selinux/userInfo', { module: mod });
+    if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info });
+  };
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
-      if (m.cmd === 'ready') {
-        const info = await client.sendRequest('selinux/userInfo');
-        if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info });
-      } else if (m.cmd === 'plan') {
-        post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model }) });
-      } else if (m.cmd === 'apply') {
-        const plan = await client.sendRequest('selinux/userPlan', { model: m.model });
+      if (m.cmd === 'ready') await load();
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model, module: mod }) });
+      else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
+      else if (m.cmd === 'apply') {
+        const plan = await client.sendRequest('selinux/userPlan', { model: m.model, module: mod });
         if ((plan.problems || []).some(p => !p.startsWith('Note:'))) { post({ cmd: 'plan', plan }); return; }
         const n = await applyServicePlan(plan);
-        post({ cmd: 'done', text: `Created ${m.model.name}_u (${n} files).` });
-        vscode.window.showInformationMessage(`Created the ${m.model.name}_u user (${n} file${n > 1 ? 's' : ''}). Saving builds the tree; then SELinux: Logins and Users shows where its logins land and what it can reach.`, 'Logins and Users')
-          .then(a => { if (a) showLogins(context); });
-        panel.dispose();
+        if (!mod) {
+          post({ cmd: 'done', text: `Created ${m.model.name}_u (${n} files).` });
+          vscode.window.showInformationMessage(`Created the ${m.model.name}_u user (${n} file${n > 1 ? 's' : ''}). Saving builds the tree; then SELinux: Logins and Users shows where its logins land and what it can reach.`, 'Logins and Users')
+            .then(a => { if (a) showLogins(context); });
+          panel.dispose();
+          return;
+        }
+        vscode.window.showInformationMessage(`Updated ${mod} (${n} file${n > 1 ? 's' : ''}).`);
+        // The server indexes the saved files after a short debounce; read the user back from them.
+        await new Promise(r => setTimeout(r, 900));
+        await load();
       }
     } catch (e) {
       vscode.window.showErrorMessage(`User editor: ${e.message}`);
     }
   }, undefined, context.subscriptions);
-  panel.onDidDispose(() => { userPanel = null; }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { userPanels.delete(key); }, undefined, context.subscriptions);
+}
+
+/** Pick a user role module of the tree and open it in the user editor. */
+async function editUserCommand(context, user) {
+  const r = await client.sendRequest('selinux/userList');
+  const mods = r.modules || [];
+  if (user) {
+    const m = mods.find(x => x.user === user) || mods.find(x => `${x.stem}_r` === user);
+    if (m) { showUserEditor(context, m.module); return; }
+    vscode.window.showInformationMessage(`No role module in this tree declares ${user} (its role comes from a module the editor can't open, or it's a built-in user like root or system_u).`);
+    return;
+  }
+  if (!mods.length) { vscode.window.showInformationMessage('No user role modules in this tree (a .te with userdom_unpriv_user_template(NAME) or another userdomain template).'); return; }
+  const pick = await vscode.window.showQuickPick(mods.map(x => ({ label: x.user, description: `${x.module} · ${x.kind}`, module: x.module })), { placeHolder: 'User to edit' });
+  if (pick) showUserEditor(context, pick.module);
 }
 
 /* ---------------- expanded policy (read-only m4 output) ---------------- */
@@ -1764,6 +1790,8 @@ function showLogins(context) {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
       } else if (m.cmd === 'newUser') {
         showUserEditor(context);
+      } else if (m.cmd === 'editUser') {
+        editUserCommand(context, m.user);
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });

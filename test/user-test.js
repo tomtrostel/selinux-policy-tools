@@ -136,5 +136,103 @@ check(!byId.apply.disabled && /ops\.te \(new\)/.test(byId.preview.textContent) &
 send({ cmd: 'plan', plan: { problems: ['A role named ops_r already exists.'], files: [] } });
 check(byId.apply.disabled && /already exists/.test(byId.preview.textContent), 'a problem disables Create');
 
+// An existing user: name and kind fixed, its lines kept as they are listed, Apply.
+const staff = { ...S.newUserModel(), name: 'staff', module: 'staff', declaredBy: { name: 'userdom_unpriv_user_template', args: ['staff'] }, genUser: { exists: true, simple: false },
+  logins: [{ login: '__default__', range: 's0' }], ways: ['ssh'], waysDefault: ['ssh'], waysFrom: 'default', userRoles: null };
+send({ cmd: 'init', info: { ...info, isNew: false, module: 'staff', model: staff, kept: [{ l: 41, endL: 41, text: 'ifdef(`foo\',`allow staff_t self:x y;\')' }], files: { te: '/t/staff.te' }, usersFile: '/t/policy/users' } });
+check(/User: staff_u \(staff\)/.test(byId.title.textContent) && byId.apply.textContent === 'Apply', `title for an existing user: ${byId.title.textContent}`);
+check(!find(e => e.tag === 'input' && e.attrs.type === 'radio').length && /userdom_unpriv_user_template\(staff\)/.test(byId.form.textContent), 'kind shown, not editable');
+check(/written with ifdef\(\) or more than once/.test(byId.form.textContent) && /default_contexts/.test(byId.form.textContent), 'its gen_user line is left alone; ways from default_contexts marked');
+const kl = find(e => (e.attrs.class || '') === 'keptline')[0];
+kl.fire('click');
+check(kl && /42/.test(kl.textContent) && last('open').path === '/t/staff.te' && last('open').line === 41, 'kept lines listed; clicking opens the line');
+check(!posted.some(x => x.cmd === 'plan' && x.model && x.model.name === 'staff'), 'no plan until something changes');
+
+/* ---------- every user role module of a tree (optional argument) ---------- */
+
+if (process.argv[2]) survey(process.argv[2]);
+
 console.log(failures ? `${failures} FAILED` : 'all user checks passed');
 process.exit(failures ? 1 : 0);
+
+function survey(root) {
+  const { PolicyIndex } = require('../server/indexer');
+  const idx = new PolicyIndex(() => {});
+  idx.scanRoots([root]);
+  const tctx = F.userTreeCtx(idx, {
+    has: (n) => idx.defs.has(n), moduleArgs: 2, typeExists: (t) => idx.decls.has(t),
+    optional: (n) => { const d = (idx.defs.get(n) || [])[0]; return !!d && !/[\\/](kernel|system)[\\/]/.test(d.path); },
+    declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(x => x.pattern),
+  });
+  // The tree's users file (Fedora's policy/users points at dist/targeted/users) and appconfig-mcs files.
+  const tree = path.dirname(root);
+  const readOr = (...ps) => { for (const x of ps) { try { const t = fs.readFileSync(x, 'utf8'); if (!/^\.\.?\//.test(t.trim())) return t; } catch { /* next */ } } return null; };
+  const usersText = readOr(path.join(root, 'users'), path.join(tree, 'dist/targeted/users'));
+  const cfg = path.join(tree, 'config', 'appconfig-mcs');
+  const seText = readOr(path.join(cfg, 'seusers')), defaults = readOr(path.join(cfg, 'default_contexts'));
+  const mods = idx.modules().filter(m => m.files.te && S.userDomainOf(fs.readFileSync(m.files.te, 'utf8')));
+  let same = 0, edits = 0, bad = 0;
+  const textsOf = (m, stem) => ({ te: fs.readFileSync(m.files.te, 'utf8'), if: m.files.if ? fs.readFileSync(m.files.if, 'utf8') : '', fc: m.files.fc ? fs.readFileSync(m.files.fc, 'utf8') : '',
+    users: usersText, seusers: seText, defaults, contexts: readOr(path.join(cfg, `${stem}_u_default_contexts`)) });
+  const read = (t, mod) => {
+    const rec = S.recognize({ te: t.te, if: t.if, fc: t.fc }, tctx, { user: true, module: mod });
+    if (rec.error) return rec;
+    F.readUser(rec.model, t);
+    return rec;
+  };
+  const apply = (t, prev, model) => {
+    const out = S.plan(model, tctx, { te: t.te, if: t.if, fc: t.fc }, null);
+    if (out.error) return { error: out.error };
+    return { ...t, te: out.te, if: out.if, fc: out.fc,
+      users: t.users == null ? null : F.editUsers(t.users, model, { prev, prevGrant: prev.grantUsers, prefix: prev.prefix }),
+      seusers: t.seusers == null || !prev.genUser.exists ? t.seusers : F.editSeusers(t.seusers, model),
+      contexts: F.editContexts(t.contexts, model, prev, { typeExists: tctx.typeExists }), defaults: F.editDefaults(t.defaults, model, prev) };
+  };
+  const sorted = (a) => [...(a || [])].sort();
+  const norm = (m) => JSON.stringify([sorted(m.roleCalls), sorted(m.switchTo), sorted(m.enteredFrom), sorted(m.caps), sorted(m.self), sorted(m.access), sorted(m.extra),
+    sorted(m.ways), (m.logins || []).map(l => `${l.login}:${l.range}`).sort(), sorted(m.grantUsers), m.genUser && m.genUser.simple ? sorted(m.userRoles) : null,
+    (m.booleans || []).map(b => b.name).sort()]);
+  const apps = tctx.roleCalls.filter(c => c.g === 'apps' || c.g === 'admin');
+  const muts = [
+    ['add a capability', m => { const c = ['kill', 'sys_nice', 'dac_read_search', 'sys_rawio'].find(x => !m.caps.includes(x)); if (c) m.caps.push(c); }],
+    ['remove a capability', m => { m.caps.splice(0, 1); }],
+    ['add an interface', m => { if (!m.extra.includes('dev_read_sound')) m.extra.push('dev_read_sound'); }],
+    ['remove an interface', m => { m.extra.splice(0, 1); }],
+    ['add a role call', m => { const c = apps.find(x => !m.roleCalls.includes(x.n) && S.roleCallArgs(x.n, m, tctx)); if (c) m.roleCalls.push(c.n); }],
+    ['remove a role call', m => { m.roleCalls.splice(0, 1); }],
+    ['add sudo', m => { if (tctx.has('sudo_role_template') && !m.roleCalls.includes('sudo_role_template')) m.roleCalls.push('sudo_role_template'); }],
+    ['add a role switch', m => { const r = Object.entries(tctx.roleIfaces).find(([r2, x]) => x.change && r2 !== `${m.name}_r` && !m.switchTo.includes(r2)); if (r) m.switchTo.push(r[0]); }],
+    ['remove a role switch', m => { m.switchTo.splice(0, 1); }],
+    ['add entered from', m => { const r = Object.entries(tctx.roleIfaces).find(([r0, x]) => x.changeTo && r0 !== `${m.name}_r` && !m.enteredFrom.includes(r0)); if (r) m.enteredFrom.push(r[0]); }],
+    ['toggle a way in', m => { if ((m.waysDefault || []).includes('console')) return; if (m.ways.includes('console')) m.ways.splice(m.ways.indexOf('console'), 1); else m.ways.push('console'); }],
+    ['add a login', m => { if (m.genUser.exists) m.logins.push({ login: 'zzsurvey', range: '' }); }],
+    ['grant another user', m => { const u = F.parseGenUsers(usersText || '').find(x => x.simple && x.name !== `${m.name}_u` && x.name !== 'system_u' && !m.grantUsers.includes(x.name)); if (u) m.grantUsers.push(u.name); }],
+    ['add a boolean', m => { m.booleans.push({ name: `${m.name}_e2e_extra`, desc: 'Test boolean.', default: false, _new: true, grants: { caps: ['kill'], extra: [], access: [], self: [], net: { listen: [], connect: [] } } }); }],
+  ];
+  const fails = [];
+  for (const m of mods) {
+    const stem = S.userDomainOf(fs.readFileSync(m.files.te, 'utf8')).stem;
+    const t = textsOf(m, stem);
+    const rec = read(t, m.module);
+    if (rec.error) { fails.push(`${m.module}: ${rec.error}`); continue; }
+    const noop = apply(t, rec.model, JSON.parse(JSON.stringify(rec.model)));
+    if (!noop.error && ['te', 'if', 'fc', 'users', 'seusers', 'contexts', 'defaults'].every(k => noop[k] === t[k])) same++;
+    else fails.push(`${m.module}: no-op changed ${['te', 'if', 'fc', 'users', 'seusers', 'contexts'].filter(k => noop[k] !== t[k]).join(', ') || noop.error}`);
+    for (const [what, mut] of muts) {
+      const want = JSON.parse(JSON.stringify(rec.model));
+      mut(want);
+      // The gen_user line follows the role switches added or removed (simple lines only).
+      if (want.userRoles) { const was = new Set(rec.model.switchTo), now = new Set(want.switchTo); want.userRoles = want.userRoles.filter(r => !(was.has(r) && !now.has(r))); for (const r of now) if (!was.has(r) && !want.userRoles.includes(r)) want.userRoles.push(r); }
+      if (norm(want) === norm(rec.model)) continue;
+      const t2 = apply(t, rec.model, want);
+      edits++;
+      const r2 = t2.error ? t2 : read(t2, m.module);
+      if (r2.error) { bad++; fails.push(`${m.module} / ${what}: ${r2.error}`); continue; }
+      if (norm(r2.model) !== norm(want)) { bad++; fails.push(`${m.module} / ${what}: reads back as\n${norm(r2.model)}\nnot\n${norm(want)}`); continue; }
+      const t3 = apply(t2, r2.model, JSON.parse(JSON.stringify(r2.model)));
+      if (['te', 'users', 'seusers', 'contexts'].some(k => t3[k] !== t2[k])) { bad++; fails.push(`${m.module} / ${what}: not idempotent`); }
+    }
+  }
+  check(mods.length && same === mods.length, `${root}: ${same} of ${mods.length} user role modules unchanged by a no-op edit (${mods.map(x => x.module).join(' ')})`, fails.filter(x => /no-op|isn't/.test(x)));
+  check(!bad, `${root}: ${edits - bad} of ${edits} edits read back as the edited model and are idempotent`, fails.filter(x => !/no-op/.test(x)).slice(0, 8).map(x => (x.length > 300 ? `${x.slice(0, 300)} …` : x)).join('\n'));
+}

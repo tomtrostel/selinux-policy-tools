@@ -42,6 +42,12 @@ line, the role in `kernel.te`, `seusers` and its own contexts file. After
 the build, **Logins and Users** shows where its logins land and what it can
 reach.
 
+**SELinux: Edit User…** opens an existing user (staff, sysadm, guest, a
+confined admin role, …) in the same form and changes only the lines of the
+settings you change. Taking a way in away (say, console logins for staff_u)
+also takes its context off that line in the shared `default_contexts`,
+since logins fall back to it.
+
 In the **Compiled Policy** view:
 
 * **Users** → their roles, MLS range, default level and Linux logins

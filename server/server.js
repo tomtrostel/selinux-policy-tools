@@ -1930,59 +1930,15 @@ function effectiveUsersFile(root) {
   return { path: p, text: readSource(p) };
 }
 
-/** Parameter names of an interface or template, from its doc comment (null when undocumented). */
-function defParams(n) {
-  const d = (idx.defs.get(n) || [])[0];
-  return d && d.doc && d.doc.params && d.doc.params.length ? d.doc.params.map(p => p.name || '') : null;
-}
-
-/**
- * Roles and the interfaces that change to / from them: X_role_change(R) lets R change
- * to the role it requires, X_role_change_to(R) lets that role change to R.
- */
-function roleIfaces() {
-  const out = {};
-  for (const [n, list] of idx.defs) {
-    const m = /^\w+_role_change(_to)?$/.exec(n);
-    const d = list[0];
-    if (!m || d.generated || !/\.if$/.test(d.path)) continue;
-    const roles = (d.requires || []).filter(r => r.kind === 'role' && /^\w+_r$/.test(r.name)).map(r => r.name);
-    if (roles.length !== 1) continue;
-    const f = idx.files.get(d.path);
-    const e = out[roles[0]] || (out[roles[0]] = { module: f ? f.module : '' });
-    e[m[1] ? 'changeTo' : 'change'] = n;
-  }
-  return out;
-}
-
-/**
- * Calls a user role makes for programs and administration: sudo/su/ssh role templates, application
- * roles (*_role, *_role_template), *_admin and other interfaces marked <rolecap/>, whose arguments the
- * editor can fill (name prefix, role, domain, application attribute). [{ n, s, m, g }]
- */
-function userRoleCalls(ctx) {
-  const out = [];
-  const probe = { user: { kind: 'unpriv' }, name: 'zzprobe' };
-  for (const [n, list] of idx.defs) {
-    const d = list[0];
-    if (d.generated || !/\.if$/.test(d.path) || /_role_change(_to)?$/.test(n)) continue;
-    const role = /_role(_template)?$/.test(n), admin = /_admin$/.test(n);
-    if (!role && !admin && !(d.doc && d.doc.rolecap)) continue;
-    if (!service.roleCallArgs(n, probe, ctx)) continue;
-    const ps = defParams(n) || [];
-    if (!ps.some(p => /role/i.test(p) && !/prefix/i.test(p)) && !role) continue; // admin interfaces without a role argument aren't role calls
-    const f = idx.files.get(d.path);
-    const g = /^(sudo|su|ssh)_role_template$/.test(n) ? 'login' : admin ? 'admin' : role ? 'apps' : 'run';
-    out.push({ n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '', g });
-  }
-  return out.sort((a, b) => a.n.localeCompare(b.n));
-}
-
+/** The service context plus the role catalog (userfiles.userTreeCtx), cached per index generation. */
+let userCtxCache = null;
 function userCtx() {
   const base = serviceCtx(false);
-  const ctx = { ...base, params: defParams, roleIfaces: roleIfaces(), roleExists: (r) => (idx.decls.get(r) || []).some(d => d.kind === 'role') };
-  ctx.roleCalls = userRoleCalls(ctx);
-  return ctx;
+  if (!userCtxCache || userCtxCache.defs !== idx.defs) {
+    const u = userfiles.userTreeCtx(idx, {});
+    userCtxCache = { defs: idx.defs, extra: { params: u.params, roleIfaces: u.roleIfaces, roleExists: u.roleExists, roleCalls: u.roleCalls } };
+  }
+  return { ...base, ...userCtxCache.extra };
 }
 
 /** The tree's login configuration files for a user: seusers and <user>_default_contexts in config/appconfig-<TYPE>. */
@@ -1991,10 +1947,66 @@ function userConfigPaths(name) {
   return { seusers: path.join(dir, 'seusers'), contexts: path.join(dir, `${name}_u_default_contexts`) };
 }
 
-connection.onRequest('selinux/userInfo', async () => {
+/** The tree's user role modules: a .te with a userdomain template call on a name (staff, sysadm, webadm, …). */
+function userModules() {
+  const out = [];
+  const re = new RegExp(`\\b(${service.USER_TEMPLATES.join('|')})\\s*\\(`);
+  for (const m of idx.modules()) {
+    if (!m.files.te || !treeRoot || !m.files.te.startsWith(treeRoot + path.sep)) continue;
+    const text = readSource(m.files.te);
+    if (!text || !re.test(text)) continue;
+    const u = service.userDomainOf(text);
+    if (u) out.push({ module: m.module, layer: m.layer, files: m.files, stem: u.stem, user: `${u.stem}_u`, kind: u.kind });
+  }
+  return out.sort((a, b) => a.module.localeCompare(b.module));
+}
+
+/** An existing user's files: the module's, the users file, seusers, its contexts file and default_contexts. */
+function userTexts(m) {
+  const cp = userConfigPaths(m.stem);
+  const uf = effectiveUsersFile(treeRoot);
+  return {
+    paths: { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc'), users: uf.path, seusers: cp.seusers, contexts: cp.contexts, defaults: path.join(path.dirname(cp.seusers), 'default_contexts') },
+    te: readSource(m.files.te) || '', if: (m.files.if && readSource(m.files.if)) || '', fc: (m.files.fc && readSource(m.files.fc)) || '',
+    users: uf.text, seusers: readSource(cp.seusers), contexts: readSource(cp.contexts), defaults: readSource(path.join(path.dirname(cp.seusers), 'default_contexts')),
+  };
+}
+
+/** An existing user's model as read back from its module and the login files ({ error } when not a user module). */
+function readExistingUser(m, ctx) {
+  const t = userTexts(m);
+  const rec = service.recognize({ te: t.te, if: t.if, fc: t.fc }, ctx, { user: true, module: m.module });
+  if (rec.error) return { error: rec.error };
+  userfiles.readUser(rec.model, t);
+  const prov = new Set(rec.provided);
+  rec.model.provides = ['role_change', 'role_change_to'].filter(id => prov.has(`${m.module}_${id}`));
+  return { rec, texts: t };
+}
+
+connection.onRequest('selinux/userList', async () => {
+  await indexing;
+  return { modules: userModules().map(({ module, layer, stem, user, kind }) => ({ module, layer, stem, user, kind })) };
+});
+
+connection.onRequest('selinux/userInfo', async ({ module: mod } = {}) => {
   await indexing;
   if (!treeRoot || usingDevel) return { unavailable: 'The user editor works on a policy source tree (open one as the workspace).' };
   const ctx = userCtx();
+  if (mod) {
+    const m = userModules().find(x => x.module === mod);
+    if (!m) return { unavailable: `${mod} isn't a user role module (no userdomain template call on a name in its .te).` };
+    const r = readExistingUser(m, ctx);
+    if (r.error) return { unavailable: r.error };
+    const uf = effectiveUsersFile(treeRoot);
+    return {
+      isNew: false, module: mod, model: r.rec.model, kept: r.rec.kept, files: r.texts.paths,
+      catalog: service.userCatalog(ctx, userfiles.WAYS.filter(([, , sources]) => sources.some(s => ctx.typeExists(s)))),
+      interfaces: serviceInterfaces(ctx.condSafe),
+      users: [...new Set(userfiles.parseGenUsers(uf.text || '').map(u => u.name))].filter(n => n !== 'system_u' && n !== `${m.stem}_u`).sort(),
+      usersFile: uf.path, configDir: path.dirname(r.texts.paths.seusers), prefixDefault: r.rec.model.prefix || m.stem,
+      seusers: userfiles.parseSeusers(r.texts.seusers || ''),
+    };
+  }
   const uf = effectiveUsersFile(treeRoot);
   const genUsers = userfiles.parseGenUsers(uf.text || '');
   // The home directory prefix most users of this tree have (Fedora/RHEL: user; upstream: the role's name).
@@ -2020,10 +2032,48 @@ connection.onRequest('selinux/userInfo', async () => {
   };
 });
 
-connection.onRequest('selinux/userPlan', async ({ model }) => {
+/**
+ * Minimal edits for an existing user: its module through the service editor's unit diff, the
+ * gen_user line (fields that changed; role switches added or removed; other users' lines for
+ * grantUsers), seusers lines of its user, its contexts file (ways and sudo/su lines toggled).
+ */
+function existingUserPlan(model, m, ctx) {
+  const r = readExistingUser(m, ctx);
+  if (r.error) return { problems: [r.error], files: [] };
+  const prev = r.rec.model, t = r.texts, P = t.paths;
+  const U = `${m.stem}_u`;
+  const taken = new Map(userfiles.parseSeusers(t.seusers || '').filter(x => x.user !== U).map(x => [x.login, x.user]));
+  const problems = service.validate(model, ctx, { isNew: false, baseline: prev, loginTaken: (n) => taken.get(n) || null })
+    .filter(p => !/^Note: no (way to log in is ticked|role may switch)/.test(p) || JSON.stringify(model.ways) !== JSON.stringify(prev.ways) || JSON.stringify(model.enteredFrom) !== JSON.stringify(prev.enteredFrom));
+  const out = service.plan(model, ctx, { te: t.te, if: t.if, fc: t.fc }, null);
+  if (out.error) return { problems: [out.error], files: [] };
+  const files = [];
+  const push = (p, kind, old, text) => { if (text != null && text !== (old || '')) files.push({ path: p, kind, exists: old != null, text, changed: true, diff: service.lineDiff(old || '', text) }); };
+  for (const k of ['te', 'if', 'fc']) push(P[k], k, t[k], out[k]);
+  const switched = JSON.stringify([...(model.switchTo || [])].sort()) !== JSON.stringify([...(prev.switchTo || [])].sort());
+  const fields = ['prefix', 'level', 'range', 'cats'].some(k => (model[k] || '') !== (prev[k] || ''));
+  if (!prev.genUser.exists && (fields || (model.logins || []).some(l => (l.login || '').trim()))) problems.push(`${U} has no gen_user line in ${rel(P.users)}, so it has no levels or logins of its own; users get ${m.stem}_r through their own lines (below).`);
+  if (prev.genUser.exists && !prev.genUser.simple && (switched || fields)) problems.push(`${U}'s gen_user line in ${rel(P.users)} is written with ifdef() or more than once, so the editor doesn't rewrite it; change its roles or levels there by hand.`);
+  if (t.users != null) push(P.users, 'users', t.users, userfiles.editUsers(t.users, model, { prev, prevGrant: prev.grantUsers, prefix: prev.prefix }));
+  if (t.seusers != null && prev.genUser.exists) push(P.seusers, 'seusers', t.seusers, userfiles.editSeusers(t.seusers, model));
+  const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
+  const ctxNew = userfiles.editContexts(t.contexts, model, prev, { typeExists: ctx.typeExists, level });
+  if (ctxNew != null && ctxNew !== (t.contexts || '')) push(P.contexts, 'contexts', t.contexts, ctxNew);
+  // A way turned off also comes off default_contexts, which libselinux falls back to (shared by all users: only this role's context goes).
+  const defNew = userfiles.editDefaults(t.defaults, model, prev);
+  if (defNew !== t.defaults) push(P.defaults, 'defaults', t.defaults, defNew);
+  return { problems, files };
+}
+
+connection.onRequest('selinux/userPlan', async ({ model, module: mod }) => {
   await indexing;
   if (!treeRoot || usingDevel) return { problems: ['The user editor works on a policy source tree.'], files: [] };
   const ctx = userCtx();
+  if (mod) {
+    const m = userModules().find(x => x.module === mod);
+    if (!m) return { problems: [`${mod} is no longer a user role module.`], files: [] };
+    return existingUserPlan(model, m, ctx);
+  }
   const U = `${model.name}_u`;
   const cp = userConfigPaths(model.name);
   const seText = readSource(cp.seusers);

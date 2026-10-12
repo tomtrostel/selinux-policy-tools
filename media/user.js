@@ -49,6 +49,14 @@
 
   function userCard() {
     const n = model.name || 'NAME';
+    if (!info.isNew) {
+      const k = info.catalog.kinds.find(x => x.id === model.user.kind);
+      return card('user', 'User', `${n}_u · role ${n}_r · domain ${n}_t`, [
+        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('code', {}, info.module), h('span', { class: 'muted small' }, model.genUser && model.genUser.exists ? ` user ${n}_u` : ` (no ${n}_u of its own: users get ${n}_r through their own gen_user lines)`)),
+        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Kind'), h('span', { title: k ? k.help : '' }, k ? k.label : model.user.kind), h('span', { class: 'code' }, model.declaredBy ? `${model.declaredBy.name}(${model.declaredBy.args.join(', ')})` : '')),
+        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Summary'), text(model.summary, (v) => { model.summary = v; changed(); }, { size: 48, title: 'The module\'s .if summary (only a new module gets it written)' })),
+      ]);
+    }
     const kinds = info.catalog.kinds.map(k => {
       const r = h('input', { type: 'radio', name: 'kind', value: k.id, checked: model.user.kind === k.id || null });
       r.addEventListener('change', () => {
@@ -69,7 +77,8 @@
 
   function loginsCard() {
     const k = kindOf();
-    if (!k.login) return card('logins', 'Logins', 'none: switched to from another role', h('div', { class: 'muted' }, `A ${k.label.toLowerCase()} has no logins of its own: users reach it by switching role (see Roles).`));
+    if (!info.isNew && model.genUser && !model.genUser.exists) return card('logins', 'Logins', 'none: no user of its own', h('div', { class: 'muted' }, `There is no ${model.name}_u, so no login maps to this role directly; users who have ${model.name}_r (see Roles) switch to it.`));
+    if (info.isNew && !k.login) return card('logins', 'Logins', 'none: switched to from another role', h('div', { class: 'muted' }, `A ${k.label.toLowerCase()} has no logins of its own: users reach it by switching role (see Roles).`));
     const taken = new Map((info.seusers || []).map(x => [x.login, x.user]));
     const rows = model.logins.map((l, i) => h('div', { class: 'row' },
       text(l.login, (v) => { l.login = v; changed(); }, { size: 18, placeholder: 'login, %group or __default__', title: 'A Linux login name; %name for every member of a group; __default__ for every login without a line of its own' }),
@@ -81,11 +90,13 @@
       // Cron jobs need the cron role call.
       if (w.id === 'cron' && on && info.catalog.roleCalls.some(c => c.n === 'cron_role')) toggle(model.roleCalls, 'cron_role', true);
       render(); changed();
-    }, { title: w.help, code: w.sources.join(', ') }));
+    }, { title: w.help + ((model.waysDefault || []).includes(w.id) ? ' Offered to it by default_contexts (shared); unticking takes its context off that line there.' : ''),
+      code: w.sources.join(', ') + ((model.waysDefault || []).includes(w.id) ? ' · default_contexts' : '') }));
     return card('logins', 'Logins', `${model.logins.filter(l => (l.login || '').trim()).length} Linux login(s) · ${model.ways.length} way(s) in`, [
       h('div', { class: 'muted small' }, 'Linux logins that get this SELinux user (seusers). A login already mapped to another user can’t be mapped twice.'),
       rows, h('button', { onclick: () => { model.logins.push({ login: '', range: '' }); render(); } }, '+ Add login'),
-      h('div', { class: 'sub' }, 'Ways in'), h('div', { class: 'muted small' }, 'How its sessions may start (its own default contexts file); the others aren’t offered to it.'),
+      h('div', { class: 'sub' }, 'Ways in'), h('div', { class: 'muted small' }, info.isNew ? 'How its sessions may start (its own default contexts file); the others aren’t offered to it.'
+        : `How its sessions may start: its own contexts file${model.waysFrom === 'own' ? '' : ' (none yet; created when you add one)'}, else default_contexts.`),
       h('div', { class: 'cols' }, ways),
     ]);
   }
@@ -157,7 +168,20 @@
     ], false);
   }
 
+  function keptCard() {
+    if (info.isNew || !(info.kept || []).length) return null;
+    return card('kept', 'Kept as is', `${info.kept.length} line(s) the form doesn't describe`, [
+      h('div', { class: 'muted small' }, 'Statements on this role or domain that the form doesn’t model (conditional blocks, ifdefs, rules on other modules’ types, calls with other arguments). Edits leave them exactly as they are; click one to open it.'),
+      h('div', { class: 'kept' }, info.kept.map(k => h('div', { class: 'keptline', title: k.text, onclick: () => vscode.postMessage({ cmd: 'open', path: info.files.te, line: k.l }) }, h('span', { class: 'ln' }, k.l + 1), k.text))),
+    ], false);
+  }
+
   function mlsCard() {
+    if (!info.isNew && !(model.genUser && model.genUser.exists && model.genUser.simple)) {
+      return card('mls', 'Levels and home directory', model.genUser && model.genUser.exists ? 'as written' : 'none of its own', h('div', { class: 'muted' }, model.genUser && model.genUser.exists
+        ? `${model.name}_u's gen_user line is written with ifdef() or more than once, so the editor leaves it as it is; edit its levels in ${info.usersFile} by hand.`
+        : `There is no ${model.name}_u: its users' own gen_user lines set their levels.`), false);
+    }
     return card('mls', 'Levels and home directory', `${model.level} · ${model.range}`, [
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Default level'), text(model.level, (v) => { model.level = v; changed(); }, { size: 10, title: 'The level sessions start at (gen_user’s 4th argument), s0 in MCS policies' })),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Range'), text(model.range, (v) => { model.range = v; changed(); }, { size: 22, title: 'The levels the user may have, e.g. s0, or s0 - mls_systemhigh for an administrator' })),
@@ -170,18 +194,18 @@
     const form = $('form');
     form.textContent = '';
     if (!info) return;
-    form.append(userCard(), loginsCard(), rolesCard(), callsCard(), rightsCard(), mlsCard());
+    form.append(...[userCard(), loginsCard(), rolesCard(), callsCard(), rightsCard(), mlsCard(), keptCard()].filter(Boolean));
     renderPlan();
   }
 
   function renderPlan() {
     const pv = $('preview');
     pv.textContent = '';
-    if (!plan) { pv.append(h('div', { class: 'pad muted' }, 'Fill in a name to see the files.')); $('apply').disabled = true; return; }
+    if (!plan) { pv.append(h('div', { class: 'pad muted' }, info && !info.isNew ? 'Change something to see the edits.' : 'Fill in a name to see the files.')); $('apply').disabled = true; return; }
     const blocking = plan.problems.filter(p => !p.startsWith('Note:'));
     $('apply').disabled = !!blocking.length || !plan.files.length;
     if (plan.problems.length) pv.append(h('div', { class: 'problems' }, plan.problems.map(p => h('div', { class: p.startsWith('Note:') ? 'note' : 'error' }, p))));
-    if (!plan.files.length) return;
+    if (!plan.files.length) { pv.append(h('div', { class: 'pad muted' }, 'No changes.')); return; }
     if (tab >= plan.files.length) tab = 0;
     pv.append(h('div', { class: 'tabs' }, plan.files.map((f, i) => h('button', { class: `tab${i === tab ? ' sel' : ''}`, title: f.path, onclick: () => { tab = i; renderPlan(); } },
       f.path.split(/[\\/]/).pop(), f.exists ? h('span', { class: 'dot' }, ' ●') : ' (new)'))));
@@ -194,10 +218,12 @@
     if (m.cmd === 'init') {
       info = m.info;
       model = m.info.model;
-      $('title').textContent = 'New User';
+      plan = null;
+      $('title').textContent = info.isNew ? 'New User' : `User: ${model.name}_${model.genUser && model.genUser.exists ? 'u' : 'r'} (${info.module})`;
+      $('apply').textContent = info.isNew ? 'Create' : 'Apply';
       $('status').textContent = '';
       render();
-      if (model.name) changed();
+      if (model.name && info.isNew) changed();
     } else if (m.cmd === 'plan') {
       plan = m.plan;
       $('status').textContent = '';

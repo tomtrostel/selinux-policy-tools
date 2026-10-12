@@ -187,7 +187,8 @@
       canIn ? [h('div', { class: 'sub' }, 'Ask'), askBox(u)] : null,
       h('div', { class: 'sub' }, 'Defined in'),
       h('div', {}, u.loc ? open(u.loc, 'its gen_user line', 'Open the gen_user line that defines it') : h('span', { class: 'muted' }, 'the compiled policy'),
-        u.contextsFile ? [' · ', open({ p: u.contextsFile, l: 0 }, 'its contexts file', u.contextsFile)] : null),
+        u.contextsFile ? [' · ', open({ p: u.contextsFile, l: 0 }, 'its contexts file', u.contextsFile)] : null,
+        report.policy && report.policy.id === 'build' && u.name !== 'system_u' ? [' · ', h('button', { class: 'link', title: 'Open its role module in the user editor', onclick: () => vscode.postMessage({ cmd: 'editUser', user: u.name }) }, 'Edit user…')] : null),
     ];
     return card(`u:${u.name}`, cls, summary, body);
   }
