@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-11: **v0.10.1 released** (GitHub release `v0.10.1`;
+Status as of 2026-10-11: **v0.10.2 released** (GitHub release `v0.10.2`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -27,7 +27,9 @@ services (all init_*domain variants, template-declared domains) and login
 services, and finding interfaces by need (step 6). The user looked at it
 before the release ("looks okay"); not clicked through feature by feature.
 0.10.1: read-only denials rank read-only interfaces first (writes tag),
-ranked keyword search for interfaces.
+ranked keyword search for interfaces. 0.10.2: long interface lists grouped
+by module, custom file access (kept rules shown, openable, expanded), build
+of the active tree from outside trees/modules.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -368,7 +370,7 @@ so far covered by the e2e tests only.
    is exactly a required type 6); every word must match; +3 when the name
    is or starts with the words joined by _; −3 dontaudit, −1.5 RARE parts
    unless typed; + 0.8·log10(1 + uses); − length/100. 25 shown, "N more…".
-   Custom file access (done, unreleased; user asked what "label only"
+   Custom file access (done, 0.10.2; user asked what "label only"
    means for CLIP's httpd_cache_t, which httpd_t actually manages via
    mmap_manage_files_pattern): recognize sets row.access 'custom' and
    row.rules (statement texts) when the level found is none but the file
@@ -385,14 +387,14 @@ so far covered by the e2e tests only.
    refuses loginPty when <D-stem>_devpts_t is a file type already (found by
    the survey: ipsec_mgmt_devpts_t). Fedora: 313 file types custom, 0 left
    "label only" with access; survey mutation 30 = custom → read.
-   Build target fix (unreleased; user hit "This file is outside the policy
+   Build target fix (0.10.2; user hit "This file is outside the policy
    tree" from Build the policy with the CLIP clone as workspace):
    buildRequestTarget falls back to treeRoot for anything outside trees and
    modules (not inExcludedTree; on-save builds still use buildTarget only);
    selinux.buildModule takes 'tree' (views pass it; ignores the active
    editor); webview buildHint() adds Build now (cmd build) to errors that
    mention a build.
-   Grouping long lists (item 4, done, unreleased): extraSection groups
+   Grouping long lists (item 4, done, 0.10.2): extraSection groups
    model.extra by module (info.interfaces m, else the name's prefix) when
    more than GROUP_AT = 12: details.egroup per module (sorted; open state in
    openGroups), chips sorted; filter input narrows in place (chip.match =
