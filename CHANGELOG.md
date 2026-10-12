@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-10-11)
 
 **New**
 
@@ -8,8 +8,6 @@
   interfaces* (a type or path, the kind of object, what to do with it) lists
   the interfaces that grant it, narrowest first, with what else each
   grants; **▸** on any interface shows the rules it really compiles to.
-* **Fix**: denial suggestions in a tree failed for port types (template-
-  generated interfaces).
 * **Service editor: more services, login services**: modules whose
   domains are started by `init_system_domain`, `init_domain` or a ranged
   variant open too (on RHEL 9 51 more, e.g. `xserver`, `dbus`, `getty`),
@@ -54,6 +52,14 @@
   *Apply* writes it and saves, and after the build the denial is checked
   again against it (*Resolved*). Domains of the installed policy get a
   small local module in a standalone workspace.
+
+**Fixes**
+
+* Paths under `HOME_DIR/` (as in RHEL's `xserver.fc`) were refused as not
+  absolute by the service editor.
+* RHEL tree builds write no combined file contexts file, so label checks
+  used the host's file contexts; the tree's `base.fc` and modules' `.mod.fc`
+  are combined now.
 
 **Tests**: `npm run test:denials` (in `npm test`), `npm run
 test:denials-e2e` (melody: installed policy, standalone module, CLIP tree),

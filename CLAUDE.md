@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-11: **v0.9.0 released** (GitHub release `v0.9.0`;
+Status as of 2026-10-11: **v0.10.0 released** (GitHub release `v0.10.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -21,8 +21,11 @@ without modules.conf (make conf defaults); not yet tried interactively.
 0.9.0 adds the service editor with booleans, port types and helper
 domains (step 6 below; e2e-tested, the form not yet tried interactively)
 and tutorials (step 7; the user checked the walkthroughs in VS Code and
-they look good). Unreleased (after 0.9.0): the denial assistant, phases 1-3
-(step 8); standalone service modules packaged as RPMs (step 6).
+they look good). 0.10.0 adds the denial assistant (step 8, phases 1-4),
+standalone service modules packaged as RPMs with a license picker, more
+services (all init_*domain variants, template-declared domains) and login
+services, and finding interfaces by need (step 6). The user looked at it
+before the release ("looks okay"); not clicked through feature by feature.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -314,7 +317,7 @@ so far covered by the e2e tests only.
    `catalog()`; the webview sets it as `title` (`tipOf()` substitutes the
    module name on hover); service-test checks every catalog item has help
    and every button/field/checkbox in the form has a title.
-   More services and login services (done, unreleased; user: "why does
+   More services and login services (done, 0.10.0; user: "why does
    the service editor not handle ssh and xserver", then "do A and B"):
    ENTRY_CALLS (init_daemon_domain, init_ranged_daemon_domain,
    init_system_domain, init_ranged_system_domain, init_domain,
@@ -339,7 +342,7 @@ so far covered by the e2e tests only.
    376 modules; 29 mutation kinds, 14,152 edits). e2e section 5 (CLIP,
    RHEL 9, RHEL 10): xdm_t, xserver_t, sshd_t + a capability (one line),
    new login service logintest with the options and pty, one tree build.
-   Finding interfaces (done, unreleased; user: "let us add other
+   Finding interfaces (done, 0.10.0; user: "let us add other
    interfaces … help us find the one we want", items 1 and 3 of 4 offered):
    server `selinux/findInterfaces` {domain, target | path, tclass, perms}
    (path → type with matchpathcon on the tree build's tmp/all_mods.fc or the
@@ -355,7 +358,7 @@ so far covered by the e2e tests only.
    ownReq in suggestInterfaces spread idx.generatedAt()'s Set (crashed in
    trees for port types). Not done: better keyword ranking, grouping long
    lists by module (items 2 and 4).
-   Standalone modules as RPMs (done, unreleased; user: "make them a stand
+   Standalone modules as RPMs (done, 0.10.0; user: "make them a stand
    alone module … package the service and the policy in an RPM"; target =
    the build host's devel headers): `isStandaloneModule(p)` = module file in
    a workspace root, outside the active tree's policy/ (and excluded trees);
@@ -424,9 +427,9 @@ so far covered by the e2e tests only.
 
 8. **Denial assistant** (user picked it from suggested features; plan agreed
    2026-10-11): from an AVC denial to the smallest correct fix.
-   Phases: 1 parse/group/verdicts (done, unreleased), 2 interface
-   suggestions (done, unreleased), 3 apply + verify after build (done,
-   unreleased), 4 (done, unreleased): no transition into the domain,
+   Phases: 1 parse/group/verdicts (done, 0.10.0), 2 interface
+   suggestions (done, 0.10.0), 3 apply + verify after build (done,
+   0.10.0), 4 (done, 0.10.0): no transition into the domain,
    two-interface covers, new interface in the owner module,
    constraint/MLS explanations, a tutorial quick action.
    Phase 1: `server/denials.js` (pure): `records()` (audit.log /
