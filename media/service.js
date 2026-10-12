@@ -147,9 +147,9 @@
         ['tmp', 'tmpfs', 'lock'].includes(k.id) && !row.paths.length
           ? h('span', { class: 'muted small', title: 'The service creates these at run time; a type transition gives them their label, so no path is needed' }, 'labeled when the service creates them')
           : h('textarea', { rows: Math.max(1, row.paths.length), spellcheck: 'false', placeholder: k.path || '/path/', title: 'One path per line, written to the .fc file. A path ending in / means the directory and everything in it; % is the module name', oninput: (e) => { row.paths = unlines(e.target.value); changed(); } }, lines(row.paths)),
-        h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; if (row.rules) render(); changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
+        h('select', { onchange: (e) => { row.access = e.target.value; e.target.title = `What the service may do with these files: ${accessHelp(row.access)}`; if (row.rules || (model.booleans || []).length) render(); changed(); }, title: `What the service may do with these files: ${accessHelp(row.access)}` },
           accessOpts.map(a => h('option', { value: a, selected: a === row.access, title: accessHelp(a) }, info.catalog.accessLabels[a] || a))),
-        h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { const t = typeOf(row); model.files.splice(i, 1); for (const hp of model.helpers || []) hp.files = (hp.files || []).filter(x => x.type !== t); render(); changed(); } }, '✕')));
+        h('button', { class: 'icon', title: 'Remove this file type (and the rules for it)', onclick: () => { const t = typeOf(row); model.files.splice(i, 1); for (const hp of model.helpers || []) hp.files = (hp.files || []).filter(x => x.type !== t); for (const b of model.booleans || []) if (b.grants) b.grants.files = (b.grants.files || []).filter(x => x.type !== t); render(); changed(); } }, '✕')));
       // Rules that match no level: kept as written, shown (and openable, and expandable) so the choice is informed.
       if (row.rules && row.rules.length) table.append(customRules(row));
     });
@@ -552,7 +552,7 @@
       ...ifaceSearch(model.extra, add), ...findByNeed(model.extra, add)], model.extra.length > 0 || info.isNew);
   }
 
-  const emptyGrants = () => ({ self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] });
+  const emptyGrants = () => ({ self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], files: [] });
 
   /**
    * Chips for what g grants, and ways to add more. o: { cond (only what conditional policy allows),
@@ -598,6 +598,31 @@
     return [chips, h('div', { class: 'row' }, menu), portRow, h('div', { class: 'row' }, search), results];
   }
 
+  const BOOL_FILES_TIP = 'More access to the service’s own files while the boolean is on, e.g. read only always and create/change/delete when on. “no more” keeps just the access chosen under Files';
+  /** Per file type of the service: a level that applies only while boolean b is on. */
+  function boolFiles(b) {
+    const g = b.grants;
+    g.files = g.files || [];
+    const rows = model.files.filter(r => !kindOf(r.kind).file && kindOf(r.kind).access.some(a => a !== 'none'));
+    if (!rows.length) return null;
+    return h('div', { class: 'helperfiles' }, h('div', { class: 'sub small', title: BOOL_FILES_TIP }, 'Access to the service’s files'), rows.map(r => {
+      const T = typeOf(r), k = kindOf(r.kind);
+      const cur = (g.files.find(x => x.type === T) || {}).access || 'none';
+      const levels = ['none', ...k.access.filter(a => a !== 'none')];
+      if (!levels.includes(cur)) levels.push(cur);
+      const label = (a) => (a === 'none' ? 'no more' : info.catalog.accessLabels[a] || a);
+      const always = r.access || k.access[0];
+      return h('div', { class: 'row' }, h('code', { title: `${k.label}${k.where ? ` (${k.where})` : ''}` }, T), ' ',
+        h('select', { title: `While the boolean is on: ${cur === 'none' ? 'nothing more than always' : accessHelp(cur)}`, onchange: (e) => {
+          g.files = g.files.filter(x => x.type !== T);
+          if (e.target.value !== 'none') g.files.push({ type: T, access: e.target.value });
+          e.target.title = `While the boolean is on: ${e.target.value === 'none' ? 'nothing more than always' : accessHelp(e.target.value)}`;
+          changed();
+        } }, levels.map(a => h('option', { value: a, selected: a === cur, title: a === 'none' ? 'Only what the service always has (see Files)' : accessHelp(a) }, label(a)))),
+        h('span', { class: 'muted small', title: 'The access chosen under Files, which applies whether the boolean is on or off' }, ` always: ${info.catalog.accessLabels[always] || always}`));
+    }));
+  }
+
   function boolsSection() {
     model.booleans = model.booleans || [];
     const boolBy = new Map((info.bools || []).map(b => [b.n, b]));
@@ -619,7 +644,7 @@
         : h('textarea', { rows: 2, spellcheck: 'true', placeholder: 'What switching it on allows (semanage boolean -l shows this)', title: 'Written as the comment above gen_tunable; semanage boolean -l shows it to administrators', oninput: (e) => { b.desc = e.target.value; changed(); } }, b.desc || '');
       const ed = grantsEditor(g, { cond: true, also: model, removeTip: 'No longer allow this when the boolean is on',
         menuTip: 'Pick something the service may do only while the boolean is on. Things it is always allowed aren’t listed', portTip: 'Allow this port only while the boolean is on' });
-      return h('div', { class: 'bool' }, head, desc, h('div', { class: 'sub small' }, 'When on, also allow'), ed);
+      return h('div', { class: 'bool' }, head, desc, h('div', { class: 'sub small' }, 'When on, also allow'), boolFiles(b), ed);
     });
     const existing = h('input', { type: 'text', list: 'bools', size: 30, spellcheck: 'false', placeholder: 'e.g. use_nfs_home_dirs', title: 'A boolean another module (or the tree’s global tunables) already declares; type to search' });
     const add = h('div', { class: 'adds' },

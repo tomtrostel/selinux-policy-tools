@@ -377,6 +377,16 @@ function portCtx(model, ctx) {
   };
   return { ...ctx, has, withPorts: true };
 }
+/** The pattern calls of an access level on a file type (pat(name) makes the call). */
+function levelStmts(acc, pat, k) {
+  if (acc === 'read') return [pat('list_dirs_pattern'), pat('read_files_pattern'), pat('read_lnk_files_pattern')];
+  if (acc === 'append') return [pat('manage_dirs_pattern'), pat('append_files_pattern'), pat('create_files_pattern'), pat('setattr_files_pattern')];
+  if (acc === 'manage') return [pat('manage_dirs_pattern'), pat('manage_files_pattern'), ...(k.extra || []).map(pat)];
+  return [];
+}
+// Levels by how much they allow, to tell when a boolean adds nothing (append and read differ, but neither covers the other).
+const LEVEL_RANK = { none: 0, read: 1, append: 1, manage: 2 };
+
 const allowKey = (src, tgt, cls, perms) => `allow:${src}:${tgt}:${cls}:${perms.slice().sort().join(' ')}`;
 
 // Statements inside tunable_policy(`b', ...) have keys of their own: the same call
@@ -430,15 +440,11 @@ function unitsOf(model, ctx) {
     const pat = (p) => call(p, [D, T, T], 'local', g);
     const ft = pick(ctx, k.filetrans);
     const acc = row.access || k.access[0];
-    if (acc === 'read') st.push(pat('list_dirs_pattern'), pat('read_files_pattern'), pat('read_lnk_files_pattern'));
-    if (acc === 'append') st.push(pat('manage_dirs_pattern'), pat('append_files_pattern'), pat('create_files_pattern'), pat('setattr_files_pattern'));
-    if (acc === 'manage') {
-      st.push(pat('manage_dirs_pattern'), pat('manage_files_pattern'));
-      for (const e of k.extra || []) st.push(pat(e));
-    }
+    st.push(...levelStmts(acc, pat, k));
     if ((acc === 'manage' || acc === 'append') && ft) st.push(call(ft, [D, T, k.ftClasses], 'local', g));
     add(`file:${T}`, { kind: row.kind, access: acc }, st.map(s => (s.opt ? { ...s, opt: false } : s)));
   }
+  const rowByType = new Map((model.files || []).filter(r => KIND[r.kind]).map(r => [fileType(model, r, ctx), r]));
 
   // Port types declared in the module (standalone; in a tree they live in corenetwork.te.in).
   const ownPorts = new Set();
@@ -464,10 +470,25 @@ function unitsOf(model, ctx) {
       }]);
     }
     grantUnits(b.grants || {}, `b:${name}:`, name);
+    // More access to the service's own files while the boolean is on (e.g. read always, manage when on).
+    for (const f of (b.grants || {}).files || []) {
+      const r = rowByType.get(f.type);
+      if (!r || !['read', 'append', 'manage'].includes(f.access)) continue;
+      const k = KIND[r.kind], T = f.type, g = `file:${T}`;
+      const pat = (p) => ({ ...call(p, [D, T, T], 'local', g, name), opt: false });
+      const st = levelStmts(f.access, pat, k);
+      // The type transition only when the always-on level has none (a duplicate type rule fails the
+      // build) and its interface may sit in a conditional.
+      const ft = pick(ctx, k.filetrans);
+      const always = r.access || k.access[0];
+      const withFt = !!ft && (f.access === 'manage' || f.access === 'append') && (always === 'none' || always === 'read') && (!ctx.condSafe || ctx.condSafe(ft));
+      if (withFt) st.push({ ...call(ft, [D, T, k.ftClasses], 'local', g, name), opt: false });
+      add(`b:${name}:file:${T}`, { access: f.access, ft: withFt }, st);
+    }
   }
 
   // Helper domains: declared here, entered from the service's domain, with rights of their own.
-  const fileKinds = new Map((model.files || []).filter(r => KIND[r.kind]).map(r => [fileType(model, r, ctx), KIND[r.kind]]));
+  const fileKinds = new Map([...rowByType].map(([T, r]) => [T, KIND[r.kind]]));
   for (const h of model.helpers || []) {
     const { H, HE } = helperNames(model, h);
     if (!/^\w+_t$/.test(H) || !/^\w+_t$/.test(HE) || H === D) continue;
@@ -481,10 +502,7 @@ function unitsOf(model, ctx) {
       if (!k || !f.access || f.access === 'none') continue;
       const T = f.type, g = `file:${T}`;
       const pat = (p) => ({ ...call(p, [H, T, T], 'local', g), opt: false, dom: H, key: callKey(p, [H, T, T]) });
-      const st = [];
-      if (f.access === 'read') st.push(pat('list_dirs_pattern'), pat('read_files_pattern'), pat('read_lnk_files_pattern'));
-      if (f.access === 'append') st.push(pat('manage_dirs_pattern'), pat('append_files_pattern'), pat('create_files_pattern'), pat('setattr_files_pattern'));
-      if (f.access === 'manage') { st.push(pat('manage_dirs_pattern'), pat('manage_files_pattern')); for (const e of k.extra || []) st.push(pat(e)); }
+      const st = levelStmts(f.access, pat, k);
       const ft = pick(ctx, k.filetrans);
       if ((f.access === 'manage' || f.access === 'append') && ft) st.push({ ...call(ft, [H, T, k.ftClasses], 'local', g), opt: false, dom: H });
       add(`h:${H}:file:${T}`, f.access, st);
@@ -854,7 +872,7 @@ function recognize(texts, ctx, opts = {}) {
   const provided = (texts.if ? parsePolicy(texts.if).defs.map(d => d.name) : []);
   return { model, own, kept, domains, provided, scan: te };
 
-  function emptyGrants() { return { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [] }; }
+  function emptyGrants() { return { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], files: [] }; }
   function mentionsD(s) {
     const text = te.lines.slice(s.l, s.endL + 1).join('\n');
     return [D, ...(model.helpers || []).map(h => h.domain || `${h.name}_t`)].some(x => new RegExp(`\\b${x}\\b`).test(text));
@@ -873,6 +891,19 @@ function recognize(texts, ctx, opts = {}) {
       claimed.add(s);
     }
     const hasSelf = (cls, p) => selfPerms.has(cls) && selfPerms.get(cls).has(p);
+    // Under a boolean: access to the service's own file types at one of the levels (rules matching
+    // none stay kept). Its other rules on the type in the same block go with it.
+    if (bool && S === D) {
+      for (const r of model.files) {
+        const T = r.type;
+        const mine = editable.filter(s => inScope(s) && !claimed.has(s) && ((s.kind === 'call' && s.args[0] === D && s.args.slice(1).includes(T) && /(_pattern|filetrans)$/.test(s.name)) || (s.kind === 'allow' && s.src === D && s.tgt === T)));
+        const pats = new Set(mine.filter(s => s.kind === 'call' && s.args[1] === T && s.args[2] === T).map(s => s.name));
+        const access = pats.has('manage_files_pattern') ? 'manage' : pats.has('append_files_pattern') ? 'append' : pats.has('read_files_pattern') ? 'read' : null;
+        if (!access) continue;
+        g.files.push({ type: T, access });
+        for (const s of mine) ownAdd(`${prefix}file:${T}`, s);
+      }
+    }
     for (const [id, , perms] of SELF) if (Object.entries(perms).every(([cls, ps]) => ps.every(p => hasSelf(cls, p)))) g.self.push(id);
     for (const [c, cls] of CAPS) if (hasSelf(cls, c)) g.caps.push(c);
 
@@ -1531,8 +1562,15 @@ function validate(model, ctx, opts = {}) {
     if (b.external && ctx.boolExists && !ctx.boolExists(n)) out.push(`There is no boolean ${n} in this policy.`);
     if (!b.external && (opts.isNew || b._new) && ctx.boolExists && ctx.boolExists(n)) out.push(`A boolean named ${n} already exists: add it as an existing boolean, or choose another name.`);
     const g = b.grants || {};
-    if (![...(g.self || []), ...(g.caps || []), ...(g.access || []), ...(g.extra || []), ...((g.net || {}).listen || []).filter(x => x.port), ...((g.net || {}).connect || []).filter(x => x.port)].length) out.push(`Note: boolean ${n} doesn't allow anything yet.`);
+    const boolFiles = (g.files || []).filter(f => f.access && f.access !== 'none');
+    if (![...(g.self || []), ...(g.caps || []), ...(g.access || []), ...(g.extra || []), ...boolFiles, ...((g.net || {}).listen || []).filter(x => x.port), ...((g.net || {}).connect || []).filter(x => x.port)].length) out.push(`Note: boolean ${n} doesn't allow anything yet.`);
     grants(g, ` under ${n}`);
+    for (const f of boolFiles) {
+      const r = (model.files || []).find(x => fileType(model, x, ctx) === f.type);
+      if (!r) { out.push(`Boolean ${n}: ${f.type} isn't one of this service's file types any more; remove that access.`); continue; }
+      const always = r.access || (KIND[r.kind] ? KIND[r.kind].access[0] : 'none');
+      if (always !== 'custom' && (always === f.access || LEVEL_RANK[f.access] < LEVEL_RANK[always])) out.push(`Note: under ${n}, ${f.type} gets "${ACCESS_LABELS[f.access]}", but the service always has "${ACCESS_LABELS[always]}" on it, so the boolean adds nothing there.`);
+    }
     // Only what is being added now: an existing module isn't blamed for what it already has.
     const base = opts.baseline && (opts.baseline.booleans || []).find(x => x.name === n);
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

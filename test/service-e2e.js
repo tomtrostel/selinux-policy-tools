@@ -49,7 +49,7 @@ const check = (cond, what, extra) => {
   console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`);
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + (typeof extra === 'string' ? extra : JSON.stringify(extra, null, 1)).slice(0, 2500).replace(/\n/g, '\n     ')); }
 };
-const gnorm = (g) => [[...(g.self || [])].sort(), [...(g.caps || [])].sort(), ((g.net || {}).listen || []).map(x => x.proto + x.port).sort(), ((g.net || {}).connect || []).map(x => x.proto + x.port).sort(), [...(g.access || [])].sort(), [...(g.extra || [])].sort()];
+const gnorm = (g) => [[...(g.self || [])].sort(), [...(g.caps || [])].sort(), ((g.net || {}).listen || []).map(x => x.proto + x.port).sort(), ((g.net || {}).connect || []).map(x => x.proto + x.port).sort(), [...(g.access || [])].sort(), [...(g.extra || [])].sort(), (g.files || []).filter(x => x.access && x.access !== 'none').map(x => `${x.type}:${x.access}`).sort()];
 const norm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, [...f.paths].sort()]).sort(), gnorm(m), m.permissive, [...m.exec].sort(),
   (m.booleans || []).map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), gnorm(b.grants || {})]).sort((a, b) => a[0].localeCompare(b[0])),
   (m.helpers || []).map(h => [h.domain || `${((h.name || '').trim() || '%_helper').replace(/%/g, m.name)}_t`, !!h.signal, (h.exec || []).map(p => p.replace(/%/g, m.name)).sort(),
@@ -95,7 +95,7 @@ const build = async (te) => {
   check(!dbusItem || dbusItem.cond === false, 'D-Bus client access is marked as not allowed under a boolean (its interface declares an attribute or optional block)');
   const model = info.model;
   Object.assign(model, { name: 'svctest', summary: 'Service editor test daemon', exec: ['/usr/bin/svctest', '/usr/libexec/svctest-helper'] });
-  model.files.push({ kind: 'state', paths: ['/var/lib/%/'], access: 'manage' }, { kind: 'log', paths: ['/var/log/%/'], access: 'append' },
+  model.files.push({ kind: 'state', paths: ['/var/lib/%/'], access: 'read' }, { kind: 'log', paths: ['/var/log/%/'], access: 'append' },
     { kind: 'config', paths: ['/etc/%/', '/etc/%.conf'], access: 'read' }, { kind: 'tmp', paths: [], access: 'manage' }, { kind: 'cache', paths: ['/var/cache/%/'], access: 'manage' });
   model.caps = ['setuid', 'setgid', 'net_bind_service'];
   model.self.push('unixstream', 'signal');
@@ -112,7 +112,9 @@ const build = async (te) => {
   model.helpers = [{ name: '%_helper', exec: ['/usr/libexec/%-worker'], signal: true, files: [{ type: runtimeT, access: 'read' }], self: ['fifo'], caps: ['setuid'],
     net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: ['syslog'], extra: ['files_read_usr_files'], _new: true }];
   model.booleans = [
-    { name: '%_connect_any', desc: 'Allow svctest to connect to any TCP port and send mail.', default: false, grants: { caps: ['kill'], self: ['rlimit'], net: { listen: [], connect: [{ proto: 'tcp', port: 'all' }, { proto: 'udp', port: 'svctest' }] }, access: [condItem(model.access).id], extra: [] } },
+    { name: '%_connect_any', desc: 'Allow svctest to connect to any TCP port and send mail.', default: false, grants: { caps: ['kill'], self: ['rlimit'], net: { listen: [], connect: [{ proto: 'tcp', port: 'all' }, { proto: 'udp', port: 'svctest' }] }, access: [condItem(model.access).id], extra: [],
+      // Read always, manage (with the type transition in /var/lib) while the boolean is on.
+      files: [{ type: 'svctest_var_lib_t', access: 'manage' }, { type: 'svctest_conf_t', access: 'manage' }] } },
     { name: 'use_nfs_home_dirs', external: true, grants: { self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: ['fs_read_nfs_files'] } },
   ];
   check(info.bools.some(b => b.n === 'use_nfs_home_dirs'), `${info.bools.length} existing booleans offered (use_nfs_home_dirs among them)`);
@@ -143,6 +145,10 @@ const build = async (te) => {
   check(back.model.helpers.length === 1 && back.model.helpers[0].name === 'svctest_helper' && back.model.helpers[0].exec[0] === '/usr/libexec/svctest-worker', 'its helper reads back (svctest_helper_t)', back.model.helpers);
   const modTmp = r.workDir && path.join(r.workDir, 'tmp', 'svctest.tmp');
   check(modTmp && fs.existsSync(modTmp) && /type_transition svctest_t svctest_helper_exec_t:process svctest_helper_t;/.test(fs.readFileSync(modTmp, 'utf8')), 'the built module has the transition into the helper domain');
+  const tunText = /tunable_policy\(`svctest_connect_any',`([^']*)'\)/.exec(fs.readFileSync(te, 'utf8'));
+  check(tunText && /manage_files_pattern\(svctest_t, svctest_var_lib_t, svctest_var_lib_t\)/.test(tunText[1]) && /files_var_lib_filetrans\(svctest_t, svctest_var_lib_t/.test(tunText[1]) &&
+    /type_transition svctest_t var_lib_t:\s*\{?\s*dir\s*\}?\s*svctest_var_lib_t\s*;/.test(fs.readFileSync(modTmp, 'utf8')), 'file access under the boolean: manage patterns and the /var/lib type transition in its block, built',
+    { block: tunText && tunText[1], built: fs.readFileSync(modTmp, 'utf8').split('\n').filter(l => /type_transition.*svctest_var_lib_t|svctest_connect_any/.test(l)).slice(0, 30) });
 
   // 2. Edit an existing, enabled service.
   const list = await conn.sendRequest('selinux/serviceList');
@@ -164,9 +170,12 @@ const build = async (te) => {
   m.helpers.push({ name: `${name}_e2e_helper`, exec: [`/usr/libexec/${name}-e2e-helper`], signal: true, files: hconf ? [{ type: hconf.type, access: 'read' }] : [], self: ['fifo'], caps: ['kill'],
     net: { listen: [], connect: [] }, access: ['syslog'], extra: [], _new: true });
   changes.push(`+helper ${name}_e2e_helper_t`);
+  // A file type it only reads (or has no access to), managed while the new boolean is on.
+  const bfile = m.files.find(f => f.type && ['config', 'state', 'runtime', 'log', 'cache', 'spool', 'other'].includes(f.kind) && ['read', 'none'].includes(f.access));
   m.booleans.push({ name: `${name}_e2e_extra`, desc: 'Test boolean.', default: false, external: false, _new: true, grants: { self: ['rlimit', 'sched'].filter(x => !m.self.includes(x)).slice(0, 1), caps: ['kill', 'sys_chroot', 'fsetid'].filter(x => !m.caps.includes(x)).slice(0, 1),
-    net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: [condItem(m.access).id], extra: [] } });
-  changes.push(`+boolean ${name}_e2e_extra`);
+    net: { listen: [], connect: [{ proto: 'tcp', port: 'http' }] }, access: [condItem(m.access).id], extra: [],
+    files: bfile ? [{ type: bfile.type, access: 'manage' }] : [] } });
+  changes.push(`+boolean ${name}_e2e_extra${bfile ? ` (manage ${bfile.type})` : ''}`);
   const own = m.booleans.find(b => !b.external && !b._new);
   const ownCap = own && ['ipc_lock', 'sys_tty_config', 'audit_write'].find(c => !m.caps.includes(c) && !own.grants.caps.includes(c));
   if (own && ownCap) { own.default = !own.default; own.grants.caps.push(ownCap); changes.push(`${own.name}: default ${own.default ? 'on' : 'off'}, +${ownCap}`); }

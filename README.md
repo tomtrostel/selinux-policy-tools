@@ -296,7 +296,10 @@ writes. It offers what the existing service modules use (taken from the
   boolean -l` shows) and a default; an existing one (`use_nfs_home_dirs`,
   any boolean of the tree) can be used too. Under each you add what it
   allows while on: system access, process rights, capabilities, ports,
-  interfaces. They are written as `gen_tunable` with its `## <desc>`
+  interfaces, and more access to the service's own files (e.g. read only
+  always, create/change/delete while the boolean is on; the type
+  transition that puts new files in `/var/lib` & co. into its type comes
+  along when the always-on level has none). They are written as `gen_tunable` with its `## <desc>`
   comment and `tunable_policy` blocks (inside `optional_policy` for
   calls into modules that can be turned off). Anything conditional policy
   can't hold is kept out: checkmodule allows only allow/dontaudit/type
@@ -392,7 +395,9 @@ settings you change: turning a capability off rewrites just that
 removes its declaration, its rules and its file contexts, a new file type
 goes next to the other declarations, a call left alone in an
 `optional_policy` block takes the block with it. Booleans read back with
-their description, default and grants; a new grant goes into the boolean's
+their description, default and grants (file access under a boolean when
+its patterns match a level; other file rules there stay as written); a new
+grant goes into the boolean's
 existing `tunable_policy` block, a changed default or description rewrites
 just the declaration. Helper domains that the service enters through
 `domtrans_pattern` (declared with `domain_type` + `domain_entry_file` or

@@ -29,7 +29,8 @@ before the release ("looks okay"); not clicked through feature by feature.
 0.10.1: read-only denials rank read-only interfaces first (writes tag),
 ranked keyword search for interfaces. 0.10.2: long interface lists grouped
 by module, custom file access (kept rules shown, openable, expanded), build
-of the active tree from outside trees/modules.
+of the active tree from outside trees/modules. Unreleased: file access
+under a boolean (service editor).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -447,8 +448,26 @@ so far covered by the e2e tests only.
    CLIP copy inside a workspace folder): RHEL helper variants, tree-only
    interface refused, build, make rpm, rpm -qpl/--scripts/-qpR, magic of the
    packaged .pp, read back, edit touches only the .te, tree untouched.
-   Ideas not done: file access under a
-   boolean, gen_bool.
+   File access under a boolean (done, unreleased; user: "go ahead and do
+   file access under a boolean"): b.grants.files [{type, access}] (the
+   service's file types, resolved names like helpers'). unitsOf: unit
+   `b:<name>:file:<T>` = levelStmts() (shared with top level and helpers)
+   scoped to the boolean, plus the kind's filetrans only when the always-on
+   level is none/read (a duplicate type rule fails expand) and ctx.condSafe
+   allows it; sig {access, ft}, so raising the always level drops it.
+   recognize: grantsIn(bool) finds patterns (D, T, T) in the boolean's scope
+   for each model.files type → level, ownAdd the block's other pattern/
+   filetrans/allow rules on T; no level → kept. validate: removed file type
+   (error), a level the always level covers (LEVEL_RANK; note). Webview
+   boolFiles(b): per file type a select ("no more" + the kind's levels)
+   and "always: …"; removing a file row drops its boolean grants; changing a
+   row's level re-renders when there are booleans. Tests: service-test
+   (render, read back, no-op, edits, hand-written module, form), survey
+   mutations 31/32 (15,616 Fedora edits OK), service-e2e (svctest: state
+   read always + manage and /var/lib filetrans under the boolean, built as
+   `if (svctest_connect_any)`; ntp: manage ntpd_key_t under a new boolean)
+   on CLIP, RHEL 9, RHEL 10.
+   Ideas not done: gen_bool.
 
 7. **Tutorials** (done, 0.9.0; user request: "tutorials … integrate
    them into the vsix … how to use the add-on and how it can help them

@@ -32,14 +32,14 @@ const ctx = { has: (n) => KNOWN.has(n), optional: (n) => OPTIONAL.has(n), module
 
 const grantsNorm = (g) => ({ self: [...(g.self || [])].sort(), caps: [...(g.caps || [])].sort(),
   listen: ((g.net || {}).listen || []).map(x => x.proto + x.port).sort(), connect: ((g.net || {}).connect || []).map(x => x.proto + x.port).sort(),
-  access: [...(g.access || [])].sort(), extra: [...(g.extra || [])].sort() });
+  access: [...(g.access || [])].sort(), extra: [...(g.extra || [])].sort(), files: (g.files || []).filter(x => x.access && x.access !== 'none').map(x => `${x.type}:${x.access}`).sort() });
 const boolsNorm = (m) => (m.booleans || []).map(b => [b.name.replace(/%/g, m.name), !!b.external, b.external ? null : !!b.default, b.external ? null : (b.desc || '').trim(), grantsNorm(b.grants || {})])
   .sort((a, b) => a[0].localeCompare(b[0]));
 const helpersNorm = (m) => (m.helpers || []).map(h => [svc.helperNames(m, h).H, svc.helperNames(m, h).HE, !!h.signal, (h.exec || []).map(p => p.replace(/%/g, m.name)).sort(),
   (h.files || []).filter(x => x.access && x.access !== 'none').map(x => `${x.type}:${x.access}`).sort(), grantsNorm(h)]).sort((a, b) => a[0].localeCompare(b[0]));
-const norm = (m) => JSON.stringify({ helpers: helpersNorm(m),
+const norm = (m) => JSON.stringify({ helpers: helpersNorm(m), ...grantsNorm(m),
   files: m.files.map(f => [f.kind, svc.fileType(m, f, ctx), f.access, (f.paths || []).map(p => p.replace(/%/g, m.name)).sort()]).sort(),
-  ...grantsNorm(m), permissive: !!m.permissive, exec: m.exec.map(p => p.replace(/%/g, m.name)).sort(), booleans: boolsNorm(m),
+  permissive: !!m.permissive, exec: m.exec.map(p => p.replace(/%/g, m.name)).sort(), booleans: boolsNorm(m),
 });
 
 /* ---------- new module ---------- */
@@ -249,6 +249,45 @@ check(pc.some(p => /"Use the D-Bus system bus" can't be granted under webby_x: d
   'under a boolean: interfaces conditional policy refuses, and grants that are already always there, are refused', pc);
 check(!svc.validate(mC, ctxC, { isNew: false, baseline: JSON.parse(JSON.stringify(mC)) }).some(p => /webby_x/.test(p) && !/Note/.test(p)), 'an existing module isn’t blamed for what it already has');
 check(svc.catalog(ctxC).access.flatMap(g => g.items).find(i => i.id === 'dbus').cond === false, 'catalog marks items that can’t be under a boolean');
+
+// File access under a boolean: read always, more while it is on.
+{
+  const mF = JSON.parse(JSON.stringify(model));
+  mF.files.find(f => f.kind === 'runtime').access = 'read';
+  mF.booleans.push({ name: '%_write', desc: 'Allow webby to write its files', default: false, grants: { files: [{ type: 'webby_conf_t', access: 'manage' }, { type: 'webby_var_run_t', access: 'manage' }] } });
+  check(svc.validate(mF, ctx, { isNew: true }).length === 0, 'file access under a boolean validates', svc.validate(mF, ctx, { isNew: true }));
+  const oF = svc.plan(mF, ctx, null);
+  const blk = /tunable_policy\(`webby_write',`\n([^']*)'\)/.exec(oF.te);
+  check(blk && /\tmanage_files_pattern\(webby_t, webby_conf_t, webby_conf_t\)/.test(blk[1]) && /\tmanage_sock_files_pattern\(webby_t, webby_var_run_t, webby_var_run_t\)/.test(blk[1]) &&
+    /\tfiles_pid_filetrans\(webby_t, webby_var_run_t, \{ dir file sock_file \}\)/.test(blk[1]) && /\nread_files_pattern\(webby_t, webby_conf_t, webby_conf_t\)/.test(oF.te),
+    'boolean file access: the level’s patterns (and the type transition the always level lacks) inside tunable_policy', oF.te);
+  const rF = svc.recognize(oF, ctx, {});
+  check(JSON.stringify(grantsNorm(rF.model.booleans.find(b => b.name === 'webby_write').grants).files) === '["webby_conf_t:manage","webby_var_run_t:manage"]' &&
+    rF.model.files.find(f => f.type === 'webby_conf_t').access === 'read' && !rF.kept.some(k => /webby_conf_t|webby_var_run_t/.test(k.text)), 'reads back: always read, manage under the boolean, nothing kept', [rF.model.booleans, rF.kept]);
+  check(svc.plan(JSON.parse(JSON.stringify(rF.model)), ctx, oF).te === oF.te, 'boolean file access: no-op edit leaves it unchanged');
+  e = edit(oF, m => { bool(m, 'webby_write').grants.files.find(x => x.type === 'webby_conf_t').access = 'read'; });
+  check(svc.validate(e.m, ctx).some(p => /under webby_write, webby_conf_t gets "read only", but the service always has "read only"/.test(p)), 'a boolean level the service always has: noted');
+  e = edit(oF, m => { const g = bool(m, 'webby_write').grants; g.files = g.files.filter(x => x.type !== 'webby_conf_t'); });
+  check(changedLines(oF.te, e.out.te).every(x => x[0] === '-' && /webby_conf_t/.test(x[1])) && /read_files_pattern\(webby_t, webby_conf_t/.test(e.out.te), 'removing it under the boolean removes only its lines there', changedLines(oF.te, e.out.te));
+  // The always level going to manage: the type transition under the boolean would duplicate it, so it goes.
+  e = edit(oF, m => { m.files.find(f => f.type === 'webby_var_run_t').access = 'manage'; });
+  check((e.out.te.match(/files_pid_filetrans\(webby_t, webby_var_run_t/g) || []).length === 1 && !/\tfiles_pid_filetrans/.test(e.out.te), 'type transition not both always and under the boolean', e.out.te);
+  // Added to an existing module's boolean, inside its block.
+  e = edit(out, m => { bool(m, 'webby_connect_any').grants.files = [{ type: 'webby_conf_t', access: 'manage' }]; });
+  check(changedLines(out.te, e.out.te).every(x => x[0] === '+') && e.out.te.includes("\tcorenet_tcp_connect_all_ports(webby_t)\n\tmanage_dirs_pattern(webby_t, webby_conf_t, webby_conf_t)\n\tmanage_files_pattern(webby_t, webby_conf_t, webby_conf_t)\n')"),
+    'file access added to an existing boolean goes into its block', changedLines(out.te, e.out.te));
+  check(svc.validate({ ...mF, files: mF.files.filter(f => f.kind !== 'config') }, ctx, { isNew: true }).some(p => /Boolean webby_write: webby_conf_t isn't one of this service's file types/.test(p)), 'boolean file access on a removed file type: refused');
+  // Hand-written: read always, manage under a tunable (rules matching no level stay kept).
+  const hw = { te: ['policy_module(hw, 1.0)', '', 'gen_tunable(hw_write, false)', '', 'type hw_t;', 'type hw_exec_t;', 'init_daemon_domain(hw_t, hw_exec_t)', '', 'type hw_data_t;', 'files_type(hw_data_t)', '',
+    'read_files_pattern(hw_t, hw_data_t, hw_data_t)', '', "tunable_policy(`hw_write',`", '\tmanage_dirs_pattern(hw_t, hw_data_t, hw_data_t)', '\tmanage_files_pattern(hw_t, hw_data_t, hw_data_t)', '\tallow hw_t hw_data_t:file map;', "')", '',
+    "tunable_policy(`hw_other',`", '\tmmap_read_files_pattern(hw_t, hw_data_t, hw_data_t)', "')", ''].join('\n'), if: '', fc: '' };
+  const rh = svc.recognize(hw, ctx, {});
+  const hb = (n) => rh.model.booleans.find(b => b.name === n);
+  check(rh.model.files[0].access === 'read' && hb('hw_write').grants.files[0].access === 'manage' && !hb('hw_other').grants.files.length && rh.kept.some(k => /mmap_read_files_pattern/.test(k.text)),
+    'hand-written: manage under its boolean read back (with its allow rule); a boolean rule matching no level stays kept', [rh.model, rh.kept]);
+  e = edit(hw, m => { bool(m, 'hw_write').grants.files[0].access = 'append'; });
+  check(!/manage_files_pattern|file map/.test(e.out.te) && /\tappend_files_pattern\(hw_t, hw_data_t, hw_data_t\)/.test(e.out.te) && /mmap_read_files_pattern/.test(e.out.te), 'level changed under the boolean: its old rules (incl. the allow) replaced', e.out.te);
+}
 
 /* ---------- port types ---------- */
 
@@ -563,6 +602,10 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   find(e => e.tag === 'button' && e.textContent === '+ Add' && e.parent && e.parent.attrs.class === 'adds')[0].fire('click');
   check(boolCard().length === 2 && /Kill|Signal processes of other users/.test(boolCard()[0].textContent) && /Connect to TCP any port/.test(boolCard()[0].textContent) && /existing boolean/.test(boolCard()[1].textContent),
     'booleans: new one with chips for its grants, existing one marked');
+  // File access while the boolean is on.
+  const bstate = boolCard()[0].all(e => e.tag === 'select' && e.parent.children.some(c => c.tag === 'code' && c.textContent === 'webby_var_lib_t'))[0];
+  check(bstate && bstate.children[0].textContent === 'no more' && /always: create, change and delete/.test(bstate.parent.textContent), 'boolean card: a level per file type, next to what is always allowed');
+  bstate.value = 'read'; bstate.fire('change');
   // A port type of its own, with a number.
   buttonText('+ New port type').fire('click');
   const pnum = find(e => e.tag === 'input' && e.attrs.placeholder === 'e.g. 8080')[0];
@@ -600,7 +643,7 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
     'helper in the planned model, and it validates', [p.helpers, svc.validate(p, ctx, { isNew: true })]);
   check(p.ports.length === 1 && p.ports[0]._new && p.ports[0].name === '' && p.ports[0].nums[0].port === '9999' && p.ports[0].nums[0].proto === 'tcp', 'new port type in the planned model', p.ports);
   check(p.booleans.length === 2 && p.booleans[0].name === 'webby_connect_any' && p.booleans[0]._new && p.booleans[0].grants.caps[0] === 'kill' && p.booleans[0].grants.net.connect[0].port === 'all' &&
-    p.booleans[1].external && p.booleans[1].name === 'use_nfs_home_dirs', 'booleans in the planned model', p.booleans);
+    JSON.stringify(p.booleans[0].grants.files) === '[{"type":"webby_var_lib_t","access":"read"}]' && p.booleans[1].external && p.booleans[1].name === 'use_nfs_home_dirs', 'booleans in the planned model', p.booleans);
   const ws = svc.validate(p, ctx, { isNew: true });
   send({ cmd: 'plan', plan: { problems: ws, files: [{ kind: 'te', path: '/t/webby.te', exists: false, changed: true, text: svc.plan(p, ctx, null).te, diff: [] }, { kind: 'conf', path: '/t/modules.conf', exists: true, changed: true, text: 'x = module\nwebby = module', diff: [[' ', 'x = module'], ['+', 'webby = module']] }] } });
   check(!byId.apply.disabled && byId.apply.textContent === 'Create module' && /2 files to create/.test(byId.status.textContent), `apply enabled: ${byId.status.textContent}`);
@@ -827,6 +870,9 @@ async function survey(root) {
     m => { if (!m.files.some(r => r.type === `${m.domain.replace(/_t$/, '')}_devpts_t`)) m.loginPty = !m.loginPty; }, // (refused when that type is a file type already)
     // A file type with custom rules switched to a standard level (its rules replaced).
     m => { const f = m.files.find(x => x.access === 'custom'); if (f) { f.access = 'read'; delete f.rules; } },
+    // File access under a boolean: manage on a file type it only reads (or not at all), in a new boolean; a level changed.
+    m => { const f = m.files.find(x => !['unit', 'initrc'].includes(x.kind) && ['read', 'none'].includes(x.access)); if (f) m.booleans.push({ name: m.name.replace(/-/g, '_') + '_e2e_write', desc: 'Test boolean.', default: false, _new: true, grants: { files: [{ type: f.type, access: 'manage' }] } }); },
+    m => { for (const b of m.booleans) { const x = (b.grants.files || [])[0]; if (x) { x.access = x.access === 'read' ? 'manage' : 'read'; return; } } },
   ];
   const bnorm = (m) => (m.booleans || []).filter(b => !b.external || Object.values(b.grants).some(v => (Array.isArray(v) ? v.length : v.listen.length + v.connect.length)))
     .map(b => [b.name, !!b.external, b.external ? null : !!b.default, b.external ? null : b.desc, JSON.stringify(grantsNorm(b.grants))]).sort((a, b) => a[0].localeCompare(b[0]));

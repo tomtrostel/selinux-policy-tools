@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Service editor: file access under a boolean.** Each boolean card lists
+  the service's file types with a level that applies only while the boolean
+  is on, next to what is always allowed (e.g. configuration read only
+  always, create/change/delete when `myd_write_config` is on). The level's
+  patterns go into the boolean's `tunable_policy` block, with the type
+  transition (e.g. `files_var_lib_filetrans`) when the always-on level has
+  none, since the same type rule both always and under a boolean fails the
+  build. Existing modules read back the same way: patterns on one of the
+  service's file types inside a plain `tunable_policy` block are that
+  boolean's level, and other rules on the type in the block go with it;
+  rules that match no level stay kept as written. A level the service
+  always has anyway is noted.
+
 ## 0.10.2 (2026-10-11)
 
 **Fixes**
