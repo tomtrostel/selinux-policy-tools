@@ -389,7 +389,13 @@ or xinetd (`inetd_service_domain()` and its TCP/UDP variants: comsat,
 tcpd, …; `ucspitcp_service_domain()`), cron (`cron_system_entry()`:
 certwatch, backup, tripwire, …) or as a mail server (`mta_mailserver()`,
 `mta_sendmail_mailserver()`), at the top level or in `optional_policy`
-(several domains: pick one). So on RHEL also `xserver` (`xdm_t`,
+(several domains: pick one). Daemons a template of their module declares
+and starts count too: `rpc_domain_template(nfsd)` (nfsd, gssd, rpcd),
+`systemd_domain_template(systemd_logind)`, rhcs, courier, milter, condor,
+zarafa and others, found by following the template's body (and the calls
+in it) to its start call. There *Started by* shows the template call, which
+stays as written together with what the template itself declares and
+allows; the form edits the module's own rules for the domain. So on RHEL also `xserver` (`xdm_t`,
 `xserver_t`), `dbus`, `rpm`, `getty`, `mount` and others declared that way.
 **Started by** shows how: systemd, systemd as a mail server, or inetd as
 the main way, plus D-Bus activation and cron as further ones (written in
@@ -908,11 +914,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   from `apache.te` in `optional_policy`, and the rebuilt tree allows it.
   The practice module's four sample denials get their intended verdicts,
   and its HTTP fix resolves after a build (`npm run test:tutorial`).
-* Service editor: every service domain in the Fedora tree (523 in 397
-  modules; 36 started only by D-Bus activation, inetd, cron or as a mail
-  server, 12 declared by a template) reads back into the form,
-  and saving it unchanged leaves all files byte-identical; 34 kinds of
-  edits on each (17,782; file access under a boolean, the ways it is started, the login options, the login pty type and custom file access
+* Service editor: every service domain in the Fedora tree (660 in 414
+  modules; 34 started only by D-Bus activation, inetd, cron or as a mail
+  server, 150 declared by a template and 138 of those started by it) reads
+  back into the form, and saving it unchanged leaves all files
+  byte-identical; 34 kinds of edits on each (22,440; file access under a boolean, the ways it is started, the login options, the login pty type and custom file access
   included) read back and repeat as a no-op. Earlier, on the main daemon
   domain of 326 modules: 26 kinds of edits on each (capabilities, file types added, removed or
   with another access level, paths, ports, system access, interfaces,
@@ -1121,11 +1127,11 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   standalone, the devel headers. Find by need offers interfaces that take
   just the domain.
 * Services only: a domain started by init, D-Bus activation, inetd, cron or
-  as a mail server (see *Editing an existing service*). Daemons whose start
-  call is inside a module's own template (`rpc_domain_template(nfsd)`,
-  `rhcs_domain_template(fenced)`, …), user applications
-  (`application_domain`) and CGI scripts (`apache_content_template`) are
-  edited in the `.te` as before. Big
+  as a mail server, directly or through a template of its module (see
+  *Editing an existing service*). User applications (`application_domain`)
+  and CGI scripts (`apache_content_template`) are edited in the `.te` as
+  before. For template-declared daemons, types and rules inside the
+  template (often its runtime and log types) aren't in the form. Big
   daemons such as sshd, xdm or the X server still list many interfaces
   under *Other interfaces* (no option describes them) and keep the rules
   of the module's other domains and those in `ifdef` blocks as they are.

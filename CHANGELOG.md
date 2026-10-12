@@ -27,6 +27,18 @@
   systemd as a mail server or inetd, and adds D-Bus activation and cron as
   further ways (in `optional_policy`). A main way whose module is off in
   the tree (inetd in CLIP) is shown but refused, since it would fail to link.
+* **Service editor: daemons a template declares and starts.** Domains that
+  a template of their module declares and starts (`rpc_domain_template(nfsd)`,
+  `systemd_domain_template(systemd_logind)`, rhcs, courier, milter, condor,
+  zarafa, …) are found by following the template's body to its start call,
+  and open in the editor with the template call as their declaration and
+  start (Fedora: 660 service domains in 414 modules; RHEL 10: 129 such
+  domains). The template call and what it declares stay as written.
+
+**Fixes**
+
+* Service editor: an existing port type without port numbers (CLIP's
+  `milter_port_t`) no longer blocks saving the module that owns it.
 
 ## 0.10.2 (2026-10-11)
 

@@ -355,6 +355,36 @@ const build = async (te) => {
   const back8 = await conn.sendRequest('selinux/serviceInfo', { module: 'starttest' });
   check(back8.model && JSON.stringify(back8.model.entries.map(e => e.name).sort()) === JSON.stringify(smod.entries.map(e => e.name).sort()) && !back8.kept.length, `starttest reads back started by ${back8.model && back8.model.entries.map(e => e.name).join(' + ')}`, back8.model && { entries: back8.model.entries, kept: back8.kept });
   const tmp8 = r.workDir && path.join(r.workDir, 'tmp', 'starttest.tmp');
+  // 8. Daemons a template of their module declares and starts (rpc_domain_template(nfsd), …): listed, no-op
+  // unchanged, one line for a capability, built.
+  const list8 = await conn.sendRequest('selinux/serviceList');
+  const byTemplate = list8.modules.flatMap(m => m.domains.filter(d => d.template).map(d => [m.module, d.domain, d.template.name]));
+  check(byTemplate.some(x => x[1] === 'nfsd_t'), `${byTemplate.length} domains declared and started by a template are listed (${[...new Set(byTemplate.map(x => x[2]))].slice(0, 8).join(', ')}, …)`);
+  const edited8 = [];
+  for (const [mod, dom] of [['rpc', 'nfsd_t'], ['rpc', 'gssd_t'], ['rhcs', 'fenced_t'], ['systemd', 'systemd_logind_t'], ['milter', 'spamass_milter_t']]) {
+    if (!byTemplate.some(x => x[0] === mod && x[1] === dom)) { console.log(`     (${mod}: no ${dom} started by a template here)`); continue; }
+    const x = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+    if (x.unavailable) { check(false, `${mod} ${dom} opens in the editor`, x.unavailable); continue; }
+    const same = await conn.sendRequest('selinux/servicePlan', { model: x.model, module: mod });
+    const m8 = JSON.parse(JSON.stringify(x.model));
+    const cap = ['ipc_lock', 'sys_tty_config', 'audit_write', 'fsetid', 'sys_nice', 'wake_alarm'].find(c => !m8.caps.includes(c));
+    m8.caps.push(cap);
+    const p8b = await conn.sendRequest('selinux/servicePlan', { model: m8, module: mod });
+    const changed = p8b.files.filter(f => f.changed);
+    check(x.model.declaredBy && x.model.declaredBy.starts && same.files.every(f => !f.changed) && !blocking(p8b).length && changed.length === 1 && changed[0].diff.filter(d => d[0] !== ' ').length <= 3,
+      `${mod} ${dom} (${x.model.declaredBy && `${x.model.declaredBy.name}(${x.model.declaredBy.args.join(', ')}) → ${x.model.declaredBy.starts}`}; ${x.kept.length} kept): no-op unchanged, +${cap} changes one line`,
+      { problems: p8b.problems, by: x.model.declaredBy, same: same.files.filter(f => f.changed).map(f => f.diff.filter(d => d[0] !== ' ')), diff: changed.map(f => f.diff.filter(d => d[0] !== ' ')) });
+    await write(p8b);
+    edited8.push([mod, dom, cap, changed[0] && changed[0].path]);
+  }
+  if (edited8.length) {
+    r = await build(edited8[0][3]);
+    check(r.ok && r.validated, `tree with ${edited8.map(x => x[1]).join(', ')} edited builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
+    for (const [mod, dom, cap] of edited8) {
+      const back = await conn.sendRequest('selinux/serviceInfo', { module: mod, domain: dom });
+      check(back.model && back.model.caps.includes(cap) && back.model.declaredBy && back.model.declaredBy.starts, `${mod} ${dom} reads back with ${cap}, still started by its template`);
+    }
+  }
   if (main7 === 'inetd_tcp_service_domain') check(tmp8 && fs.existsSync(tmp8) && /type_transition inetd_t starttest_exec_t:process starttest_t\s*;/.test(fs.readFileSync(tmp8, 'utf8')), 'built: inetd enters starttest_t');
 
   await conn.sendRequest('shutdown');

@@ -443,8 +443,9 @@ function unitsOf(model, ctx) {
   const callOf = call;
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
 
-  const entries = model.entries && model.entries.length ? model.entries : [{ name: 'init_daemon_domain', args: [] }];
   const by = model.declaredBy || null;
+  // Started by the template that declares it (by.starts), or by its own start calls (init_daemon_domain by default).
+  const entries = model.entries && model.entries.length ? model.entries : by && by.starts ? [] : [{ name: 'init_daemon_domain', args: [] }];
   // Further ways to start it (D-Bus activation, cron) go in optional_policy when their module may be off;
   // the main one stays at the top level, since without it the type isn't a domain at all.
   const entryStmt = (e) => {
@@ -661,18 +662,67 @@ function scanTe(text) {
 }
 
 /**
+ * Start calls inside templates: makeStartsVia(getDef)(name) → [{ d, e, via }] with $N standing for the
+ * template's arguments (rpc_domain_template: { d: '$1_t', e: '$1_exec_t', via: 'init_daemon_domain' }),
+ * through nested templates. getDef(name) → a definition with bodyCalls [{ name, args, cond }].
+ * Only start calls outside optional/ifdef blocks of the body count (cond).
+ */
+function makeStartsVia(getDef) {
+  const memo = new Map();
+  const subst = (s, args) => s.replace(/\$(\d+)/g, (m, n) => (args[n - 1] !== undefined ? args[n - 1] : m));
+  const walk = (name, depth) => {
+    if (memo.has(name)) return memo.get(name);
+    memo.set(name, []);
+    const d = getDef(name);
+    const out = [];
+    if (d && depth < 5) {
+      for (const bc of d.bodyCalls || []) {
+        if (bc.cond) continue;
+        if (ENTRY.has(bc.name)) {
+          const e = ENTRY_EXEC[bc.name] || bc.args[1];
+          if (bc.args[0] && e) out.push({ d: bc.args[0].trim(), e: e.trim(), via: bc.name });
+        } else if (/\$\d/.test((bc.args || []).join(' '))) {
+          for (const x of walk(bc.name, depth + 1)) out.push({ d: subst(x.d, bc.args.map(a => a.trim())), e: subst(x.e, bc.args.map(a => a.trim())), via: x.via });
+        }
+      }
+    }
+    memo.set(name, out);
+    return out;
+  };
+  return (name) => walk(name, 0);
+}
+
+/**
  * Services of a module's .te: (domain, program type) of its start calls (init_*domain, D-Bus activation,
  * inetd, cron, mail server). init_daemon_domain's program type wins, then other init_* calls'.
+ * With ctx.startsVia, also domains a template call at the top level declares and starts
+ * (rpc_domain_template(nfsd) → nfsd_t), marked with { template: { name, args } }.
  */
-function daemonDomains(teText) {
+function daemonDomains(teText, ctx) {
   const out = [];
   const rank = (n) => (n === 'init_daemon_domain' ? 0 : INIT_CALLS.includes(n) ? 1 : 2);
-  for (const c of parsePolicy(teText).calls) {
+  const calls = parsePolicy(teText).calls;
+  for (const c of calls) {
     if (!ENTRY.has(c.name) || c.inDef || c.args.length < (ENTRY_EXEC[c.name] ? 1 : 2) || !/^\w+$/.test(c.args[0])) continue;
     const exec = ENTRY_EXEC[c.name] || c.args[1];
     const have = out.find(x => x.domain === c.args[0]);
     if (!have) out.push({ domain: c.args[0], exec, via: c.name });
     else if (rank(c.name) < rank(have.via)) Object.assign(have, { exec, via: c.name });
+  }
+  if (ctx && ctx.startsVia) {
+    const sub = (s, args) => s.replace(/\$(\d+)/g, (m, n) => (args[n - 1] !== undefined ? args[n - 1] : m));
+    for (const c of calls) {
+      if (c.inDef || ENTRY.has(c.name) || BLOCK_CALLS.has(c.name) || !c.args.length || !c.args.every(a => /^\w+$/.test(a))) continue;
+      for (const x of ctx.startsVia(c.name)) {
+        const domain = sub(x.d, c.args), exec = sub(x.e, c.args);
+        if (!/^\w+_t$/.test(domain) || !/^\w+_t$/.test(exec)) continue;
+        const template = { name: c.name, args: c.args };
+        const have = out.find(o => o.domain === domain);
+        // Also started by a call of its own (e.g. cron_system_entry next to the template): the template still declares it.
+        if (have) { if (have.exec === exec && !have.template) Object.assign(have, rank(x.via) <= rank(have.via) ? { via: x.via, template } : { template }); continue; }
+        out.push({ domain, exec, via: x.via, template });
+      }
+    }
   }
   return out;
 }
@@ -694,7 +744,7 @@ function parseFcLines(text) {
  */
 function recognize(texts, ctx, opts = {}) {
   const te = scanTe(texts.te || '');
-  const domains = daemonDomains(texts.te || '');
+  const domains = daemonDomains(texts.te || '', ctx);
   const mod = te.parse.module || opts.module;
   if (!domains.length) return { error: `${mod}.te has no init_daemon_domain() (or another call that starts a service: init_system_domain(), dbus_system_domain(), inetd_service_domain(), cron_system_entry(), …), so it isn't a service module the editor understands.` };
   const dom = domains.find(x => x.domain === opts.domain) || domains.find(x => x.domain === `${mod}_t`) || domains[0];
@@ -722,8 +772,16 @@ function recognize(texts, ctx, opts = {}) {
   // A program type the module doesn't declare (mta_sendmail_mailserver: sendmail_exec_t of the mta module).
   if (!editable.some(st => st.kind === 'type' && st.name === E) && model.entries.some(e => ENTRY_EXEC[e.name] === E)) model.execElsewhere = true;
   claim(s => s.kind === 'call' && s.name === 'init_daemon_domain' && s.args[0] === D);
+  // A domain a template declares and starts (rpc_domain_template(nfsd): nfsd_t, nfsd_exec_t, init_daemon_domain).
+  if (dom.template) {
+    const t = editable.find(st => st.kind === 'call' && !st.bool && !claimed.has(st) && st.name === dom.template.name && st.args.length === dom.template.args.length && st.args.every((a, i) => a === dom.template.args[i]));
+    if (t) {
+      claimed.add(t);
+      model.declaredBy = { name: t.name, args: t.args, execToo: !editable.some(st => st.kind === 'type' && st.name === E), starts: dom.via };
+    }
+  }
   // A domain declared by a template (e.g. ssh_server_template(sshd) declares sshd_t).
-  if (!editable.some(st => st.kind === 'type' && st.name === D) && ctx.declares) {
+  if (!model.declaredBy && !editable.some(st => st.kind === 'type' && st.name === D) && ctx.declares) {
     const t = editable.find(st => st.kind === 'call' && st.top && !claimed.has(st) && st.args.length >= 1 && `${st.args[0]}_t` === D && (ctx.declares(st.name) || []).includes('$1_t'));
     if (t) {
       claimed.add(t);
@@ -1332,6 +1390,7 @@ function editTe(text, rec, model, ctx) {
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
   const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat([...ENTRY_CALLS, 'domain_type', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS]));
+  if (rec.model.declaredBy) declHelpers.add(rec.model.declaredBy.name); // the template that declares the domain
   const firstLocal = top.find(s => (s.kind === 'allow' || s.kind === 'rule') || (s.kind === 'call' && !declHelpers.has(s.name) && !/^policy_module$/.test(s.name)));
   const localHeader = (() => {
     const lim = firstLocal ? firstLocal.l : lines.length;
@@ -1564,7 +1623,8 @@ function validate(model, ctx, opts = {}) {
     ownPorts.add(n);
     if ((opts.isNew || p._new) && ctx.typeExists && ctx.typeExists(P)) out.push(`Type ${P} already exists: pick it under Listens on or Connects to, or choose another name.`);
     const nums = portNums(p);
-    if (!nums.length && ctx.corenet) out.push(`Port type ${P} has no port numbers yet.`);
+    // (an existing one may have none on purpose, e.g. CLIP's milter_port_t)
+    if (!nums.length && ctx.corenet && (opts.isNew || p._new)) out.push(`Port type ${P} has no port numbers yet.`);
     for (const x of nums) {
       const m = /^(\d+)(?:-(\d+))?$/.exec(x.port);
       if (!m) { out.push(`"${x.port}" (${P}) isn't a port number or a range like 8000-8010.`); continue; }
@@ -1734,5 +1794,5 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, STARTS,
+  fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia,
 };

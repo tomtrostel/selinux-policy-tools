@@ -88,8 +88,13 @@
       st.main.map(s => h('option', { value: s.name, selected: cur === s.name, disabled: !!s.off && cur !== s.name, title: s.off ? `The ${s.off} module is off in this policy (modules.conf); turn it on to use this` : s.help }, s.off ? `${s.label} (${s.off} is off)` : s.label)),
       st.also.length ? h('option', { value: '', selected: cur === '', title: 'Only the ways ticked below start it (e.g. a service only D-Bus starts)' }, 'only as ticked below') : null);
     const curHelp = (st.main.find(s => s.name === cur) || {}).help;
-    const rows = [h('div', { class: 'row' }, h('span', { class: 'lbl', title: START_TIP }, 'Started by'), sel,
-      cur && cur !== '__keep' ? h('code', { class: 'code', title: curHelp || label(cur) }, cur) : null)];
+    // Declared and started by a template of its module (rpc_domain_template(nfsd)): that stays as written.
+    const by = model.declaredBy && model.declaredBy.starts ? model.declaredBy : null;
+    const byTip = by ? `The domain, its program type and how it is started come from ${by.name}() in the module’s .if (it calls ${by.starts}); the template’s own rules apply too and stay as written. What you choose here is added in the .te` : '';
+    const rows = [by && !mains.length
+      ? h('div', { class: 'row' }, h('span', { class: 'lbl', title: START_TIP }, 'Started by'), h('span', { title: byTip }, 'its template ', h('code', { class: 'code' }, `${by.name}(${by.args.join(', ')})`), h('span', { class: 'muted' }, ` (${by.starts})`)))
+      : h('div', { class: 'row' }, h('span', { class: 'lbl', title: START_TIP }, 'Started by'), sel,
+        cur && cur !== '__keep' ? h('code', { class: 'code', title: curHelp || label(cur) }, cur) : null)];
     for (const s of st.also) {
       const on = model.entries.some(e => e.name === s.name);
       rows.push(check(`Also: ${s.label}`, on, (v) => {

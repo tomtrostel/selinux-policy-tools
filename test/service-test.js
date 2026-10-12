@@ -450,6 +450,29 @@ auth_login_pgm_domain(dm_t)
     const em = JSON.parse(JSON.stringify(rm.model)); em.caps.push('kill');
     check(!/type sendmail_exec_t/.test(svc.plan(em, sctx, sm).te), 'an edit doesn’t declare sendmail_exec_t');
   }
+  // Daemons a template of the module declares and starts (rpc_domain_template(nfsd) style).
+  {
+    const zif = "template(`zz_domain_template',`\n\ttype zz_$1_t;\n\ttype zz_$1_exec_t;\n\tzz_base($1)\n\tkernel_read_system_state(zz_$1_t)\n')\n\ninterface(`zz_base',`\n\tinit_daemon_domain(zz_$1_t, zz_$1_exec_t)\n')\n";
+    const zdefs = new Map(require('../server/parser').parsePolicy(zif).defs.map(d => [d.name, d]));
+    const zctx = { ...ctx, has: (n) => KNOWN.has(n) || zdefs.has(n) || n === 'cron_system_entry', optional: (n) => OPTIONAL.has(n) || n === 'cron_system_entry', startsVia: svc.makeStartsVia((n) => zdefs.get(n)) };
+    const zz = { te: 'policy_module(zz, 1.0.0)\n\nzz_domain_template(alpha)\nzz_domain_template(beta)\n\ntype zz_alpha_var_lib_t;\nfiles_type(zz_alpha_var_lib_t)\n\n########################################\n#\n# alpha local policy\n#\n\nallow zz_alpha_t self:capability setuid;\nread_files_pattern(zz_alpha_t, zz_alpha_var_lib_t, zz_alpha_var_lib_t)\nlogging_send_syslog_msg(zz_alpha_t)\n',
+      if: zif, fc: '/usr/sbin/zz-alpha\t--\tgen_context(system_u:object_r:zz_alpha_exec_t,s0)\n' };
+    check(svc.makeStartsVia((n) => zdefs.get(n))('zz_domain_template').map(x => `${x.d} ${x.e} ${x.via}`).join() === 'zz_$1_t zz_$1_exec_t init_daemon_domain', 'a start call found through a nested call of the template, $N substituted');
+    check(svc.daemonDomains(zz.te, zctx).map(d => `${d.domain}:${d.exec}:${d.template && d.template.name}`).join() === 'zz_alpha_t:zz_alpha_exec_t:zz_domain_template,zz_beta_t:zz_beta_exec_t:zz_domain_template', 'domains a template declares and starts are services', svc.daemonDomains(zz.te, zctx));
+    const rz = svc.recognize(zz, zctx, { domain: 'zz_alpha_t' });
+    check(!rz.error && rz.model.declaredBy && rz.model.declaredBy.starts === 'init_daemon_domain' && !rz.model.entries.length && rz.model.caps.join() === 'setuid' && rz.model.files[0].access === 'read' && rz.model.exec[0] === '/usr/sbin/zz-alpha' && !rz.kept.length,
+      'read back: declared and started by the template, its rules, file type and program path', rz.error || [rz.model, rz.kept]);
+    check(svc.plan(JSON.parse(JSON.stringify(rz.model)), zctx, zz).te === zz.te, 'template-started: no-op unchanged');
+    const mz = JSON.parse(JSON.stringify(rz.model));
+    mz.caps.push('setgid'); mz.entries.push({ name: 'cron_system_entry', args: [] }); mz.files[0].access = 'manage';
+    const oz = svc.plan(mz, zctx, zz);
+    check(!/init_daemon_domain|^type zz_alpha_t|^type zz_alpha_exec_t/m.test(oz.te) && /allow zz_alpha_t self:capability \{ setuid setgid \};/.test(oz.te) && oz.te.includes("optional_policy(`\n\tcron_system_entry(zz_alpha_t, zz_alpha_exec_t)\n')") &&
+      /manage_files_pattern\(zz_alpha_t, zz_alpha_var_lib_t/.test(oz.te) && (oz.te.match(/zz_domain_template/g) || []).length === 2, 'an edit adds only its own lines; the template call stays the declaration and start', oz.te);
+    const rz2 = svc.recognize(oz, zctx, { domain: 'zz_alpha_t' });
+    check(rz2.model.declaredBy && rz2.model.declaredBy.starts && rz2.model.entries.map(e => e.name).join() === 'cron_system_entry', 'with cron added: still started by its template, cron as a further way', rz2.model.entries);
+    const rb = svc.recognize(zz, zctx, { domain: 'zz_beta_t' });
+    check(!rb.error && rb.model.declaredBy.args.join() === 'beta' && svc.plan(JSON.parse(JSON.stringify(rb.model)), zctx, zz).te === zz.te, 'the other domain of the same template: its own call');
+  }
   // A domain declared by a template.
   const sv = { te: `policy_module(srv, 1.0.0)
 
@@ -766,6 +789,13 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
     const crules = ['manage_dirs_pattern(webby_t, webby_cache_t, webby_cache_t)', 'mmap_manage_files_pattern(webby_t, webby_cache_t, webby_cache_t)'];
     send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false, isNew: false, module: 'webby', layer: 'contrib', files: { te: '/t/webby.te' }, kept: [], provided: [], domains: [{ domain: 'webby_t' }],
       model: { ...base, files: [{ kind: 'cache', type: 'webby_cache_t', paths: ['/var/cache/webby/'], access: 'custom', rules: crules, ruleLines: [20, 21] }] } }, keep: false });
+    // Started by a template of the module: shown as such, no select.
+    send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false, isNew: false, module: 'webby', layer: 'contrib', files: { te: '/t/webby.te' }, kept: [], provided: [], domains: [{ domain: 'webby_t' }],
+      model: { ...base, entries: [], declaredBy: { name: 'webby_domain_template', args: ['webby'], execToo: true, starts: 'init_daemon_domain' } } }, keep: false });
+    const byRow = find(e => e.attrs.class === 'row' && /^Started by/.test(e.textContent))[0];
+    check(byRow && /its template webby_domain_template\(webby\) \(init_daemon_domain\)/.test(byRow.textContent) && !byRow.all(e => e.tag === 'select').length, 'Started by: its template, as written', byRow && byRow.textContent);
+    send({ cmd: 'init', info: { ...info, licenses: null, standalone: false, canStandalone: false, isNew: false, module: 'webby', layer: 'contrib', files: { te: '/t/webby.te' }, kept: [], provided: [], domains: [{ domain: 'webby_t' }],
+      model: { ...base, files: [{ kind: 'cache', type: 'webby_cache_t', paths: ['/var/cache/webby/'], access: 'custom', rules: crules, ruleLines: [20, 21] }] } }, keep: false });
     const fr = () => find(e => e.attrs.class === 'frules')[0];
     const accSel = () => find(e => e.tag === 'select' && /What the service may do with these files/.test(e.attrs.title || ''))[0];
     check(fr() && /kept as written/.test(fr().textContent) && /mmap_manage_files_pattern/.test(fr().textContent) && accSel().children[0].textContent === 'custom (kept as written)', 'custom access: its rules are listed under the row, the level reads "custom (kept as written)"');
@@ -879,6 +909,7 @@ async function survey(root) {
   for (const [n, l] of idx.defs) layerOf.set(n, l[0].path);
   const tctx = { has: (n) => idx.defs.has(n), optional: (n) => { const p = layerOf.get(n); return !!p && !/[\\/](kernel|system)[\\/]/.test(p); }, moduleArgs: 2,
     declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(p => p.pattern) };
+  tctx.startsVia = svc.makeStartsVia((n) => (idx.defs.get(n) || [])[0]);
   const muts = [
     m => { const c = ['sys_chroot', 'kill', 'setuid'].find(x => !m.caps.includes(x)); if (c) m.caps.push(c); },
     m => { m.caps.splice(0, 1); },
@@ -929,12 +960,12 @@ async function survey(root) {
     m.net.listen.map(x => x.proto + x.port).sort(), m.net.connect.map(x => x.proto + x.port).sort(), [...m.access].sort(), [...m.extra].sort(), m.permissive, [...m.exec].sort(), bnorm(m),
     (m.helpers || []).map(h => [svc.helperNames(m, h).H, !!h.signal, [...h.exec].sort(), h.files.map(x => x.type + x.access).sort(), JSON.stringify(grantsNorm(h))]).sort(),
     !!m.loginPty, JSON.stringify(m.entries || []), JSON.stringify(m.declaredBy || null)]);
-  let mods = 0, same = 0, edits = 0, good = 0, doms = 0, viaTemplate = 0, otherEntry = 0;
+  let mods = 0, same = 0, edits = 0, good = 0, doms = 0, viaTemplate = 0, otherEntry = 0, startedByTemplate = 0;
   const bad = [];
   for (const f of idx.files.values()) {
     if (!f.path.endsWith('.te') || !/modules/.test(f.path)) continue;
     const te = fs.readFileSync(f.path, 'utf8');
-    if (!svc.ENTRY_RE.test(te)) continue;
+    if (!svc.daemonDomains(te, tctx).length) continue;
     const base = f.path.slice(0, -3);
     const rd = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '');
     const texts = { te, if: rd(base + '.if'), fc: rd(base + '.fc') };
@@ -947,7 +978,8 @@ async function survey(root) {
     if (r.error) continue;
     doms++;
     if (r.model.declaredBy) viaTemplate++;
-    if (!(r.model.entries || []).some(e => e.name.startsWith('init_'))) otherEntry++;
+    if (r.model.declaredBy && r.model.declaredBy.starts) startedByTemplate++;
+    if ((r.model.entries || []).length && !(r.model.entries || []).some(e => e.name.startsWith('init_')) && !(r.model.declaredBy && r.model.declaredBy.starts)) otherEntry++;
     const o = svc.plan(JSON.parse(JSON.stringify(r.model)), tctx, texts);
     if (o.te === texts.te && o.if === texts.if && o.fc === texts.fc) same++; else bad.push(`unchanged ${f.path} ${dom}`);
     for (const [i, mut] of muts.entries()) {
@@ -958,10 +990,10 @@ async function survey(root) {
       const r2 = svc.recognize(out2, tctx, { domain: m.domain });
       const again = svc.plan(JSON.parse(JSON.stringify(m)), tctx, out2);
       if (!r2.error && tnorm(r2.model) === tnorm(m) && again.te === out2.te && again.fc === out2.fc) good++;
-      else bad.push(`edit ${i} ${f.path} ${dom}`);
+      else { bad.push(`edit ${i} ${f.path} ${dom}`); if (process.env.SVC_DEBUG && bad.length < 2) console.log(r2.error, tnorm(r2.model) === tnorm(m), again.te === out2.te, again.fc === out2.fc, svc.lineDiff(out2.te, again.te).filter(x => x[0] !== " ").slice(0, 8), tnorm(r2.model), tnorm(m)); }
     }
     }
   }
-  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by D-Bus, inetd, cron or as a mail server only, ${viaTemplate} declared by a template)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
+  check(mods > 0 && same === doms, `${root}: ${same} of ${doms} domains in ${mods} service modules unchanged by a no-op edit (${otherEntry} started by D-Bus, inetd, cron or as a mail server only, ${viaTemplate} declared by a template, ${startedByTemplate} of them also started by it)`, bad.filter(b => b.startsWith('unchanged')).slice(0, 10));
   check(good === edits, `${root}: ${good} of ${edits} edits read back as the edited model and are idempotent`, bad.filter(b => b.startsWith('edit')).slice(0, 10));
 }

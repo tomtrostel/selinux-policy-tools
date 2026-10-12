@@ -30,8 +30,8 @@ before the release ("looks okay"); not clicked through feature by feature.
 ranked keyword search for interfaces. 0.10.2: long interface lists grouped
 by module, custom file access (kept rules shown, openable, expanded), build
 of the active tree from outside trees/modules. Unreleased: file access
-under a boolean, services started by D-Bus/inetd/cron/mail server
-(service editor).
+under a boolean, services started by D-Bus/inetd/cron/mail server or
+by a template of their module (service editor).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -492,11 +492,24 @@ so far covered by the e2e tests only.
    no-op unchanged + one capability line; new starttest by inetd + D-Bus +
    cron, built; CLIP: inetd off → refused, systemd used) on CLIP, RHEL 9,
    RHEL 10.
+   Template-started daemons (done, unreleased; "go ahead and do 1 next"):
+   service.makeStartsVia(getDef)(name) → [{d, e, via}] in $N terms, through
+   bodyCalls (not cond) with $N substituted, memoized, depth 5;
+   daemonDomains(te, ctx) adds domains of top-level calls whose template
+   starts one ({template: {name, args}}; attached to a domain already found
+   through its own start call, e.g. cron added). recognize: dom.template →
+   model.declaredBy {name, args, execToo, starts: via} (claimed); unitsOf:
+   no default init_daemon_domain when by.starts; editTe treats the template
+   call as a declaration. Server startingTemplates() (cached per idx.defs):
+   names whose body starts something + regex for serviceModules; ctx
+   startsVia. Webview: Started by = "its template X(args) (via)". Fixed on
+   the way: existing port types without numbers (CLIP milter_port_t) were
+   an error (now only new ones). Fedora: 660 domains / 414 modules, 150 by a
+   template (138 started by it), 22,440 edits; e2e section 8: nfsd_t,
+   gssd_t, fenced_t, systemd_logind_t, spamass_milter_t (+cap, built) on
+   CLIP (34 listed), RHEL 9 (110), RHEL 10 (129).
    Module kinds still not handled (survey 2026-10-12, Fedora + CLIP):
-   (1) daemons whose init call is inside a module template
-   (rpc_domain_template(nfsd), rhcs, courier, cfengine, cinder, cloudform,
-   freeipmi, jabber, likewise, milter, nut, piranha, pki/tomcat, sblim,
-   thin, zarafa; ~55 domains) — next; (6) web applications
+   (6) web applications
    (apache_content_template: bugzilla, mediawiki, …, and the script parts
    of collectd/git/munin/nut). Out of scope: application_domain /
    userdom_user_application_domain programs, domains entered directly

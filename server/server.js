@@ -1632,6 +1632,8 @@ function treeServiceCtx() {
     has: (n) => idx.defs.has(n),
     // Name patterns a template declares ($1_t, …), to read back domains declared by one.
     declares: (n) => (((idx.defs.get(n) || [])[0] || {}).declPatterns || []).map(p => p.pattern),
+    // Start calls inside templates (rpc_domain_template(nfsd) starts nfsd_t).
+    startsVia: (n) => startingTemplates().startsVia(n),
     // Calls into modules that may be turned off belong in optional_policy.
     optional: (n) => {
       const d = (idx.defs.get(n) || [])[0];
@@ -1680,10 +1682,28 @@ function serviceModules() {
   for (const m of idx.modules()) {
     if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te))) continue;
     const text = readSource(m.files.te);
-    if (!text || !service.ENTRY_RE.test(text)) continue;
-    out.push({ module: m.module, layer: m.layer, files: m.files, domains: service.daemonDomains(text) });
+    const st = startingTemplates();
+    if (!text || !(service.ENTRY_RE.test(text) || st.re.test(text))) continue;
+    const domains = service.daemonDomains(text, { startsVia: st.startsVia });
+    if (!domains.length) continue;
+    out.push({ module: m.module, layer: m.layer, files: m.files, domains });
   }
   return out;
+}
+
+/**
+ * Templates and interfaces whose body (through nested calls) starts a service domain, e.g.
+ * rpc_domain_template: startsVia(name) → [{ d: '$1_t', e: '$1_exec_t', via }], and a regex
+ * matching calls to any of them. Cached per index generation.
+ */
+let startingCache = null;
+function startingTemplates() {
+  if (startingCache && startingCache.defs === idx.defs) return startingCache;
+  const startsVia = service.makeStartsVia((n) => (idx.defs.get(n) || [])[0]);
+  const names = [...idx.defs.keys()].filter(n => /^\w+$/.test(n) && !service.ENTRY_CALLS.includes(n) && startsVia(n).length);
+  const re = names.length ? new RegExp(`\\b(${names.join('|')})\\s*\\(`) : /$^/;
+  startingCache = { defs: idx.defs, startsVia, names, re };
+  return startingCache;
 }
 
 /** Where a new module's files go: a layer of the tree, or a folder (standalone modules). */
