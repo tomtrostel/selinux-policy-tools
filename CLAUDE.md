@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-12: **v0.11.0 released** (GitHub release `v0.11.0`;
+Status as of 2026-10-12: **v0.12.0 released** (GitHub release `v0.12.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -35,6 +35,10 @@ server or by a template of their module, web applications
 (apache_content_template), path flags (-d/--), a web applications
 tutorial page. The user tried 0.11.0's features before the release ("That
 all appears to work right").
+0.12.0 (step 9): Logins and Users view and the user editor (new users,
+existing users, standalone users as RPMs, automation preset, reach
+preview). The user tried them before the release ("That all seems to
+work").
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are

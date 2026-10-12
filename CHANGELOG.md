@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-10-12)
 
 **Added**
 
@@ -45,6 +45,13 @@
   standalone module linked with the installed policy) shows where the
   logins land, what they reach, the risky abilities, and for an existing
   user what the change adds or takes away.
+
+**Fixed**
+
+* Service and user editor: removing a call from an `optional_policy` that
+  also held only a nested `optional_policy` (or comments) left a block the
+  compiler refuses ("This block has no require section"); such a block is
+  now removed with it (found removing sudo from RHEL's staff.te).
 
 ## 0.11.0 (2026-10-12)
 
