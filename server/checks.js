@@ -12,7 +12,15 @@
  *   require <names> may <perms> <targets>[:<classes>]  must stay allowed
  *   only|never <roles> may run <types>                 role → domain authorization
  *   only|never <users> may use <roles>                 user → role authorization
+ *   only|never <users> may log in                      which SELinux users seusers maps logins to
+ *   never login <logins> reaches <domains>             what a login's sessions can reach (seusers →
+ *                                                      user → its ways in → domain transitions and role changes)
+ *   never login <logins> may <perms> <targets>[:<classes>]
+ *                                                      … and what they may do there
+ *   never login <logins> maps to <users>               the SELinux user seusers gives a login
  *
+ * logins: Linux login names (a name without a line of its own gets __default__'s), %group,
+ * __default__, or '*' (every seusers line).
  * names: types or attributes, separated by spaces or commas.
  * perms: read | write | execute | any (groups), a single permission, or
  * { perm perm ... } (exactly these permissions; { read } is just read).
@@ -26,12 +34,12 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps'];
 
-/** Tokens with columns: words (incl. '*'), braces, ':' and ','. */
+/** Tokens with columns: words (incl. '*' and %group), braces, ':' and ','. */
 function tokens(line) {
   const out = [];
-  const re = /[{}:,]|[A-Za-z0-9_*.$-]+/g;
+  const re = /[{}:,]|%?[A-Za-z0-9_*.$-]+/g;
   let m;
   while ((m = re.exec(line))) out.push({ v: m[0], c: m.index });
   return out;
@@ -64,6 +72,48 @@ function parseChecks(text) {
     const kind = tok[i] && tok[i].v;
     if (!['only', 'never', 'require'].includes(kind)) { err(`Expected 'only', 'never' or 'require' at the start of a check`); return; }
     i++;
+    // never login <logins> reaches <domains> | may <perms> <targets>[:<classes>] | maps to <users>
+    if (tok[i] && tok[i].v === 'login') {
+      if (kind !== 'never') { err(`'login' checks start with 'never' (never login alice reaches sysadm_t)`); return; }
+      i++;
+      const logins = names(['reaches', 'may', 'maps']);
+      if (!logins.length) { err('Expected one or more Linux logins (a name, %group, __default__ or *)'); return; }
+      const lv = tok[i] && tok[i].v;
+      if (lv === 'reaches') {
+        i++;
+        const targets = names([]);
+        if (!targets.length) { err('Expected the domain(s) its sessions must not reach'); return; }
+        checks.push({ id: checks.length, line: l, kind: 'login-reaches', logins, targets, text: raw.trim() });
+        return;
+      }
+      if (lv === 'maps') {
+        i++;
+        if (!tok[i] || tok[i].v !== 'to') { err(`Expected 'to' (never login alice maps to unconfined_u)`); return; }
+        i++;
+        const users = names([]);
+        if (!users.length) { err('Expected the SELinux user(s) it must not get'); return; }
+        checks.push({ id: checks.length, line: l, kind: 'login-maps', logins, users, text: raw.trim() });
+        return;
+      }
+      if (lv !== 'may') { err(`Expected 'reaches', 'may' or 'maps to'`); return; }
+      i++;
+      const braced = tok[i] && tok[i].v === '{';
+      const p = set();
+      if (!p || !p.length) { err('Expected permissions: read, write, execute, any, a permission, or { perm ... }'); return; }
+      const perms = p.length === 1 && p[0] === 'any' && !braced ? '*' : braced ? [...new Set(p)] : PERM_GROUPS[p[0]] || p;
+      const targets = names([':']);
+      if (!targets.length) { err('Expected the target type(s) or attribute(s)'); return; }
+      let classes = FILE_CLASSES;
+      if (tok[i] && tok[i].v === ':') {
+        i++;
+        const cl = set();
+        if (!cl || !cl.length) { err('Expected a class or { class ... } after ":"'); return; }
+        classes = cl;
+      }
+      if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+      checks.push({ id: checks.length, line: l, kind: 'login-may', logins, targets, classes, perms, permsLabel: p.join(' '), text: raw.trim() });
+      return;
+    }
     const sources = names(['may', 'reaches', 'flows']);
     if (!sources.length) { err('Expected one or more types or attributes'); return; }
     const verb = tok[i] && tok[i].v;
@@ -100,6 +150,16 @@ function parseChecks(text) {
     }
     if (verb !== 'may') { err(`Expected 'may', 'reaches' or 'flows to'`); return; }
     i++;
+    // Users: `only|never <users> may log in` (the SELinux users seusers maps logins to).
+    if (tok[i] && tok[i].v === 'log') {
+      if (kind === 'require') { err(`'may log in' works with 'only' and 'never'`); return; }
+      i++;
+      if (!tok[i] || tok[i].v !== 'in') { err(`Expected 'in' (only staff_u user_u may log in)`); return; }
+      i++;
+      if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+      checks.push({ id: checks.length, line: l, kind: `${kind}-login`, users: sources, text: raw.trim() });
+      return;
+    }
     // Roles and users: `<roles> may run <types>`, `<users> may use <roles>`.
     if (tok[i] && (tok[i].v === 'run' || tok[i].v === 'use')) {
       const what = tok[i].v;

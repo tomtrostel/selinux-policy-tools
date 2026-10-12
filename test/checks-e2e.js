@@ -181,6 +181,42 @@ const onLine = (l) => (diags[uri(CHECKS)] || []).filter(d => d.range.start.line 
   const comp3 = await conn.sendRequest('textDocument/completion', { textDocument: { uri: uri(CHECKS) }, position: { line: lastLine, character: 32 } });
   check(comp3.items.some(i => i.label === 'except') && comp3.items.some(i => i.label === 'weight'), `completion after 'flows to': ${comp3.items.map(i => i.label).join(', ')}`);
 
+  // Login checks: the tree's seusers (CLIP: root → root, __default__ → staff_u) and contexts files.
+  const LOGIN = [
+    'never login * maps to unconfined_u',          // holds
+    'only staff_u root may log in',                 // holds
+    'never staff_u may log in',                     // fails: __default__
+    'never login alice reaches sysadm_t',           // fails: alice → __default__ → staff_u, newrole
+    'never login alice may read shadow_t:file',     // fails
+    'never login %nogroup reaches sysadm_t',        // error: no such line
+    'never login root reaches nosuch_t',            // error: unknown type
+  ];
+  const base2 = edited.split('\n').length - 1;
+  const withLogin = edited.replace(/\n$/, '\n') + LOGIN.join('\n') + '\n';
+  summary = null;
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 7 }, contentChanges: [{ text: withLogin }] });
+  conn.sendNotification('textDocument/didSave', { textDocument: { uri: uri(CHECKS) } });
+  await waitSummary(x => x.total === 9 + LOGIN.length && x.failed !== undefined);
+  // (the save runs the checks again: wait until every lens has a result)
+  for (let t = 0; t < 100; t++) {
+    lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
+    if (lenses.length === 9 + LOGIN.length && lenses.every(x => !/^…/.test(x.command.title))) break;
+    await sleep(300);
+  }
+  const L = (k) => lens(base2 + k), D = (k) => onLine(base2 + k)[0];
+  check(L(0) === '✓ holds' && L(1) === '✓ holds', `login mappings that hold: "${L(0)}", "${L(1)}"`);
+  check(/^✗ 1 login violates it$/.test(L(2)) && D(2) && /__default__ → staff_u/.test(D(2).message) && D(2).relatedInformation.some(r => /seusers$/.test(URI.parse(r.location.uri).fsPath)),
+    `never staff_u may log in: "${L(2)}" — ${D(2) && D(2).message}`, D(2));
+  check(/^✗ 1 login violates it$/.test(L(3)) && D(3) && /^alice \(via __default__\) → staff_u reaches sysadm_t( \(where it logs in\)|: staff_t → .*sysadm_t)$/.test(D(3).message) && D(3).relatedInformation.length >= 1,
+    `login reaches: ${D(3) && D(3).message}`, D(3));
+  check(/^✗ 1 login violates it$/.test(L(4)) && D(4) && /may read shadow_t as \w+_t/.test(D(4).message) && D(4).relatedInformation.some(r => /^allow \w+ shadow_t:file/.test(r.message)),
+    `login may read: ${D(4) && D(4).message}`, D(4));
+  check(/^⚠ There is no seusers line for %nogroup\.$/.test(L(5)) && /^⚠ Unknown type or attribute nosuch_t$/.test(L(6)), `errors: "${L(5)}" / "${L(6)}"`);
+  conn.sendNotification('textDocument/didChange', { textDocument: { uri: uri(CHECKS), version: 8 }, contentChanges: [{ text: withLogin + 'never login ' }] });
+  await sleep(300);
+  const comp4 = await conn.sendRequest('textDocument/completion', { textDocument: { uri: uri(CHECKS) }, position: { line: base2 + LOGIN.length, character: 12 } });
+  check(comp4.items.some(i => i.label === 'root') && comp4.items.some(i => i.label === '__default__') && !comp4.items.some(i => i.label === 'flows'), `completion after 'never login': ${comp4.items.slice(0, 6).map(i => i.label).join(', ')}`);
+
   await conn.sendRequest('shutdown');
   const exited = new Promise(res => proc.on('exit', res));
   conn.sendNotification('exit');

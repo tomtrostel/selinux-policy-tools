@@ -39,6 +39,8 @@ const TEXT = [
   'never shadow_t flows to demo_private_t',          // 2: fails: shadow_t → demo_t → demo_private_t
   'require demo_t may append demo_private_t:file',   // 3: fails: append missing
   'never sshd_t may read demo_private_t',            // 4: holds (installed types work too)
+  'never login root maps to staff_u',                // 5: holds (this host: root → unconfined_u)
+  'never unconfined_u may log in',                   // 6: fails (this host's seusers: root, __default__)
   '',
 ].join('\n');
 fs.writeFileSync(CHECKS, TEXT);
@@ -77,17 +79,18 @@ const rel = (d) => ((d && d.relatedInformation) || []).map(r => `${path.relative
   conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(CHECKS), languageId: 'selinux-checks', version: 1, text: TEXT } });
   await sleep(800);
   let lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
-  check(lenses.length === 5 && lenses.every(l => /build the module/.test(l.command.title)), `before a build: "${lenses[0] && lenses[0].command.title}"`);
+  check(lenses.length === 7 && lenses.every(l => /build the module/.test(l.command.title)), `before a build: "${lenses[0] && lenses[0].command.title}"`);
 
   const b = await conn.sendRequest('selinux/build', { uri: uri(te) });
   check(b.ok, `module builds (${b.ms} ms)`, b);
   const s = await waitSummary(x => x.failed !== undefined && !x.note);
   const linked = states.find(p => p.state === 'linked');
   check(linked && linked.ok, `linked with the installed policy (${linked && (linked.ms / 1000).toFixed(1)} s)`, states.slice(-3));
-  check(s && s.total === 5 && s.failed === 3, `checks evaluated: ${JSON.stringify(s)}`);
+  check(s && s.total === 7 && s.failed === 4, `checks evaluated: ${JSON.stringify(s)}`);
   lenses = await conn.sendRequest('textDocument/codeLens', { textDocument: { uri: uri(CHECKS) } });
   const lens = (l) => (lenses.find(x => x.range.start.line === l) || { command: { title: '' } }).command.title;
   check(lens(0) === '✓ holds' && lens(4) === '✓ holds', `holding: "${lens(0)}", "${lens(4)}"`);
+  check(lens(5) === '✓ holds' && /^✗ 2 logins violate it$/.test(lens(6)), `login checks on this host's seusers: "${lens(5)}", "${lens(6)}"`);
 
   const teLine = (needle) => TE.split('\n').findIndex(l => l.includes(needle)) + 1;
   const d1 = onLine(1)[0];

@@ -19,6 +19,10 @@ require syslogd_t may { append create } var_log_t:file
 # roles and users
 only sysadm_r may run sysadm_t
 never staff_u may use sysadm_r
+# logins (seusers and the contexts files)
+never unconfined_u may log in
+never login __default__ reaches sysadm_t
+never login * may read shadow_t:file
 ```
 
 * `only` / `never` / `require` … `may` *permissions* *types*: who may access what.
@@ -27,6 +31,11 @@ never staff_u may use sysadm_r
   `except` names the types trusted to pass the data on.
 * Permission groups: `read`, `write`, `execute`, `any`, or `{ exact perms }`;
   names can be types, aliases or attributes (`*` = every domain).
+* Logins: `only|never <users> may log in` checks which SELinux users seusers
+  hands out; `never login <logins> …` follows a Linux login (`alice`,
+  `%group`, `__default__`, `*` = all) to its user, where its ways in land
+  and what its sessions can reach (`reaches`) or do (`may`), as **Logins and
+  Users** shows it.
 
 Each line shows **✓ holds** or **✗** with the reason. A failure appears in
 the Problems panel, with links to the source statements that grant each

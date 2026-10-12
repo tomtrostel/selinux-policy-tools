@@ -732,6 +732,17 @@ def main():
                     except KeyError:
                         acc[a["id"]] = None
                 resp.update(res, access=acc)
+            elif req.get("op") == "access_any":
+                # Which of `domains` may access any of `targets` (types or attributes): the first hits.
+                doms, hits = set(req.get("domains", [])), []
+                for t in sorted(idx.names(req.get("targets", []))):
+                    for d, x in sorted(idx.reach_access(doms, t, req.get("classes") or [], req.get("perms") or "*").items()):
+                        hits.append({"domain": d, "target": t, "rule": x["rule"], "perms": x["perms"]})
+                    if len(hits) >= 50:
+                        break
+                resp.update(hits=hits)
+            elif req.get("op") == "names":
+                resp.update(types=sorted(idx.names(req.get("names", []))))
             elif req.get("op") == "access":
                 resp.update(access=idx.reach_access(set(req.get("domains", [])), req["t"], req.get("classes") or [], req.get("perms") or "*"))
             elif req.get("op") == "check":

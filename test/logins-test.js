@@ -63,6 +63,33 @@ check(L.mappingNotes({ login: 'root', user: 'unconfined_u' }, { roles: ['unconfi
 check(L.mappingNotes({ login: 'x', user: 'gone_u' }, null, []).some(n => /not a user/.test(n.text)), 'a mapping to a missing user');
 check(L.mappingNotes({ login: 'alice', user: 'user_u' }, { roles: ['user_r'] }, ['sysadm_r']).length === 0, 'an ordinary mapping: no notes');
 
+/* ---------- login checks (selinux.checks) ---------- */
+
+const C = require('../server/checks');
+const pc = C.parseChecks([
+  'never login alice %ops __default__ reaches sysadm_t',
+  'never login * may read shadow_t',
+  'never login alice may { write } etc_t:{ file dir }',
+  'never login * maps to unconfined_u',
+  'only staff_u user_u may log in',
+  'never unconfined_u may log in',
+  'only login x reaches y',
+  'never login a maps unconfined_u',
+  'require x_u may log in',
+].join('\n'));
+const K = (i) => pc.checks[i];
+check(K(0).kind === 'login-reaches' && K(0).logins.join() === 'alice,%ops,__default__' && K(0).targets.join() === 'sysadm_t', 'never login … reaches (with %group)', K(0));
+check(K(1).kind === 'login-may' && K(1).logins.join() === '*' && K(1).perms.includes('read') && K(1).classes.includes('file'), 'never login * may read (group, file classes)');
+check(K(2).perms.join() === 'write' && K(2).classes.join() === 'file,dir', 'braced permissions and classes');
+check(K(3).kind === 'login-maps' && K(3).users.join() === 'unconfined_u' && K(4).kind === 'only-login' && K(4).users.join() === 'staff_u,user_u' && K(5).kind === 'never-login', 'maps to; only/never <users> may log in');
+check(pc.errors.length === 3 && /start with 'never'/.test(pc.errors[0].msg) && /Expected 'to'/.test(pc.errors[1].msg) && /works with 'only' and 'never'/.test(pc.errors[2].msg), 'errors: only login, maps without to, require may log in', pc.errors);
+const SE2 = L.parseSeusers('root:unconfined_u:s0-s0:c0.c1023\n%wheel:staff_u:s0\n__default__:user_u:s0\n');
+let rl = L.resolveLogins(['alice', 'root', '%wheel', '%nope'], SE2);
+check(rl.lines.map(x => `${x.name}>${x.line.user}/${x.via}`).join() === 'alice>user_u/default,root>unconfined_u/own,%wheel>staff_u/group' && rl.missing.join() === '%nope', 'resolve: a name without a line → __default__; own line; %group; unknown group missing', rl);
+rl = L.resolveLogins(['*'], SE2);
+check(rl.lines.length === 3 && rl.lines.map(x => x.name).join() === 'root,%wheel,__default__', '* = every seusers line');
+check(L.resolveLogins(['bob'], L.parseSeusers('root:root\n')).missing.join() === 'bob', 'no __default__: a name without a line is missing');
+
 /* ---------- webview ---------- */
 
 class El {

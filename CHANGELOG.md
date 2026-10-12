@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Login checks in `selinux.checks`**: `only|never <users> may log in`
+  (the SELinux users seusers maps logins to), `never login <logins> maps
+  to <users>`, `never login <logins> reaches <domains>` and `never login
+  <logins> may <perms> <targets>[:<classes>]` (from where the login's ways
+  in land, through domain transitions and role changes, as in Logins and
+  Users). Logins: names (falling back to `__default__`), `%group`,
+  `__default__`, `*`. Evaluated with the tree's seusers and contexts files
+  (a standalone module: this host's) after every build and on edits;
+  failures name the login, its user and the path, with the seusers line
+  and each step as related locations. Completion offers the seusers logins.
+
 ## 0.12.0 (2026-10-12)
 
 **Added**

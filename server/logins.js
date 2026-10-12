@@ -199,5 +199,27 @@ function mappingNotes(m, user, adminRoles) {
   return out;
 }
 
-module.exports = { ENTRY_LABELS, ABILITIES, parseSeusers, parseContexts, parseRoleType, entries, parsePasswd, parseGroups, mappingFor,
+/**
+ * The seusers lines login names in a check stand for: '*' = every line; %group and __default__
+ * their own line; a Linux login its own line, else __default__'s (without the host's groups, a
+ * %group line can't be known to apply). → [{ name, line: { login, group, user, range, l }, via }]
+ * where via says why ('own', 'group', 'default'); missing = names no line applies to.
+ */
+function resolveLogins(names, seusers) {
+  const out = [], missing = [];
+  const add = (name, line, via) => { if (!out.some(x => x.line === line && x.name === name)) out.push({ name, line, via }); };
+  const def = seusers.find(x => !x.group && x.login === '__default__');
+  for (const n of names) {
+    if (n === '*') { for (const x of seusers) add(x.group ? `%${x.login}` : x.login, x, x.group ? 'group' : x.login === '__default__' ? 'default' : 'own'); continue; }
+    const group = n.startsWith('%');
+    const own = seusers.find(x => x.group === group && x.login === (group ? n.slice(1) : n));
+    if (own) add(n, own, group ? 'group' : n === '__default__' ? 'default' : 'own');
+    else if (!group && def) add(n, def, 'default');
+    else missing.push(n);
+  }
+  return { lines: out, missing };
+}
+
+module.exports = {
+  resolveLogins, ENTRY_LABELS, ABILITIES, parseSeusers, parseContexts, parseRoleType, entries, parsePasswd, parseGroups, mappingFor,
   serviceAccounts, pathTo, nearest, stepText, mappingNotes, NO_LOGIN };

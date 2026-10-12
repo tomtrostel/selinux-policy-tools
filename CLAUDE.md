@@ -845,9 +845,25 @@ so far covered by the e2e tests only.
    checkmodule "This block has no require section"; editTe now deletes a
    touched optional_policy whose remaining content is only nested
    optional_policy blocks or comments (service survey unchanged).
-   Step 9 is complete up to release; open: MCS, Model Context Protocol,
-   login checks in selinux.checks, comparing with the host's semanage
-   changes (the user's "later" list). Plan agreed: kind of user from the tree's
+   Step 9 released as 0.12.0. Login checks (done, unreleased; "ok lets add
+   the login checks in selinux.checks now"): checks.js kinds login-reaches,
+   login-may, login-maps (`never login <logins> …`), only-login /
+   never-login (`<users> may log in`); tokens allow %group. Server
+   runChecks sends the other kinds to policy_query `check` and evaluates
+   login kinds in loginChecks(checks, bin): loginConfig({ build: true })
+   (tree appconfig files, or the host's in devel mode), logins
+   .resolveLogins (name → own line else __default__; %group own line only;
+   * = every line), per user logins.entries → userReach, policy_query ops
+   `names` (expand, KeyError → unknown) and `access_any` (first hits of
+   reached domains on target types); results { login: [{ login, user, via,
+   p, l, domain, path, rule, perms, target }] } → checkMessage / related
+   info (seusers line, path steps, rule) / lens "✗ N logins violate it";
+   completion: login, reaches/may/maps, to, seusers logins, "log in".
+   Tests: logins-test (parser, resolveLogins), checks-e2e (CLIP: holds,
+   __default__ → staff_u, alice reaches sysadm_t where it logs in, may read
+   shadow_t as aide_t, errors, completion), module-checks-e2e (host seusers).
+   Open (the user's "later" list): MCS, Model Context Protocol, comparing
+   with the host's semanage changes. Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role

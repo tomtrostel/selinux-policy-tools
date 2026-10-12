@@ -920,6 +920,19 @@ require syslogd_t may { append create } var_log_t:file
 
 * `only|never <roles> may run <types>`: which roles may run a domain;
   `only|never <users> may use <roles>`: which SELinux users may have a role.
+* Logins (with the seusers and contexts files of the checked policy: the
+  tree's `config/appconfig-<TYPE>`, or this host's for a standalone module):
+  `only|never <users> may log in` (the SELinux users any seusers line maps
+  to: `only staff_u user_u may log in`, `never unconfined_u may log in`);
+  `never login <logins> maps to <users>`; `never login <logins> reaches
+  <domains>` and `never login <logins> may <perms> <targets>[:<classes>]`
+  (what a login's sessions can reach from where its ways in land, as in
+  *Logins and Users*: domain transitions and role changes). Logins are
+  Linux names (one without a line of its own gets `__default__`'s),
+  `%group`, `__default__`, or `*` for every seusers line. A failure names
+  the login, its user and the path (`alice (via __default__) → staff_u
+  reaches sysadm_t: staff_t → newrole_t → sysadm_t`), with the seusers line
+  and the steps as related locations.
 * `only <names> may <perms> <targets>[:<classes>]`: nobody else may;
   `never <names> may …`: none of these may (`*` = every domain);
   `never <names> reaches <names>`: no transition path;
