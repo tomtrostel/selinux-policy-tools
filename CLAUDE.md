@@ -732,7 +732,7 @@ so far covered by the e2e tests only.
    test/logins-e2e.js (melody: running targeted + CLIP build). RHEL 9:
    report ~9 s, staff_u reaches 867 domains (sysadm_t via newrole_t,
    setexec, only while secure_mode is off), user_u 100 (/etc/shadow only as
-   chkpwd_t). Not yet tried interactively.
+   chkpwd_t). The user tried it in VS Code ("That seems to work").
    Phase 2 (next): user editor. Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
