@@ -2,7 +2,12 @@
 
 **SELinux: Edit Service…** (or right-click a module in the Policy Explorer →
 *Edit Service*) opens **any** service module in the same form: yours, or one
-of the hundreds in the distribution policy.
+of the hundreds in the distribution policy. That includes services started
+by systemd, D-Bus activation, inetd, cron or as a mail server, daemons a
+template of their module declares and starts (`rpc_domain_template(nfsd)`,
+`systemd_domain_template(systemd_logind)`: the template call stays as
+written), and web applications (`apache_content_template(bugzilla)`). A
+module with several domains asks which one to edit.
 
 The editor reads the module back and **changes only the lines of the
 settings you change**:

@@ -2,7 +2,7 @@
   "name": "selinux-policy-tools",
   "displayName": "SELinux Policy Tools",
   "description": "Navigation and authoring help for refpolicy-style SELinux policy source (RHEL/Fedora selinux-policy, CLIP-style locked-down policies).",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -739,6 +739,14 @@
             "description": "Programs the service runs can get a domain of their own, with fewer (or different) rights than the service.",
             "media": {
               "markdown": "media/walkthroughs/service/helpers.md"
+            }
+          },
+          {
+            "id": "webapps",
+            "title": "Web applications (CGI scripts)",
+            "description": "Web applications such as Bugzilla: the domain Apache runs their CGI scripts in, and their content types.",
+            "media": {
+              "markdown": "media/walkthroughs/service/webapps.md"
             }
           },
           {

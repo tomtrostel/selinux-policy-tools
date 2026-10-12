@@ -103,7 +103,8 @@ in the Policy Explorer title bar), or from *Help → Welcome → Walkthroughs*:
   view.
 * **Write and maintain a service policy**: the service editor from planning
   to a confined, tested daemon (files, ports and port types, system access,
-  capabilities, booleans, helper programs), and editing it safely later.
+  capabilities, booleans, helper programs, web applications), and editing
+  it safely later.
 * **Fix a denial the right way**: reading an AVC message, telling a missing
   rule from a wrong label, granting with the owning module's interface
   instead of `audit2allow` rules, and checking what was actually granted.

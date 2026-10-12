@@ -15,12 +15,18 @@ owns:
 
 **Paths.** A path ending in `/` means the directory *and everything in it*
 (`/var/lib/mydaemon(/.*)?` in the `.fc`). Anything else is a single file.
+Add `-d` (directories only) or `--` (plain files only) after a path to
+narrow it: `/usr/share/mydaemon/ -d`. Existing modules show these flags
+where their `.fc` has them.
 
 **Access levels.** *Create and append* lets the service add to its logs but
 not rewrite or delete them, so an attacker who takes it over can't hide their
 tracks. *Label only* gives the service no access at all, which is useful for
 files other programs use (the unit file, so that policy can say who may
-start the service).
+start the service). In an existing module, a file type whose rules match
+none of the levels (e.g. `mmap_manage_files_pattern`) reads **custom (kept
+as written)**: its rules are listed under the row, click one to open it, and
+**Show what they allow** sums them up. Picking a level replaces them.
 
 **Type transitions are automatic.** What the service creates directly in
 `/run`, `/var/lib`, `/tmp`, … gets its own type without any extra rule.

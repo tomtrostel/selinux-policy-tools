@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (2026-10-12)
 
 **Added**
 
@@ -47,6 +47,10 @@
 * Paths in the service editor keep a file type flag the path doesn't imply
   (`/usr/share/bugzilla/ -d`), and one path for directories (`-d`) and for
   files (`--`) is no longer reported as two labels for one path.
+* **Tutorials**: a new *Web applications (CGI scripts)* page in the service
+  walkthrough; the other service pages cover *What*, *Started by*, file
+  access under a boolean, custom file access, path flags and which modules
+  the editor opens.
 
 **Fixes**
 

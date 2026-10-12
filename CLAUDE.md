@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-11: **v0.10.2 released** (GitHub release `v0.10.2`;
+Status as of 2026-10-12: **v0.11.0 released** (GitHub release `v0.11.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -29,9 +29,12 @@ before the release ("looks okay"); not clicked through feature by feature.
 0.10.1: read-only denials rank read-only interfaces first (writes tag),
 ranked keyword search for interfaces. 0.10.2: long interface lists grouped
 by module, custom file access (kept rules shown, openable, expanded), build
-of the active tree from outside trees/modules. Unreleased: file access
-under a boolean, services started by D-Bus/inetd/cron/mail server or
-by a template of their module, web applications (service editor).
+of the active tree from outside trees/modules. 0.11.0 (service editor):
+file access under a boolean, services started by D-Bus/inetd/cron/mail
+server or by a template of their module, web applications
+(apache_content_template), path flags (-d/--), a web applications
+tutorial page. The user tried 0.11.0's features before the release ("That
+all appears to work right").
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -449,7 +452,7 @@ so far covered by the e2e tests only.
    CLIP copy inside a workspace folder): RHEL helper variants, tree-only
    interface refused, build, make rpm, rpm -qpl/--scripts/-qpR, magic of the
    packaged .pp, read back, edit touches only the .te, tree untouched.
-   File access under a boolean (done, unreleased; user: "go ahead and do
+   File access under a boolean (done, 0.11.0; user: "go ahead and do
    file access under a boolean"): b.grants.files [{type, access}] (the
    service's file types, resolved names like helpers'). unitsOf: unit
    `b:<name>:file:<T>` = levelStmts() (shared with top level and helpers)
@@ -468,7 +471,7 @@ so far covered by the e2e tests only.
    read always + manage and /var/lib filetrans under the boolean, built as
    `if (svctest_connect_any)`; ntp: manage ntpd_key_t under a new boolean)
    on CLIP, RHEL 9, RHEL 10.
-   Other ways to start a service (done, unreleased; user asked why bugzilla
+   Other ways to start a service (done, 0.11.0; user asked why bugzilla
    isn't in the editor, then to survey all other module kinds; of the six
    found, "do 2-5 first"): START_CALLS dbus_system_domain, mta_mailserver,
    mta_sendmail_mailserver (one argument; ENTRY_EXEC gives sendmail_exec_t,
@@ -492,7 +495,7 @@ so far covered by the e2e tests only.
    no-op unchanged + one capability line; new starttest by inetd + D-Bus +
    cron, built; CLIP: inetd off → refused, systemd used) on CLIP, RHEL 9,
    RHEL 10.
-   Template-started daemons (done, unreleased; "go ahead and do 1 next"):
+   Template-started daemons (done, 0.11.0; "go ahead and do 1 next"):
    service.makeStartsVia(getDef)(name) → [{d, e, via}] in $N terms, through
    bodyCalls (not cond) with $N substituted, memoized, depth 5;
    daemonDomains(te, ctx) adds domains of top-level calls whose template
@@ -508,7 +511,7 @@ so far covered by the e2e tests only.
    template (138 started by it), 22,440 edits; e2e section 8: nfsd_t,
    gssd_t, fenced_t, systemd_logind_t, spamass_milter_t (+cap, built) on
    CLIP (34 listed), RHEL 9 (110), RHEL 10 (129).
-   Web applications (done, unreleased; "go ahead and do 6"; bugzilla was
+   Web applications (done, 0.11.0; "go ahead and do 6"; bugzilla was
    the user's example): WEB_TEMPLATE apache_content_template;
    webPatterns(ctx) = its declPatterns (ctx.declares) → {template, d
    (*_script_t), e (*_script_exec_t), content {content, rw, ra, htaccess}}
@@ -542,7 +545,7 @@ so far covered by the e2e tests only.
 7. **Tutorials** (done, 0.9.0; user request: "tutorials … integrate
    them into the vsix … how to use the add-on and how it can help them
    making and maintaining SELinux policies"). package.json
-   `contributes.walkthroughs`: getStarted (8 steps), services (9), denials
+   `contributes.walkthroughs`: getStarted (8 steps), services (10; webapps added in 0.11.0), denials
    (4), lockdown (7); pages in media/walkthroughs/<wt>/<step>.md; step
    buttons are `command:` links (openTutorials takes a walkthrough id as
    URL-encoded JSON arg). Client `registerTutorials()`: selinux.openTutorials
