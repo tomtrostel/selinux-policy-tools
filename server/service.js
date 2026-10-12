@@ -201,6 +201,12 @@ const PROVIDES = [
   ['stream_connect', '%_stream_connect', 'Connect to its Unix socket', 'runtime'],
   ['admin', '%_admin', 'Administer the service (signal it, manage all its files)'],
 ];
+// A user role's interfaces (written in its .if).
+const USER_PROVIDES = [
+  ['role_change', '%_role_change', 'Let other roles change to this one (newrole, sudo -r)'],
+  ['role_change_to', '%_role_change_to', 'Let this role change to other roles'],
+];
+const providesOf = (model) => (model.user ? USER_PROVIDES : PROVIDES);
 
 // Hover help for the form, by catalog section and id. {T} = the type a file kind adds.
 const HELP = {
@@ -386,9 +392,42 @@ function webTypes(model) {
   return WEB_KINDS.filter(([id]) => w.content[id]).map(([id]) => ({ id, type: w.content[id].replace(/\$1/g, webStem(model)) }));
 }
 
+/*
+ * Users (model.user = { kind }): a role module like staff.te or webadm.te. `role NAME_r;` plus the
+ * userdomain template of the kind declares NAME_t; the rest of the model (capabilities, access,
+ * interfaces, booleans) applies to NAME_t as for a service. Role calls (model.roleCalls: sudo/su/ssh
+ * role templates, *_role application roles, *_admin) take their arguments by the interface's
+ * parameter names; roles it may switch to (model.switchTo) and roles that may switch into it
+ * (model.enteredFrom) go through the roles' *_role_change / *_role_change_to interfaces.
+ */
+const USER_KINDS = [
+  ['unpriv', 'Ordinary user', ['userdom_unpriv_user_template'], true,
+    'Logs in and works with its own files, like staff_u and user_u: a home directory, a shell, common programs. Administers nothing unless you add it.'],
+  ['restricted', 'Restricted terminal user', ['userdom_restricted_user_template'], true,
+    'Logs in on a terminal with very few rights, like guest_u: no network, no setuid programs (su, sudo), no X.'],
+  ['restricted_x', 'Restricted desktop user', ['userdom_restricted_xwindows_user_template'], true,
+    'Like the restricted user, but with a graphical session (xguest_u).'],
+  ['admin', 'Administrator', ['userdom_admin_user_template'], true,
+    'Manages the whole system, like sysadm_u. Usually reached from an ordinary user with sudo or newrole, not logged in directly.'],
+  ['confined', 'Confined administrator role', ['userdom_confined_admin_template', 'userdom_base_user_template'], false,
+    'A role for one administrative job (like webadm_r or logadm_r): no login of its own; users with the role switch to it with newrole or sudo -r from their login role, and it administers only what you add.'],
+];
+const USER_KIND = Object.fromEntries(USER_KINDS.map(([id, label, templates, login, help]) => [id, { id, label, templates, login, help }]));
+const USER_TEMPLATES = USER_KINDS.flatMap(k => k[2]);
+
+/** Arguments of a role call by its parameter names (ctx.params), or null when one can't be filled. */
+function roleCallArgs(name, model, ctx) {
+  const ps = ctx.params ? ctx.params(name) : null;
+  if (!ps || !ps.length) return null;
+  const { D, R } = names(model);
+  const args = ps.map(p => (/prefix/i.test(p) ? model.name : /exec_domain/i.test(p) ? `${model.name}_application_exec_domain` : /role/i.test(p) ? R : /domain|^user/i.test(p) ? D : null));
+  return args.every(Boolean) ? args : null;
+}
+
 /** The resolved names for a model: domain, exec type, file types. */
 function names(model) {
   const n = model.name;
+  if (model.user) return { D: `${n}_t`, E: null, R: `${n}_r`, U: `${n}_u` };
   if (model.webapp && model.webapp.d) return { D: model.domain || model.webapp.d.replace(/\$1/g, webStem(model)), E: model.execType || model.webapp.e.replace(/\$1/g, webStem(model)) };
   return { D: model.domain || `${n}_t`, E: model.execType || `${n}_exec_t` };
 }
@@ -484,8 +523,9 @@ function unitsOf(model, ctx) {
   const callOf = call;
   const type = (t) => ({ key: `type:${t}`, kind: 'type', text: `type ${t};`, section: 'decl' });
 
+  if (model.user) userUnits();
   // A new web application is declared by apache_content_template(NAME); Apache runs its scripts, nothing else starts it.
-  const by = model.declaredBy || (model.webapp ? { name: model.webapp.template, args: [model.name], execToo: true, web: true } : null);
+  const by = model.user ? null : model.declaredBy || (model.webapp ? { name: model.webapp.template, args: [model.name], execToo: true, web: true } : null);
   // Started by the template that declares it (by.starts), or by its own start calls (init_daemon_domain by default).
   const entries = model.entries && model.entries.length ? model.entries : by && (by.starts || by.web) ? [] : [{ name: 'init_daemon_domain', args: [] }];
   // Further ways to start it (D-Bus activation, cron) go in optional_policy when their module may be off;
@@ -495,7 +535,7 @@ function unitsOf(model, ctx) {
     return ALSO.has(e.name) && ctx.optional(e.name) ? call(e.name, args, 'local', 'start') : call(e.name, args, 'decl');
   };
   const elsewhere = !!model.execElsewhere || (by && by.execToo);
-  add('domain', { D, E, entries, by, elsewhere: !!model.execElsewhere }, [by ? call(by.name, by.args, 'decl') : type(D), ...(elsewhere ? [] : [type(E)]), ...entries.map(entryStmt)]);
+  if (!model.user) add('domain', { D, E, entries, by, elsewhere: !!model.execElsewhere }, [by ? call(by.name, by.args, 'decl') : type(D), ...(elsewhere ? [] : [type(E)]), ...entries.map(entryStmt)]);
   if (model.loginPty) {
     const P = `${D.replace(/_t$/, '')}_devpts_t`;
     add('loginpty', 1, [type(P), call('term_login_pty', [P], 'decl'),
@@ -584,6 +624,32 @@ function unitsOf(model, ctx) {
     grantUnits(h, `h:${H}:`, null, H);
   }
   return units;
+
+  /** A user's role and domain (the kind's template), its role calls and role changes. */
+  function userUnits() {
+    const { R } = names(model);
+    const k = USER_KIND[model.user.kind] || USER_KIND.unpriv;
+    // An existing module keeps the template it was written with (declaredBy), a new one gets the kind's.
+    const tpl = (model.declaredBy && model.declaredBy.name) || pick(ctx, k.templates) || k.templates[0];
+    add('domain', { R, tpl, args: model.declaredBy ? model.declaredBy.args : [model.name] }, [
+      { key: `roledecl:${R}`, kind: 'roledecl', name: R, text: `role ${R};`, section: 'decl' },
+      call(tpl, model.declaredBy ? model.declaredBy.args : [model.name], 'decl')].map(s => (s.opt ? { ...s, opt: false } : s)));
+    for (const n of model.roleCalls || []) {
+      const args = roleCallArgs(n, model, ctx);
+      if (args) add(`rc:${n}`, 1, [call(n, args, 'local', 'role')]);
+    }
+    const ifs = ctx.roleIfaces || {};
+    for (const r2 of model.switchTo || []) {
+      const it = ifs[r2] && ifs[r2].change;
+      const args = it && roleCallArgs(it, model, ctx);
+      if (args) add(`switch:${r2}`, 1, [call(it, args, 'local', 'role')]);
+    }
+    for (const r0 of model.enteredFrom || []) {
+      const it = ifs[r0] && ifs[r0].changeTo;
+      const args = it && roleCallArgs(it, model, ctx);
+      if (args) add(`from:${r0}`, 1, [call(it, args, 'local', 'role')]);
+    }
+  }
 
   /** Units for what a domain (the service's, or a helper's: S) is granted, at the top level (bool null) or under a boolean. */
   function grantUnits(g, prefix, bool, S = D) {
@@ -690,6 +756,7 @@ function scanTe(text) {
     if ((m = /^type\s+(\w+)\b[^;]*;/.exec(code))) stmts.push({ kind: 'type', name: m[1], key: `type:${m[1]}`, l, endL: l, ...where(l) });
     else if ((m = /^permissive\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'permissive', name: m[1], key: `permissive:${m[1]}`, l, endL: l, ...where(l) });
     else if ((m = /^role\s+(\w+)\s+types\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'role', role: m[1], name: m[2], key: `role:${m[1]}:${m[2]}`, l, endL: l, ...where(l) });
+    else if ((m = /^role\s+(\w+)\s*;/.exec(code))) stmts.push({ kind: 'roledecl', name: m[1], key: `roledecl:${m[1]}`, l, endL: l, ...where(l) });
     else if ((m = /^allow\s+(\w+)\s+([\w-]+)\s*:\s*(\w+)\s+(\{[^}]*\}|[\w-]+)\s*;$/.exec(code))) {
       const perms = m[4].replace(/[{}]/g, ' ').trim().split(/\s+/);
       const w = where(l);
@@ -1247,7 +1314,30 @@ const DOC_DOMAIN = '## <param name="domain">\n##\t<summary>\n##\tDomain allowed 
 const DOC_DOMAIN_TRANS = '## <param name="domain">\n##\t<summary>\n##\tDomain allowed to transition.\n##\t</summary>\n## </param>';
 const DOC_ROLE = '## <param name="role">\n##\t<summary>\n##\tRole allowed access.\n##\t</summary>\n## </param>';
 
+/** A user role's interfaces: other roles may change to it (X_role_change), it may change to them (X_role_change_to). */
+function roleIfaceText(id, model) {
+  const { R } = names(model);
+  const to = id === 'role_change_to';
+  return [
+    '########################################',
+    '## <summary>',
+    to ? `##\tChange from the ${R} role to the specified role.` : `##\tChange to the ${R} role.`,
+    '## </summary>',
+    '## <param name="role">', '##\t<summary>', to ? '##\tRole allowed access.' : '##\tRole allowed to change to it.', '##\t</summary>', '## </param>',
+    '## <rolecap/>',
+    '#',
+    `interface(\`${model.name}_${id}',\``,
+    '\tgen_require(`',
+    `\t\trole ${R};`,
+    "\t')",
+    '',
+    to ? `\tallow ${R} $1;` : `\tallow $1 ${R};`,
+    "')",
+  ].join('\n');
+}
+
 function ifaceText(id, model, ctx) {
+  if (model.user) return id === 'role_change' || id === 'role_change_to' ? roleIfaceText(id, model) : null;
   const n = model.name;
   const { D, E } = names(model);
   const row = (kind) => (model.files || []).find(r => r.kind === kind);
@@ -1305,7 +1395,7 @@ function ifaceText(id, model, ctx) {
   return null;
 }
 function renderIf(model, ctx) {
-  const parts = [`## <summary>${model.summary || `Policy for ${model.name}`}</summary>`];
+  const parts = [`## <summary>${model.summary || (model.user ? `The ${model.name} user role` : `Policy for ${model.name}`)}</summary>`];
   for (const id of model.provides || []) { const t = ifaceText(id, model, ctx); if (t) parts.push(t); }
   return parts.join('\n\n') + '\n';
 }
@@ -1348,7 +1438,7 @@ function editTe(text, rec, model, ctx) {
   const { D } = names(model);
   const genNew = new Set([...cur.values()].flatMap(u => u.stmts.map(s => s.key)));
   const editable = scan.stmts.filter(s => s.top || s.opt || s.bool);
-  const presentKey = (s) => (s.kind === 'call' || s.kind === 'allow' || s.kind === 'role' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
+  const presentKey = (s) => (s.kind === 'call' || s.kind === 'allow' || s.kind === 'role' || s.kind === 'roledecl' ? s.key : s.kind === 'type' ? `type:${s.name}` : s.kind === 'permissive' ? (s.name === D ? 'permissive' : null) : null);
   const byKey = new Map();
   for (const s of editable) { const k = presentKey(s); if (k) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(s); } }
   // Self rules (top level, or directly under a boolean): perms per class with their lines.
@@ -1457,7 +1547,7 @@ function editTe(text, rec, model, ctx) {
 
   // Where new statements go.
   const top = editable.filter(s => s.top && !delLines.has(s.l));
-  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat([...ENTRY_CALLS, 'domain_type', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS]));
+  const declHelpers = new Set(FILE_KINDS.flatMap(k => k.decl.map(([h]) => h)).concat([...ENTRY_CALLS, 'domain_type', 'gen_tunable', 'gen_bool', 'attribute_role', 'roleattribute', 'corenet_port', ...HELPER_DECLS, ...USER_TEMPLATES]));
   if (rec.model.declaredBy) declHelpers.add(rec.model.declaredBy.name); // the template that declares the domain
   const firstLocal = top.find(s => (s.kind === 'allow' || s.kind === 'rule') || (s.kind === 'call' && !declHelpers.has(s.name) && !/^policy_module$/.test(s.name)));
   const localHeader = (() => {
@@ -1470,7 +1560,7 @@ function editTe(text, rec, model, ctx) {
   const firstHeader = lines.findIndex((ln, l) => /^#\s*(\S.*\s)?local polic(y|ies)\s*$/i.test(ln) && /^#{10,}/.test(lines[l - 2] || ''));
   const beforeHeader = firstHeader > 1 ? top.filter(s => s.endL < firstHeader - 2 && s.kind !== 'rule' && !(s.kind === 'call' && s.name === 'policy_module')) : [];
   const declEnd = beforeHeader.length ? Math.max(...beforeHeader.map(s => s.endL))
-    : Math.max(-1, ...top.filter(s => (s.kind === 'type' || s.kind === 'role' || (s.kind === 'call' && declHelpers.has(s.name))) && (localHeader == null || s.l < localHeader) && (!firstLocal || s.l < firstLocal.l)).map(s => s.endL));
+    : Math.max(-1, ...top.filter(s => (s.kind === 'type' || s.kind === 'role' || s.kind === 'roledecl' || (s.kind === 'call' && declHelpers.has(s.name))) && (localHeader == null || s.l < localHeader) && (!firstLocal || s.l < firstLocal.l)).map(s => s.endL));
   const policyModule = top.find(s => s.kind === 'call' && s.name === 'policy_module');
   const declAfter = declEnd >= 0 ? declEnd : policyModule ? policyModule.endL : -1;
   const domTop = top.filter(s => (s.kind === 'call' && s.args[0] === D && !ENTRY.has(s.name)) || (s.kind === 'allow' && s.src === D));
@@ -1629,7 +1719,7 @@ function editCorenet(text, before, model) {
 
 function editIf(text, rec, model, ctx) {
   const have = new Set(rec.provided);
-  const add = (model.provides || []).map(id => [id, sub(PROVIDES.find(p => p[0] === id)[1], model.name)]).filter(([, n]) => !have.has(n));
+  const add = (model.provides || []).filter(id => providesOf(model).some(p => p[0] === id)).map(id => [id, sub(providesOf(model).find(p => p[0] === id)[1], model.name)]).filter(([, n]) => !have.has(n));
   if (!add.length) return text;
   const blocks = add.map(([id]) => ifaceText(id, model, ctx)).filter(Boolean);
   return text.replace(/\s*$/, '\n') + '\n' + blocks.join('\n\n') + '\n';
@@ -1669,7 +1759,8 @@ function validate(model, ctx, opts = {}) {
   }
   // How it is started: one main way at most, and only calls this policy has.
   const entries = model.entries || [];
-  if (opts.isNew && !entries.length && !model.webapp) out.push('Nothing starts the service: choose how it is started (Started by).');
+  if (model.user) out.push(...validateUser(model, ctx, opts));
+  if (opts.isNew && !entries.length && !model.webapp && !model.user) out.push('Nothing starts the service: choose how it is started (Started by).');
   const webOff = model.webapp && opts.isNew && ctx.off && ctx.off(model.webapp.template);
   if (webOff) out.push(`${model.webapp.template} belongs to the ${webOff} module, which is off in this policy (modules.conf); turn ${webOff} on to add a web application.`);
   for (const e of entries) if (ctx.has && !ctx.has(e.name)) out.push(`${e.name} doesn't exist in this policy, so it can't start the service.`);
@@ -1681,7 +1772,7 @@ function validate(model, ctx, opts = {}) {
     const off = !ALSO.has(e.name) && ctx.off && ctx.off(e.name);
     if (off && !sameAsBefore) out.push(`${e.name} belongs to the ${off} module, which is off in this policy (modules.conf), so the build would fail to link. Turn ${off} on, or choose another way under Started by.`);
   }
-  if (!(model.exec || []).some(p => p.trim())) out.push(model.webapp ? 'Note: no CGI script paths, so no script gets the script label and none runs in the application’s domain.' : 'Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
+  if (!model.user && !(model.exec || []).some(p => p.trim())) out.push(model.webapp ? 'Note: no CGI script paths, so no script gets the script label and none runs in the application’s domain.' : 'Note: no program path, so nothing gets the program label and the service won’t start in its domain.');
   if (model.permissive) out.push('Note: permissive: denials are logged, not enforced. Turn it off when the policy is complete.');
   ctx = portCtx(model, ctx);
   // Port types of the service.
@@ -1778,6 +1869,38 @@ function validate(model, ctx, opts = {}) {
   return out;
 }
 
+/** Checks of a user model (names, kind, roles, logins). */
+function validateUser(model, ctx, opts) {
+  const out = [];
+  const { R, U } = names(model);
+  const k = USER_KIND[model.user.kind];
+  if (!k) out.push('Choose what kind of user it is.');
+  else if (!model.declaredBy && !pick(ctx, k.templates)) out.push(`This policy has no ${k.templates.join(' or ')}, so it can't declare a user of this kind; choose another kind.`);
+  if (opts.isNew && ctx.roleExists && ctx.roleExists(R)) out.push(`A role named ${R} already exists.`);
+  if (opts.isNew && ctx.typeExists && ctx.typeExists(`${model.name}_t`)) out.push(`Type ${model.name}_t is already declared elsewhere.`);
+  for (const n of model.roleCalls || []) {
+    if (ctx.has && !ctx.has(n)) out.push(`${n} doesn't exist in this policy.`);
+    else if (!roleCallArgs(n, model, ctx)) out.push(`${n} takes arguments the editor can't fill in (it fills a name prefix, the user's role, domain and application attribute); add it by hand in the .te instead.`);
+  }
+  const ifs = ctx.roleIfaces || {};
+  for (const r2 of model.switchTo || []) if (!(ifs[r2] && ifs[r2].change)) out.push(`No interface lets a role change to ${r2} in this policy.`);
+  for (const r0 of model.enteredFrom || []) if (!(ifs[r0] && ifs[r0].changeTo)) out.push(`No interface lets ${r0} change to another role in this policy.`);
+  const seen = new Set();
+  for (const l of model.logins || []) {
+    const n = (l.login || '').trim();
+    if (!n) continue;
+    if (!/^(%?[a-z_][a-z0-9_.-]*\$?|__default__)$/i.test(n)) out.push(`"${n}" isn't a Linux login name (or %group, or __default__).`);
+    if (seen.has(n)) out.push(`Login ${n} is listed twice.`);
+    seen.add(n);
+    if (l.range && !/^s\d+(:[\w.,]+)?(\s*-\s*(s\d+(:[\w.,]+)?|\w+))?$/.test(l.range.trim())) out.push(`Range "${l.range}" for ${n} isn't an MLS/MCS range like s0 or s0-s0:c0.c1023.`);
+    if (opts.loginTaken && opts.loginTaken(n)) out.push(`Login ${n} is already mapped to ${opts.loginTaken(n)} in seusers; a login can have only one SELinux user.`);
+  }
+  if (k && k.login && !(model.ways || []).length) out.push(`Note: no way to log in is ticked, so ${U} can only be reached by switching role.`);
+  if (k && !k.login && (model.ways || []).length) out.push(`A ${k.label.toLowerCase()} doesn't log in itself; untick the ways in, or choose another kind.`);
+  if (k && !k.login && !(model.enteredFrom || []).length) out.push(`Note: no role may switch to ${R} yet; choose under "Entered from".`);
+  return out;
+}
+
 /**
  * The new texts for a model: { te, if, fc, net }. corenet = { text, ports } (corenetwork.te.in and
  * the port types in it that belong to the module) in a tree; net is then its new text, else null.
@@ -1837,6 +1960,33 @@ function newModel() {
   };
 }
 
+/** Default model for a new user. */
+function newUserModel() {
+  return {
+    user: { kind: 'unpriv' }, name: '', summary: '', logins: [{ login: '', range: '' }], ways: ['ssh', 'console'],
+    roleCalls: [], switchTo: [], enteredFrom: [], grantUsers: [], prefix: '', level: 's0', range: 's0', cats: '',
+    files: [], self: [], caps: [], net: { listen: [], connect: [] }, access: [], extra: [], permissive: false,
+    booleans: [], ports: [], helpers: [], provides: ['role_change'],
+  };
+}
+
+/**
+ * The user editor's catalog: kinds of user (those whose template this tree has), ways to log in,
+ * role calls (sudo/su/ssh role templates, application roles, *_admin; ctx.roleCalls gives
+ * [{ n, s, m, group }]), roles to switch to / from (ctx.roleIfaces), and what its .if can provide.
+ */
+function userCatalog(ctx, ways) {
+  const base = catalog(ctx);
+  return {
+    self: base.self, caps: base.caps, access: base.access, accessLabels: base.accessLabels,
+    kinds: USER_KINDS.filter(([, , t]) => t.some(n => ctx.has(n))).map(([id, label, t, login, help]) => ({ id, label, template: pick(ctx, t), login, help })),
+    ways: ways.map(([id, label, sources, help]) => ({ id, label, sources, help })),
+    roleCalls: ctx.roleCalls || [],
+    roles: Object.entries(ctx.roleIfaces || {}).map(([role, x]) => ({ role, change: x.change || null, changeTo: x.changeTo || null, module: x.module || '' })).sort((a, b) => a.role.localeCompare(b.role)),
+    provides: USER_PROVIDES.map(([id, name, label]) => ({ id, name, label })),
+  };
+}
+
 /** The catalog as the editor UI needs it, limited to what exists in this tree. */
 function catalog(ctx) {
   const avail = (alts) => alts.some(a => a.some(n => ctx.has(n)));
@@ -1872,5 +2022,6 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
+  USER_KINDS, USER_TEMPLATES, newUserModel, userCatalog, roleCallArgs, names,
   fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia, webPatterns, webTypes, WEB_TEMPLATE,
 };

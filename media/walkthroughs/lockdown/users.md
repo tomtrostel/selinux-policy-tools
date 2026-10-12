@@ -33,6 +33,15 @@ answers the question a reviewer asks: *who can do what once logged in?*
 Choose **Policy → Last build** to review your tree's own `seusers` and
 contexts before it ships.
 
+**SELinux: New User…** (or *New User…* in that panel) creates a user in the
+tree from a form: what kind of user (ordinary, restricted, administrator,
+or an admin role entered from another role), its Linux logins, how it may
+log in, the roles it may switch to, sudo and the services it administers.
+The preview shows every file it writes: the role module, its `gen_user`
+line, the role in `kernel.te`, `seusers` and its own contexts file. After
+the build, **Logins and Users** shows where its logins land and what it can
+reach.
+
 In the **Compiled Policy** view:
 
 * **Users** → their roles, MLS range, default level and Linux logins

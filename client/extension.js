@@ -432,6 +432,7 @@ function activate(context) {
       showDenials(context, text);
     }),
     vscode.commands.registerCommand('selinux.showLogins', () => showLogins(context)),
+    vscode.commands.registerCommand('selinux.newUser', () => showUserEditor(context)),
     vscode.commands.registerCommand('selinux.buildRpm', async () => {
       // The standalone module of the active editor, or one picked from the workspace's *-selinux.spec files.
       const specs = (await vscode.workspace.findFiles('**/*-selinux.spec', '**/{rpmbuild,node_modules,tmp}/**', 100)).map(u => u.fsPath);
@@ -747,20 +748,8 @@ async function applyServicePlan(plan) {
   return uris.length;
 }
 
-function showServiceEditor(context, mod, prefill = null) {
-  const key = mod || '';
-  const existing = servicePanels.get(key);
-  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); return; }
-  const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
-    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
-  servicePanels.set(key, panel);
-  let current = { module: mod || null, domain: null, files: null, standalone: false, prefill };
-  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
-  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'service.js'));
-  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+/** Styles shared by the service and user editors. */
+const EDITOR_CSS = `  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
   #bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 14px; align-items: center; padding: 8px 14px;
     background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
   #title { font-weight: 600; font-size: 1.1em; }
@@ -834,7 +823,22 @@ function showServiceEditor(context, mod, prefill = null) {
   .add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(80,160,80,.2)); }
   .del { background: var(--vscode-diffEditor-removedLineBackground, rgba(200,80,80,.2)); text-decoration: line-through; opacity: .85; }
   .gap { opacity: .5; }
-</style></head><body>
+`;
+
+function showServiceEditor(context, mod, prefill = null) {
+  const key = mod || '';
+  const existing = servicePanels.get(key);
+  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  servicePanels.set(key, panel);
+  let current = { module: mod || null, domain: null, files: null, standalone: false, prefill };
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'service.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+${EDITOR_CSS}</style></head><body>
 <div id="bar">
   <span id="title"></span>
   <button id="apply" disabled>Apply</button>
@@ -903,6 +907,52 @@ function showServiceEditor(context, mod, prefill = null) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { watch.dispose(); for (const [k, p] of servicePanels) if (p === panel) servicePanels.delete(k); }, undefined, context.subscriptions);
+}
+
+let userPanel = null;
+
+/** User editor (media/user.js): a new SELinux user in the tree, with its role module, logins and contexts. */
+function showUserEditor(context) {
+  if (userPanel) { userPanel.reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxUser', 'New User', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  userPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'user.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+${EDITOR_CSS}</style></head><body>
+<div id="bar">
+  <span id="title">New User</span>
+  <button id="apply" disabled>Create</button>
+  <span id="status"></span>
+</div>
+<div id="main"><div id="form"></div><div id="preview"></div></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  const post = (m) => panel.webview.postMessage(m);
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        const info = await client.sendRequest('selinux/userInfo');
+        if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info });
+      } else if (m.cmd === 'plan') {
+        post({ cmd: 'plan', plan: await client.sendRequest('selinux/userPlan', { model: m.model }) });
+      } else if (m.cmd === 'apply') {
+        const plan = await client.sendRequest('selinux/userPlan', { model: m.model });
+        if ((plan.problems || []).some(p => !p.startsWith('Note:'))) { post({ cmd: 'plan', plan }); return; }
+        const n = await applyServicePlan(plan);
+        post({ cmd: 'done', text: `Created ${m.model.name}_u (${n} files).` });
+        vscode.window.showInformationMessage(`Created the ${m.model.name}_u user (${n} file${n > 1 ? 's' : ''}). Saving builds the tree; then SELinux: Logins and Users shows where its logins land and what it can reach.`, 'Logins and Users')
+          .then(a => { if (a) showLogins(context); });
+        panel.dispose();
+      }
+    } catch (e) {
+      vscode.window.showErrorMessage(`User editor: ${e.message}`);
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { userPanel = null; }, undefined, context.subscriptions);
 }
 
 /* ---------------- expanded policy (read-only m4 output) ---------------- */
@@ -1695,6 +1745,7 @@ function showLogins(context) {
   <span id="title">Logins and Users</span>
   <label>Policy <select id="against"></select></label>
   <button id="refresh">Refresh</button>
+  <button id="newUser">New User…</button>
   <span id="status"></span>
 </div>
 <div id="main"></div>
@@ -1711,6 +1762,8 @@ function showLogins(context) {
           { against: m.against, user: m.user, starts: m.starts, target: m.target, path: m.path, tclass: m.tclass, perms: m.perms }) });
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      } else if (m.cmd === 'newUser') {
+        showUserEditor(context);
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });

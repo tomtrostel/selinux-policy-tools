@@ -733,7 +733,38 @@ so far covered by the e2e tests only.
    report ~9 s, staff_u reaches 867 domains (sysadm_t via newrole_t,
    setexec, only while secure_mode is off), user_u 100 (/etc/shadow only as
    chkpwd_t). The user tried it in VS Code ("That seems to work").
-   Phase 2 (next): user editor. Plan agreed: kind of user from the tree's
+   Phase 2a, new users in a tree (done, unreleased; "go ahead with the
+   user editor"): service.js model.user {kind} (USER_KINDS: unpriv,
+   restricted, restricted_x, admin, confined = userdom_confined_admin_
+   template | userdom_base_user_template; names(): R/U), unitsOf
+   userUnits(): domain unit = `role R;` (scanTe kind 'roledecl') + the
+   template (declaredBy kept for existing), `rc:<n>` role calls with
+   roleCallArgs(n, model, ctx) by ctx.params(n) doc names (prefix → name,
+   exec_domain → NAME_application_exec_domain, role → R, domain|^user → D;
+   null when one can't be filled), `switch:<R2>` = roleIfaces[R2].change,
+   `from:<R0>` = roleIfaces[R0].changeTo; grants/booleans as services.
+   USER_PROVIDES role_change / role_change_to (.if); validateUser; newUserModel,
+   userCatalog. server/userfiles.js: WAYS (ssh sshd_t+sshd_session_t,
+   console, graphical, cron, rlogin), parseGenUsers (ifdef in roles → not
+   simple), genUserLine, editUsers (new line + comment at the end, own
+   line rewritten, role added to grantUsers' lines before an ifdef / removed
+   for prevGrant), editKernelRoles (users file is compiled into base: `role
+   R;` after kernel.te's last top-level role line — the build failed with
+   "unknown role" without it), parseSeusers/editSeusers (before
+   __default__), contextsText (ways → R:D; sudo/su lines R:NAME_sudo_t →
+   own context then switch roles' R2:stem_t). Server: effectiveUsersFile
+   (spec overlay files['policy/users']), defParams, roleIfaces() (from
+   *_role_change(_to) defs' role requires), userRoleCalls (g login|admin|
+   apps|run; needs a role param unless *_role), userCtx, requests
+   `selinux/userInfo` (prefix default = shared majority prefix unless most
+   users have their own), `selinux/userPlan` (te/if/fc in roles/, users,
+   kernel.te, seusers, contexts, modules.conf; loginTaken). Client
+   showUserEditor (media/user.js; EDITOR_CSS shared with the service
+   editor), `selinux.newUser`, New User… in Logins and Users. Tests:
+   test/user-test.js (npm test), test/user-e2e.js (CLIP + RHEL 9 spec: new
+   login user + confined role, built, checked with the logins report).
+   Phase 2 (rest): opening existing users (2b), standalone + RPM (2c),
+   automation preset + reach preview (2d). Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role
@@ -909,6 +940,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
+- `server/userfiles.js`: user editor's users / seusers / contexts / kernel.te
+  edits; the user model itself lives in `server/service.js` (model.user);
+  `media/user.js` its webview.
 - `server/service.js`: service editor model (catalogs, render, recognize,
   minimal edits by unit diff); `media/service.js` its webview form.
 - `server/specconfig.js`: build settings (makeArgs + files overlays) per
@@ -989,6 +1023,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/user-test.js` (in `npm test`) and `test/user-e2e.js`
+  (`npm run test:user-e2e`, melody; `[tree [spec [variant]]]` like
+  service-e2e).
 - `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

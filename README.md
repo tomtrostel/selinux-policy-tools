@@ -682,6 +682,51 @@ standalone module linked with the running policy and its configuration).
 On RHEL 9's targeted policy the report takes about 9 s (the reach of each
 user is 0.1–2.5 s; staff_u reaches 867 domains, user_u 100, guest_u 11).
 
+**User editor** (*SELinux: New User…*, or *New User…* in Logins and Users;
+full trees)
+
+A form for a new SELinux user, NAME_u with role NAME_r and domain NAME_t,
+with a live preview of every file it writes:
+
+* **Kind**: ordinary user (`userdom_unpriv_user_template`, like staff_u),
+  restricted terminal or desktop user (guest_u, xguest_u), administrator
+  (sysadm_u), or a confined administrator role with no login of its own,
+  entered from another role (like webadm_r: Fedora/RHEL's
+  `userdom_confined_admin_template`, upstream's `userdom_base_user_template`).
+  Only kinds whose template the tree has are offered.
+* **Logins**: Linux logins, `%group`s or `__default__` with an optional
+  range (seusers; a login mapped to another user is refused), and the **ways
+  in** (ssh, console, graphical login, cron jobs, rlogin): its own
+  `NAME_u_default_contexts` lists only those, so the others aren't offered
+  to it. Ticking cron jobs adds `cron_role`.
+* **Roles**: roles it may switch to (`sysadm_role_change(NAME_r)` and the
+  role in its gen_user line), roles that may switch to it
+  (`staff_role_change_to(NAME_r)`), users who also get the role (added to
+  their gen_user lines), and its own `NAME_role_change` /
+  `NAME_role_change_to` interfaces in the `.if`.
+* **Programs and administration**: sudo, su and the ssh client (role
+  templates that give it NAME_sudo_t etc.; after sudo its contexts file
+  offers its own context, then the roles it may switch to), and a search
+  over the tree's role interfaces: services it administers (`*_admin`),
+  applications (`*_role`) and admin programs (`*_run`). Arguments are filled
+  by the interfaces' parameter names, so both Fedora's `(role, domain)` and
+  upstream's `(prefix, domain, application attribute, role)` forms work;
+  calls into modules that may be off go in `optional_policy`.
+* **More rights** for its domain (capabilities, system access, other
+  interfaces) as in the service editor, and the **levels** (default level,
+  range, categories) and home directory prefix (the tree's usual one:
+  `user` in Fedora/RHEL, the user's own name upstream).
+
+**Create** writes, as one undoable edit: the role module in
+`policy/modules/roles` (`role NAME_r;` plus the kind's template and the
+calls), its gen_user line in the users file the build uses (RHEL: the
+spec's `users-targeted`), `role NAME_r;` in `kernel.te` (the users file is
+compiled into the base module, so base must declare every role it names, as
+refpolicy does for staff_r), the seusers lines, the contexts file in
+`config/appconfig-<TYPE>`, and the module's modules.conf line. Afterwards
+*Logins and Users* on the build shows where its logins land and what it can
+reach.
+
 **Compiled Policy view** (full trees; standalone modules linked with the
 installed policy)
 
@@ -1116,6 +1161,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   tree build: `__default__ → staff_u` noted for its admin role, `staff_u`
   opens at its `gen_user` line, no host accounts. The webview is tested
   against a fake DOM.
+* User editor (test/user-e2e.js on CLIP and on RHEL 9 with its spec): a new
+  login user (ssh and console, sudo and the ssh client, may switch to
+  sysadm_r, logins `alice` and `%opsgroup`) and a confined log-admin role
+  entered from staff_r that staff_u gets; the tree builds and links, and
+  the build's logins report shows the user with its roles and logins, ssh
+  landing in its domain, sysadm_t reached through newrole, and staff_u
+  reaching the new role's domain. On RHEL the gen_user lines go into the
+  spec's `users-targeted` and the module into `modules-targeted-contrib.conf`.
 * Module Preview on CLIP: `cron` off (links; 22 dependent optional blocks;
   removed rules traced into them), `mta` off (link error on the requiring
   interface call), `nscd` on (blocks come alive), `ntp` off (also dropped
@@ -1164,6 +1217,10 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   limits which categories it sees, not which domains it enters); pam and
   sudoers settings aren't read (sudo rules decide who may run what as
   root; the policy decides which domain that runs in).
+* The user editor creates new users in a tree; opening existing users
+  (staff, sysadm, webadm, …) and standalone user modules packaged as RPMs
+  are not there yet. A new user's role module is loadable, but its role is
+  also declared in `kernel.te` (base), as the users file requires.
 * `semanage login`/`user` changes that aren't in the files under
   `/etc/selinux/<name>` (the merged `seusers` is) and user roles added with
   `semanage user` show up only through the installed policy, not a tree

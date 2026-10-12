@@ -44,6 +44,10 @@
     vscode.postMessage({ cmd: 'load', against });
   }
   $('refresh').addEventListener('click', load);
+  if ($('newUser')) {
+    $('newUser').setAttribute('title', 'Create an SELinux user in the tree: its role, logins and where they land');
+    $('newUser').addEventListener('click', () => vscode.postMessage({ cmd: 'newUser' }));
+  }
   $('against').addEventListener('change', () => { against = $('against').value; load(); });
 
   const open = (loc, text, title) => (loc ? h('button', { class: 'link', title: title || 'Open', onclick: () => vscode.postMessage({ cmd: 'open', loc }) }, text) : h('code', {}, text));

@@ -1913,6 +1913,154 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, 
   return { problems, files };
 });
 
+/* ---------------- user editor ---------------- */
+
+const userfiles = require('./userfiles');
+const USERS_FILE = 'policy/users';
+
+/** The users file the build uses: the spec overlay (RHEL users-targeted) if configured, else policy/users. */
+function effectiveUsersFile(root) {
+  const overlay = treeCfg().files && treeCfg().files[USERS_FILE];
+  if (overlay) {
+    const src = [].concat(overlay).map(s => resolveOverlay(root, s)).pop();
+    const p = typeof src === 'string' ? src : src && src.from;
+    if (p) return { path: p, text: readSource(p) };
+  }
+  const p = path.join(root, USERS_FILE);
+  return { path: p, text: readSource(p) };
+}
+
+/** Parameter names of an interface or template, from its doc comment (null when undocumented). */
+function defParams(n) {
+  const d = (idx.defs.get(n) || [])[0];
+  return d && d.doc && d.doc.params && d.doc.params.length ? d.doc.params.map(p => p.name || '') : null;
+}
+
+/**
+ * Roles and the interfaces that change to / from them: X_role_change(R) lets R change
+ * to the role it requires, X_role_change_to(R) lets that role change to R.
+ */
+function roleIfaces() {
+  const out = {};
+  for (const [n, list] of idx.defs) {
+    const m = /^\w+_role_change(_to)?$/.exec(n);
+    const d = list[0];
+    if (!m || d.generated || !/\.if$/.test(d.path)) continue;
+    const roles = (d.requires || []).filter(r => r.kind === 'role' && /^\w+_r$/.test(r.name)).map(r => r.name);
+    if (roles.length !== 1) continue;
+    const f = idx.files.get(d.path);
+    const e = out[roles[0]] || (out[roles[0]] = { module: f ? f.module : '' });
+    e[m[1] ? 'changeTo' : 'change'] = n;
+  }
+  return out;
+}
+
+/**
+ * Calls a user role makes for programs and administration: sudo/su/ssh role templates, application
+ * roles (*_role, *_role_template), *_admin and other interfaces marked <rolecap/>, whose arguments the
+ * editor can fill (name prefix, role, domain, application attribute). [{ n, s, m, g }]
+ */
+function userRoleCalls(ctx) {
+  const out = [];
+  const probe = { user: { kind: 'unpriv' }, name: 'zzprobe' };
+  for (const [n, list] of idx.defs) {
+    const d = list[0];
+    if (d.generated || !/\.if$/.test(d.path) || /_role_change(_to)?$/.test(n)) continue;
+    const role = /_role(_template)?$/.test(n), admin = /_admin$/.test(n);
+    if (!role && !admin && !(d.doc && d.doc.rolecap)) continue;
+    if (!service.roleCallArgs(n, probe, ctx)) continue;
+    const ps = defParams(n) || [];
+    if (!ps.some(p => /role/i.test(p) && !/prefix/i.test(p)) && !role) continue; // admin interfaces without a role argument aren't role calls
+    const f = idx.files.get(d.path);
+    const g = /^(sudo|su|ssh)_role_template$/.test(n) ? 'login' : admin ? 'admin' : role ? 'apps' : 'run';
+    out.push({ n, s: (d.doc && d.doc.summary || '').replace(/\s+/g, ' ').trim(), m: f ? f.module : '', g });
+  }
+  return out.sort((a, b) => a.n.localeCompare(b.n));
+}
+
+function userCtx() {
+  const base = serviceCtx(false);
+  const ctx = { ...base, params: defParams, roleIfaces: roleIfaces(), roleExists: (r) => (idx.decls.get(r) || []).some(d => d.kind === 'role') };
+  ctx.roleCalls = userRoleCalls(ctx);
+  return ctx;
+}
+
+/** The tree's login configuration files for a user: seusers and <user>_default_contexts in config/appconfig-<TYPE>. */
+function userConfigPaths(name) {
+  const dir = appconfigDir(treeRoot);
+  return { seusers: path.join(dir, 'seusers'), contexts: path.join(dir, `${name}_u_default_contexts`) };
+}
+
+connection.onRequest('selinux/userInfo', async () => {
+  await indexing;
+  if (!treeRoot || usingDevel) return { unavailable: 'The user editor works on a policy source tree (open one as the workspace).' };
+  const ctx = userCtx();
+  const uf = effectiveUsersFile(treeRoot);
+  const genUsers = userfiles.parseGenUsers(uf.text || '');
+  // The home directory prefix most users of this tree have (Fedora/RHEL: user; upstream: the role's name).
+  // A prefix shared by most users (Fedora/RHEL: user) is the default; when most users have their own (upstream), none.
+  const counts = new Map();
+  let own = 0;
+  for (const u of genUsers) {
+    if (u.name === 'system_u' || !/^\w+$/.test(u.prefix)) continue;
+    if (u.prefix === u.name.replace(/_u$/, '')) own++;
+    else counts.set(u.prefix, (counts.get(u.prefix) || 0) + 1);
+  }
+  const prefix = [...counts].sort((a, b) => b[1] - a[1])[0];
+  const model = service.newUserModel();
+  if (prefix && prefix[1] > 1 && prefix[1] > own) model.prefix = prefix[0];
+  const cp = userConfigPaths('x');
+  return {
+    isNew: true, model,
+    catalog: service.userCatalog(ctx, userfiles.WAYS.filter(([, , sources]) => sources.some(s => ctx.typeExists(s)))),
+    interfaces: serviceInterfaces(ctx.condSafe),
+    users: [...new Set(genUsers.map(u => u.name))].filter(n => n !== 'system_u').sort(),
+    usersFile: uf.path, configDir: path.dirname(cp.seusers), prefixDefault: model.prefix || '(the user’s name)',
+    seusers: userfiles.parseSeusers(readSource(cp.seusers) || ''),
+  };
+});
+
+connection.onRequest('selinux/userPlan', async ({ model }) => {
+  await indexing;
+  if (!treeRoot || usingDevel) return { problems: ['The user editor works on a policy source tree.'], files: [] };
+  const ctx = userCtx();
+  const U = `${model.name}_u`;
+  const cp = userConfigPaths(model.name);
+  const seText = readSource(cp.seusers);
+  const taken = new Map(userfiles.parseSeusers(seText || '').filter(x => x.user !== U).map(x => [x.login, x.user]));
+  const problems = service.validate(model, ctx, { isNew: true, loginTaken: (n) => taken.get(n) || null });
+  if (model.user && (model.ways || []).includes('cron') && ctx.has('cron_role') && !(model.roleCalls || []).includes('cron_role')) problems.push('Note: cron jobs run in the user’s domain only with the cron role call (cron_role); add it under Programs.');
+  if (problems.some(p => /name must|already exists|already declared/.test(p))) return { problems, files: [] };
+  const paths = newServicePaths(model.name, 'roles');
+  for (const k of ['te', 'if', 'fc']) if (fs.existsSync(paths[k])) { problems.push(`${rel(paths[k])} already exists.`); return { problems, files: [] }; }
+  const out = service.plan(model, ctx, null, null);
+  const files = [];
+  const push = (p, kind, old, text) => { if (text !== (old || '')) files.push({ path: p, kind, exists: old != null, text, changed: true, diff: service.lineDiff(old || '', text) }); };
+  for (const k of ['te', 'if', 'fc']) files.push({ path: paths[k], kind: k, exists: false, text: out[k], changed: true, diff: service.lineDiff('', out[k]) });
+  const uf = effectiveUsersFile(treeRoot);
+  if (uf.text == null) problems.push(`No users file at ${rel(uf.path)}: add the gen_user line yourself.`);
+  else push(uf.path, 'users', uf.text, userfiles.editUsers(uf.text, model, { comment: model.summary }));
+  // The users file is part of the base module: base must declare the role too (kernel.te, as for staff_r).
+  const kmod = idx.modules().find(x => x.module === 'kernel' && x.files.te && x.files.te.startsWith(treeRoot + path.sep));
+  const kText = kmod ? readSource(kmod.files.te) : null;
+  const kNew = kText != null ? userfiles.editKernelRoles(kText, `${model.name}_r`) : null;
+  if (kNew == null) problems.push('No role declarations found in kernel.te: declare the role in a base module yourself, or the gen_user line won’t compile.');
+  else push(kmod.files.te, 'kernel', kText, kNew);
+  if (seText == null) { if ((model.logins || []).some(l => (l.login || '').trim())) problems.push(`No seusers file at ${rel(cp.seusers)}: map the logins with semanage login after installing.`); }
+  else push(cp.seusers, 'seusers', seText, userfiles.editSeusers(seText, model));
+  const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
+  const ctxText = userfiles.contextsText(model, { typeExists: ctx.typeExists, level });
+  const oldCtx = readSource(cp.contexts);
+  if (ctxText || oldCtx != null) push(cp.contexts, 'contexts', oldCtx, ctxText);
+  const { conf, states } = moduleStates(treeRoot);
+  if (conf && !states.has(model.name)) {
+    const part = conf.parts[conf.parts.length - 1];
+    const text = part.text.replace(/\s*$/, '\n') + `\n# ${model.summary || `The ${model.name} user role`}\n${model.name} = module\n`;
+    files.push({ path: part.path, kind: 'conf', exists: true, text, changed: true, diff: service.lineDiff(part.text, text) });
+  }
+  return { problems, files };
+});
+
 /*
  * Assertions about the compiled policy, kept in a file in the tree and
  * evaluated by policy_query.py after every successful build and whenever the

@@ -254,6 +254,11 @@
         "icon": "$(person)"
       },
       {
+        "command": "selinux.newUser",
+        "title": "SELinux: New User…",
+        "icon": "$(person-add)"
+      },
+      {
         "command": "selinux.buildRpm",
         "title": "SELinux: Build RPM",
         "icon": "$(package)"
@@ -902,7 +907,7 @@
           {
             "id": "users",
             "title": "Users, roles and logins",
-            "description": "gen_user lines are checked as you type; Logins and Users shows who logs in as what and what their sessions can reach.\n[Logins and Users…](command:selinux.showLogins)\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)",
+            "description": "gen_user lines are checked as you type; Logins and Users shows who logs in as what and what their sessions can reach.\n[Logins and Users…](command:selinux.showLogins)\n[New User…](command:selinux.newUser)\n[Show Compiled Policy](command:selinuxCompiledPolicy.focus)",
             "media": {
               "markdown": "media/walkthroughs/lockdown/users.md"
             },
@@ -924,7 +929,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
@@ -947,6 +952,7 @@
     "test:tutorial": "node test/tutorial-e2e.js",
     "test:denials": "node test/denials-test.js",
     "test:logins-e2e": "node test/logins-e2e.js",
+    "test:user-e2e": "node test/user-e2e.js",
     "test:denials-e2e": "node test/denials-e2e.js",
     "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80",
     "test:package": "node test/package-e2e.js"

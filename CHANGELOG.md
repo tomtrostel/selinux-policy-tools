@@ -18,6 +18,17 @@
   question for a path or type. On the running policy also people's and
   service accounts from `/etc/passwd` with the seusers line that applies.
   The lockdown walkthrough's users page covers it.
+* **User editor** (*SELinux: New User…*): a form for a new SELinux user in
+  a tree: the kind (ordinary, restricted, administrator, or a confined
+  administrator role entered from another role), Linux logins and ranges,
+  the ways in (ssh, console, graphical, cron), roles it may switch to and
+  roles that may switch to it, users who also get the role, sudo / su /
+  ssh role templates, services it administers and applications it runs
+  (role interfaces with arguments filled by their parameter names, in both
+  Fedora's and upstream's forms), extra rights, levels and home prefix.
+  It writes the role module, the gen_user line (into the spec's users file
+  on RHEL), the role in kernel.te, seusers, the user's contexts file and
+  modules.conf, with a preview of each.
 
 ## 0.11.0 (2026-10-12)
 
