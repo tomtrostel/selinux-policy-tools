@@ -741,6 +741,12 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   buttonText('Find').fire('click');
   const fq = last('find');
   check(fq && fq.query.domain === 'webby_t' && fq.query.target === 'etc_t' && fq.query.tclass === 'file' && fq.query.perms.join() === 'open,write', 'Find sends the need', fq);
+  // Without a build: the message says so, with Build now.
+  send({ cmd: 'found', id: fq.id, result: { error: 'Build the tree (SELinux: Build) to get interface suggestions: they are worked out with its m4 output.' } });
+  const bn = buttonText('Build now');
+  check(!!bn, 'a missing build: the message comes with Build now');
+  bn.fire('click');
+  check(last('build'), 'Build now asks for a build of the policy');
   what.value = '/var/log/webby.log'; buttonText('Find').fire('click');
   check(last('find').query.path === '/var/log/webby.log' && !last('find').query.target, 'a path is sent as a path (looked up on the host)');
   send({ cmd: 'found', id: fq.id, result: { target: 'etc_t', resolved: null, notes: [], suggest: { list: [

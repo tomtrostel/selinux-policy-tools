@@ -157,6 +157,9 @@ async function write(plan) {
 
   // The tree is untouched and still builds.
   check(fs.readFileSync(path.join(tree, 'policy/modules.conf'), 'utf8') === confBefore && fs.readFileSync(path.join(tree, 'policy/modules/kernel/corenetwork.te.in'), 'utf8') === corenetBefore, 'modules.conf and corenetwork.te.in unchanged');
+  // Building from the workspace folder around the tree (no policy editor active) builds the tree.
+  const wb = await conn.sendRequest('selinux/build', { uri: uri(ws) });
+  check(wb.ok && wb.tree, `a build of the workspace folder (around the tree) builds the tree (${wb.ms} ms)`, wb.unavailable || (wb.log && wb.log.slice(-800)));
   const logging = path.join(tree, 'policy/modules/system/logging.te');
   conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(logging), languageId: 'selinux', version: 1, text: fs.readFileSync(logging, 'utf8') } });
   const tb = await conn.sendRequest('selinux/build', { uri: uri(logging) });

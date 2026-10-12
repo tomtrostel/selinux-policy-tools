@@ -385,6 +385,13 @@ so far covered by the e2e tests only.
    refuses loginPty when <D-stem>_devpts_t is a file type already (found by
    the survey: ipsec_mgmt_devpts_t). Fedora: 313 file types custom, 0 left
    "label only" with access; survey mutation 30 = custom → read.
+   Build target fix (unreleased; user hit "This file is outside the policy
+   tree" from Build the policy with the CLIP clone as workspace):
+   buildRequestTarget falls back to treeRoot for anything outside trees and
+   modules (not inExcludedTree; on-save builds still use buildTarget only);
+   selinux.buildModule takes 'tree' (views pass it; ignores the active
+   editor); webview buildHint() adds Build now (cmd build) to errors that
+   mention a build.
    Grouping long lists (item 4, done, unreleased): extraSection groups
    model.extra by module (info.interfaces m, else the name's prefix) when
    more than GROUP_AT = 12: details.egroup per module (sorted; open state in

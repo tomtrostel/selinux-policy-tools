@@ -1070,8 +1070,12 @@ connection.onRequest('selinux/reindex', async () => { await reindex(); return id
 function buildRequestTarget(uri) {
   const why = buildUnavailable();
   if (why) return { unavailable: why };
-  const key = buildTarget(toPath(uri));
-  if (!key) return { unavailable: treeRoot ? `This file is outside the policy tree (${treeRoot}).` : 'This file is not part of a module (no .te file next to it).' };
+  const p = toPath(uri);
+  let key = buildTarget(p);
+  // Not a file of the tree or of a module (the workspace folder around the tree, a README, a panel
+  // with no editor): building means building the active tree. A file of another tree is refused.
+  if (!key && treeRoot && !usingDevel && !inExcludedTree(p)) key = treeRoot;
+  if (!key) return { unavailable: treeRoot ? `This file is outside the policy tree (${treeRoot}); it belongs to another tree of the workspace. Switch to that tree (status bar) to build it.` : 'This file is not part of a module (no .te file next to it).' };
   return { key };
 }
 connection.onRequest('selinux/build', async ({ uri, package: pkg }) => {

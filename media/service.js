@@ -194,7 +194,7 @@
       const fill = () => {
         box.textContent = '';
         const r = ex && ex !== 'loading' && ex.result && ex.result.results ? ex.result.results[i] : null;
-        box.append(r ? h('pre', { class: 'grants' }, r.rules.map(x => x.text).join('\n') || 'no rules') : h('div', { class: 'muted small' }, ex && ex.result && ex.result.error ? ex.result.error : 'Use “Show what they allow”.'));
+        box.append(r ? h('pre', { class: 'grants' }, r.rules.map(x => x.text).join('\n') || 'no rules') : ex && ex.result && ex.result.error ? buildHint(ex.result.error) : h('div', { class: 'muted small' }, 'Use “Show what they allow”.'));
       };
       const tog = h('button', { class: 'icon', title: 'Show the rules this line compiles to', onclick: (e) => {
         if (e && e.stopPropagation) e.stopPropagation();
@@ -211,7 +211,7 @@
         : `Choosing “${info.catalog.accessLabels[row.access] || row.access}” replaces these rules with its standard ones (see the preview):`),
       ruleRows,
       ex === 'loading' ? h('div', { class: 'muted small' }, 'Expanding them with m4…')
-        : ex && ex.result && ex.result.error ? h('div', { class: 'warn small' }, ex.result.error)
+        : ex && ex.result && ex.result.error ? buildHint(ex.result.error)
         : ex ? allowSummary(row, ex.result)
         : h('button', { class: 'chip', title: `Expand these rules with this policy's m4 and show, per class, what ${domainName()} may do with ${row.type} and anything else they touch`, onclick: () => {
           expanded.set(ruleKey(row), 'loading'); vscode.postMessage({ cmd: 'expand', key: ruleKey(row), items: row.rules }); render();
@@ -301,6 +301,10 @@
   }
 
   /** Search box over the interfaces taking just a domain; onPick(name). */
+  /** An error message, with a Build now button when what's missing is a build. */
+  const buildHint = (msg, cls = 'warn small') => h('div', { class: cls }, msg, /SELinux: Build|Build the/.test(msg || '')
+    ? h('button', { class: 'chip', title: 'Build the policy now (as SELinux: Build does); then try again', onclick: () => { vscode.postMessage({ cmd: 'build' }); for (const [k, v] of expanded) if (v && v.result && v.result.error) expanded.delete(k); for (const [k, v] of grantsInfo) if (v && v.error) grantsInfo.delete(k); } }, 'Build now') : null);
+
   /* ---------- what an interface really grants (m4), shown on demand ---------- */
 
   const grantsInfo = new Map();   // interface → { rules, attrs, cond } | 'loading' | { error }
@@ -310,7 +314,7 @@
     const g = grantsInfo.get(n);
     el.textContent = '';
     if (!g || g === 'loading') { el.append(h('div', { class: 'muted small' }, 'Working out what it compiles to…')); return; }
-    if (g.error) { el.append(h('div', { class: 'warn small' }, g.error)); return; }
+    if (g.error) { el.append(buildHint(g.error)); return; }
     const lines = g.rules.map(r => r.text + (r.cond ? '   [under a boolean]' : ''));
     el.append(h('pre', { class: 'grants' }, lines.length ? lines.slice(0, 30).join('\n') + (lines.length > 30 ? `\n… and ${lines.length - 30} more` : '') : 'No rules for the domain itself.'),
       g.attrs.length ? h('div', { class: 'muted small', title: 'Attributes give the domain every rule written for them elsewhere' }, `and adds the attributes ${g.attrs.join(', ')}`) : null);
@@ -388,7 +392,7 @@
     if (!t) return;
     const { results, exclude, onPick } = t;
     results.textContent = '';
-    if (r.error) { results.append(h('div', { class: 'warn' }, r.error)); return; }
+    if (r.error) { results.append(buildHint(r.error, 'warn')); return; }
     if (r.resolved) results.append(h('div', { class: 'muted small' }, `${r.resolved.path} is ${r.resolved.type} (${r.resolved.from}).`));
     const s = r.suggest;
     for (const n of r.notes || []) results.append(h('div', { class: 'muted small' }, n));

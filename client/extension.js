@@ -309,8 +309,9 @@ function activate(context) {
       try { await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(p)); }
       catch { vscode.window.showWarningMessage(`No ${path.basename(p)} next to this file.`); }
     }),
-    vscode.commands.registerCommand('selinux.buildModule', async () => {
-      const ed = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri.scheme === 'file' ? vscode.window.activeTextEditor : null;
+    vscode.commands.registerCommand('selinux.buildModule', async (arg) => {
+      // 'tree' (from the views and panels): the policy, whatever editor happens to be active.
+      const ed = arg !== 'tree' && vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri.scheme === 'file' ? vscode.window.activeTextEditor : null;
       // Without a policy editor (e.g. from the Compiled Policy view), build the workspace's tree.
       const target = ed ? ed.document.uri : (vscode.workspace.workspaceFolders || [])[0] && vscode.workspace.workspaceFolders[0].uri;
       if (!target) return;
@@ -864,6 +865,7 @@ function showServiceEditor(context, mod, prefill = null) {
       else if (m.cmd === 'domain') { current.domain = m.domain; await load(); }
       else if (m.cmd === 'standalone') { current.standalone = !!m.on; await load(true); }
       else if (m.cmd === 'find') post({ cmd: 'found', id: m.id, result: await client.sendRequest('selinux/findInterfaces', m.query) });
+      else if (m.cmd === 'build') vscode.commands.executeCommand('selinux.buildModule', 'tree');
       else if (m.cmd === 'expand') post({ cmd: 'expanded', key: m.key, result: await client.sendRequest('selinux/expandStatements', { items: m.items }) });
       else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
@@ -980,7 +982,7 @@ class CompiledPolicyView {
     if (this.message) {
       const item = new vscode.TreeItem(this.message.unavailable);
       item.iconPath = new vscode.ThemeIcon(this.message.needsBuild ? 'tools' : 'info');
-      if (this.message.needsBuild) item.command = { command: 'selinux.buildModule', title: 'Build' };
+      if (this.message.needsBuild) item.command = { command: 'selinux.buildModule', title: 'Build', arguments: ['tree'] };
       item.tooltip = this.message.needsBuild ? 'Click to build the policy' : undefined;
       return [{ id: 'msg', item }];
     }

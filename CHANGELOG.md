@@ -4,6 +4,13 @@
 
 **Fixes**
 
+* **Build from a panel or a non-policy file** (e.g. *Build the policy* in the
+  Compiled Policy view while the service editor has the focus, in a workspace
+  whose tree is a subfolder such as a CLIP clone): refused with "This file is
+  outside the policy tree". Anything that isn't in a tree or module now builds
+  the active tree (a file of another tree is still refused, saying to switch
+  trees); the views' build buttons always build the tree, and the service
+  editor offers **Build now** where a build is missing.
 * **Service editor, file access**: a file type whose rules match none of the
   access levels (e.g. `mmap_manage_files_pattern`, plain `allow` rules, a
   type transition of its own) read back as "label only (no access)", and
