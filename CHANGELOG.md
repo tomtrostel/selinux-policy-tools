@@ -25,6 +25,9 @@
 
 * File labels: a directory made equivalent to `/` (`semanage fcontext -e /
   DIR`) looked paths up as `//etc/…` instead of `/etc/…`.
+* Wrapped programs form: changing the wrapper or protected directory (or
+  the module name) didn't update the paths and type names shown in the
+  program cards.
 
 ## 0.14.0 (2026-10-13)
 

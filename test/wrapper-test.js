@@ -174,6 +174,15 @@ pm = last('plan').model.programs[0];
 check(pm.target === '' && pm.roles.length === 0 && pm.selfRules.length === 0, 'run in the wrapper\'s domain instead: no transition, no rules copied');
 runs.value = 'other_t'; runs.fire('change');
 check(last('plan').model.programs[0].target === 'other_t', 'another candidate domain');
+const dirIn = input('/opt/NAME/bin');
+dirIn.value = '/usr/local/wrap'; dirIn.fire('input');
+const protIn = input('/.NAME');
+protIn.value = '/.hidden'; protIn.fire('input');
+input('e.g. rowrap').value = 'rw2'; input('e.g. rowrap').fire('input');
+const ft = byId.form.textContent;
+check(input('/opt/NAME/bin') === dirIn && /\/usr\/local\/wrap\/someprog/.test(ft) && !/\/opt\/rowrap\/bin\/someprog/.test(ft) && /\/\.hidden\/someprog\.real/.test(ft) && /rw2_someprog_t, rw2_someprog_real_exec_t/.test(ft),
+  'typed directories and name update the program cards\' paths and types without re-rendering', ft.slice(ft.indexOf('Wrapper'), ft.indexOf('Wrapper') + 300));
+input('e.g. rowrap').value = 'rowrap'; input('e.g. rowrap').fire('input');
 send({ cmd: 'plan', plan: { problems: ['Note: something to know'], files: [{ path: '/t/policy/modules/admin/rowrap.te', kind: 'te', exists: false, text: 'x', changed: true, diff: [['+', 'policy_module(rowrap, 1.0.0)']] }], commands: ["semanage fcontext -a -e / '/var/chroot/ro'"] } });
 const pv = byId.preview.textContent;
 check(/something to know/.test(pv) && /semanage fcontext -a -e/.test(pv) && /policy_module\(rowrap/.test(pv) && !byId.apply.disabled, 'preview: notes, setup commands for each system, files; Create enabled');

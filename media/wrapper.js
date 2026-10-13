@@ -30,9 +30,14 @@
   $('apply').addEventListener('click', () => { if (model) { $('status').textContent = 'Writing…'; vscode.postMessage({ cmd: 'apply', model, ...extras() }); } });
 
   const extras = () => ({ standalone: !!(info && info.standalone), where: info && info.isNew && !info.standalone ? where : undefined, license: info && info.standalone && info.isNew ? license : undefined });
-  const changed = () => { clearTimeout(timer); timer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, ...extras() }), 250); };
+  // Text derived from other fields (full paths, card hints): typing doesn't
+  // re-render the form (it would lose the focus), so these follow on change.
+  let lives = [];
+  const live = (cls, fn) => { const e = h('span', { class: cls }, fn()); lives.push(() => { e.textContent = fn(); }); return e; };
+  const changed = () => { for (const f of lives) f(); clearTimeout(timer); timer = setTimeout(() => vscode.postMessage({ cmd: 'plan', model, ...extras() }), 250); };
   const card = (id, title, hint, body, defOpen = true) => {
-    const d = h('details', { class: 'card', open: (open.has(id) ? open.get(id) : defOpen) || null }, h('summary', {}, h('span', { class: 'title' }, title), hint ? h('span', { class: 'hint' }, hint) : null), h('div', { class: 'body' }, body));
+    const hintEl = typeof hint === 'function' ? live('hint', hint) : hint ? h('span', { class: 'hint' }, hint) : null;
+    const d = h('details', { class: 'card', open: (open.has(id) ? open.get(id) : defOpen) || null }, h('summary', {}, h('span', { class: 'title' }, title), hintEl), h('div', { class: 'body' }, body));
     d.addEventListener('toggle', () => open.set(id, d.open));
     return d;
   };
@@ -85,12 +90,12 @@
       sel.addEventListener('change', () => { license = sel.value; changed(); });
       rows.push(row('License', sel, text('', (v) => { if (v.trim()) { license = v.trim(); changed(); } }, { size: 22, placeholder: 'or another SPDX expression' })));
     }
-    return card('module', 'Module', model.name || '', rows);
+    return card('module', 'Module', () => model.name || '', rows);
   }
 
   function chrootCard() {
     const dirs = (k, v) => { model[k] = v.trim(); autoDirs = false; changed(); };
-    return card('chroot', 'Chroot', model.chroot || '', [
+    return card('chroot', 'Chroot', () => model.chroot || '', [
       h('div', { class: 'muted small' }, 'The users\' sessions run inside this directory (e.g. sshd\'s ChrootDirectory). The wrappers and the protected copies live inside it; the paths below are as the user sees them.'),
       row('Chroot', text(model.chroot, (v) => { model.chroot = v.trim(); changed(); }, { size: 30, placeholder: '/var/chroot/ro', title: 'The chroot directory on the host' })),
       check('Label the chroot like / (its usr/lib64 like /usr/lib64, and so on)', model.likeRoot, (on) => { model.likeRoot = on; render(); changed(); },
@@ -144,7 +149,6 @@
 
   function programCard(p, i) {
     const r = looked.get(p);
-    const t = typesOf(p);
     const body = [];
     body.push(row('Program', h('code', {}, p.original), h('button', { title: 'Look its label and domain up again', onclick: () => { lookup(p); render(); } }, r ? 'Look up again' : 'Look up'),
       h('button', { class: 'icon', title: 'Stop wrapping this program', onclick: () => { model.programs.splice(i, 1); render(); changed(); } }, '✕')));
@@ -163,9 +167,17 @@
       render(); changed();
     });
     body.push(row('Runs as', sel, r && r.generic ? h('span', { class: 'muted small' }, 'it has no domain of its own') : null));
-    body.push(row('Wrapper', text(p.wrapper, (v) => { p.wrapper = v.trim(); changed(); }, { size: 18, title: `Your wrapper's file name in ${model.wrapperDir || 'the wrapper directory'}; labeled ${t.WE}` }), h('span', { class: 'code' }, `${(model.wrapperDir || '').replace(/\/+$/, '')}/${p.wrapper}`)));
-    body.push(row('Copy', text(p.copy, (v) => { p.copy = v.trim(); changed(); }, { size: 18, title: `The copy's file name in the protected directory; labeled ${t.C}` }), h('span', { class: 'code' }, `${(model.protectedDir || '').replace(/\/+$/, '')}/${p.copy}`)));
-    body.push(row('Short name', text(p.stem, (v) => { p.stem = v.trim(); render(); changed(); }, { size: 14, title: 'Names its types: NAME_SHORT_t (wrapper), NAME_SHORT_exec_t, NAME_SHORT_real_exec_t (copy)' }), h('span', { class: 'code' }, `${t.W}, ${t.C}`)));
+    const wrapperIn = text(p.wrapper, (v) => { p.wrapper = v.trim(); changed(); }, { size: 18 });
+    const copyIn = text(p.copy, (v) => { p.copy = v.trim(); changed(); }, { size: 18 });
+    const tips = () => {
+      const x = typesOf(p);
+      wrapperIn.title = `Your wrapper's file name in ${model.wrapperDir || 'the wrapper directory'}; labeled ${x.WE}`;
+      copyIn.title = `The copy's file name in the protected directory; labeled ${x.C}`;
+    };
+    tips(); lives.push(tips);
+    body.push(row('Wrapper', wrapperIn, live('code', () => `${(model.wrapperDir || '').replace(/\/+$/, '')}/${p.wrapper}`)));
+    body.push(row('Copy', copyIn, live('code', () => `${(model.protectedDir || '').replace(/\/+$/, '')}/${p.copy}`)));
+    body.push(row('Short name', text(p.stem, (v) => { p.stem = v.trim(); render(); changed(); }, { size: 14, title: 'Names its types: NAME_SHORT_t (wrapper), NAME_SHORT_exec_t, NAME_SHORT_real_exec_t (copy)' }), live('code', () => { const x = typesOf(p); return `${x.W}, ${x.C}`; })));
     if (p.target) {
       const c = cands.find(x => x.domain === p.target);
       const auto = c ? c.auto : [];
@@ -186,7 +198,7 @@
       const hits = info.interfaces.filter(x => !(p.ifaces || []).includes(x.n) && words.every(w => x.n.toLowerCase().includes(w) || (x.s || '').toLowerCase().includes(w))).slice(0, 25);
       results.append(...hits.map(x => h('div', { class: 'hit', title: x.s, onclick: () => { p.ifaces = p.ifaces || []; toggle(p.ifaces, x.n, true); render(); changed(); } }, h('code', {}, x.n), h('span', { class: 'muted small' }, ` ${x.s || ''}`))));
     }, { size: 28, placeholder: 'search interfaces', title: 'More rights for the wrapper\'s domain, if your wrapper does more than execve' });
-    body.push(h('div', { class: 'sub small' }, `What the wrapper (${t.W}) may do besides running the copy`), h('div', { class: 'chips' }, chips), filter, results);
+    body.push(h('div', { class: 'sub small' }, 'What the wrapper (', live('', () => typesOf(p).W), ') may do besides running the copy'),h('div', { class: 'chips' }, chips), filter, results);
     if (r && r !== 'looking' && !r.error) body.push(readiness(r));
     return card(`prog:${i}`, p.original.split('/').pop() || 'program', p.target ? `runs as ${p.target}` : 'runs in the wrapper\'s domain', body);
   }
@@ -222,6 +234,7 @@
   function render() {
     const form = $('form');
     form.textContent = '';
+    lives = [];
     if (!info) return;
     form.append(...[moduleCard(), chrootCard(), userCard(), ...programsCard(), keptCard()].filter(Boolean));
     renderPlan();
