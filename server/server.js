@@ -2432,9 +2432,10 @@ async function loginChecks(checks, bin) {
   const at = (x) => ({ p: cfg.seusers, l: x.l });
   const out = [];
   let userInfo = null;
-  const reachOf = new Map(); // user → reach result
-  const userReachFor = async (U) => {
-    if (reachOf.has(U)) return reachOf.get(U);
+  const reachOf = new Map(); // user|avoided domains → reach result
+  const userReachFor = async (U, avoid = null) => {
+    const rk = `${U}|${(avoid || []).join(' ')}`;
+    if (reachOf.has(rk)) return reachOf.get(rk);
     if (!userInfo) {
       const defaults = { path: cfg.defaults, list: logins.parseContexts(cfg.read(cfg.defaults)) };
       const r0 = await policyQuery.request({ op: 'users', bin, types: [], names: [] });
@@ -2449,13 +2450,14 @@ async function loginChecks(checks, bin) {
       userInfo = { users: r1.users || {}, roleTypes: r1.roleTypes || {}, files, defaults };
     }
     const u = userInfo.users[U];
-    if (!u) { reachOf.set(U, null); return null; }
+    if (!u) { reachOf.set(rk, null); return null; }
     const ent = logins.entries(u.roles, (role) => new Set(userInfo.roleTypes[role] || []), userInfo.files[U] || null, userInfo.defaults);
     const starts = [];
     for (const e of ent) for (const c of e.contexts) if (!starts.some(s => s.role === c.role && s.type === c.type)) starts.push(c);
-    const rr = starts.length ? await userReach(bin, U, starts) : { reached: {}, steps: {} };
-    reachOf.set(U, rr.error ? null : rr);
-    return reachOf.get(U);
+    const rr = starts.length ? await userReach(bin, U, starts, null, avoid) : { reached: {}, steps: {} };
+    if (rr.error) throw new Error(/KeyError/.test(rr.error) ? `Unknown type or attribute ${rr.error.replace(/^KeyError: /, '')}` : rr.error);
+    reachOf.set(rk, rr);
+    return rr;
   };
   for (const c of checks) {
     const res = { id: c.id, ok: true, login: [], count: 0 };
@@ -2484,7 +2486,7 @@ async function loginChecks(checks, bin) {
         for (const { name, line, via } of lines) {
           const base = { login: name, user: line.user, via, ...at(line) };
           if (c.kind === 'login-maps') { if (c.users.includes(line.user)) res.login.push(base); continue; }
-          const rr = await userReachFor(line.user);
+          const rr = await userReachFor(line.user, c.kind === 'login-reaches' ? c.through || null : null);
           if (!rr) continue;
           if (c.kind === 'login-reaches') {
             const n = logins.nearest(rr, Object.keys(rr.reached).filter(d => targets.has(d)));
@@ -2579,7 +2581,7 @@ function checkMessage(c, x) {
     return `${who} may ${verb} ${names(c.targets)}: ${x.count} rule${x.count > 1 ? 's' : ''}; the related information shows where they come from.`;
   }
   if (c.kind === 'flows') return `Data in ${x.flow[0].from} can reach ${x.flow[x.flow.length - 1].to}: ${[x.flow[0].from, ...x.flow.map(st => st.to)].join(' → ')}. Fix the policy, or list domains trusted to pass it on after 'except'.`;
-  if (c.kind === 'reaches') return `${x.path[0].from} can reach ${x.path[x.path.length - 1].to}: ${[x.path[0].from, ...x.path.map(s => s.to)].join(' → ')}`;
+  if (c.kind === 'reaches') return `${x.path[0].from} can reach ${x.path[x.path.length - 1].to}${c.through ? ` without going through ${names(c.through)}` : ''}: ${[x.path[0].from, ...x.path.map(s => s.to)].join(' → ')}`;
   if (c.kind === 'require') return `Not allowed: ${x.missing.slice(0, 4).map(m => `${m.source} ${m.target}:${m.class} { ${m.missing.join(' ')} }`).join('; ')}${x.count > 4 ? ` (+${x.count - 4} more)` : ''}`;
   if (x.login) {
     const who = (v) => `${v.login}${v.via === 'default' && v.login !== '__default__' ? ' (via __default__)' : ''} → ${v.user}`;
@@ -2588,7 +2590,7 @@ function checkMessage(c, x) {
     if (c.kind === 'only-login') return `Logins mapped to other users: ${list.map(who).join(', ')}${more}`;
     if (c.kind === 'never-login' || c.kind === 'login-maps') return `${list.map(who).join(', ')}${more}`;
     const route = (v) => (v.path && v.path.length ? `: ${[v.path[0].from, ...v.path.map(s => s.to)].join(' → ')}` : ' (where it logs in)');
-    if (c.kind === 'login-reaches') return list.map(v => `${who(v)} reaches ${v.domain}${route(v)}`).join('; ') + more;
+    if (c.kind === 'login-reaches') return list.map(v => `${who(v)} reaches ${v.domain}${c.through ? ` without going through ${names(c.through)}` : ''}${route(v)}`).join('; ') + more;
     return list.map(v => `${who(v)} may ${c.perms === '*' ? 'access' : c.permsLabel} ${v.target} as ${v.domain}${route(v)}`).join('; ') + more;
   }
   if (x.rbac) {
@@ -3585,12 +3587,12 @@ async function loginPolicy(against) {
 }
 
 /** Reach of one user from its login start contexts, cached per policy file + mtime. */
-async function userReach(bin, user, starts, roles = null) {
+async function userReach(bin, user, starts, roles = null, avoid = null) {
   const key = `${bin}:${fs.statSync(bin).mtimeMs}`;
   if (reachCache.key !== key) reachCache = { key, map: new Map() };
-  const k = `${user}|${(roles || []).join(' ')}|${starts.map(s => `${s.role}:${s.type}`).sort().join(',')}`;
+  const k = `${user}|${(roles || []).join(' ')}|${starts.map(s => `${s.role}:${s.type}`).sort().join(',')}|${(avoid || []).join(' ')}`;
   if (!reachCache.map.has(k)) {
-    reachCache.map.set(k, policyQuery.request({ op: 'reach', bin, user, starts, roles,
+    reachCache.map.set(k, policyQuery.request({ op: 'reach', bin, user, starts, roles, avoid: avoid || [],
       access: logins.ABILITIES.map(a => ({ id: a.id, attr: a.attr, t: a.t, classes: a.classes, perms: a.perms })) }));
   }
   return reachCache.map.get(k);
@@ -3755,8 +3757,9 @@ const specOut = (s) => ({ spec: s.template || s.spec, flag: s.flag, mode: s.mode
  * others (matching lines that lose, most specific first), key (after
  * file_contexts.subs) }] }. On this host also what the file is now.
  */
-connection.onRequest('selinux/fileLabel', async ({ path: p, mode } = {}) => {
-  await indexing;
+connection.onRequest('selinux/fileLabel', async ({ path: p, mode } = {}) => { await indexing; return lookupFile(p, mode); });
+
+async function lookupFile(p, mode) {
   if (typeof p !== 'string' || !p.trim().startsWith('/')) return { error: 'Give an absolute path, such as /usr/bin/rpm.' };
   p = p.trim();
   if (p.length > 1) p = p.replace(/\/+$/, '');
@@ -3792,7 +3795,7 @@ connection.onRequest('selinux/fileLabel', async ({ path: p, mode } = {}) => {
     out.error = process.platform === 'win32' ? 'Looking up labels needs a Linux host (use Remote-SSH).' : 'No policy to look in: no installed policy under /etc/selinux, and no workspace build.';
   }
   return out;
-});
+}
 
 /**
  * What a policy lets happen to objects of a type: who may access it (rules as
@@ -3811,6 +3814,277 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
   delete r.id;
   return { ...r, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build }, locs, traceable: !!lp.pol.build };
 });
+
+/* ---------------- wrapped programs ---------------- */
+
+const wrapper = require('./wrapper');
+
+/** Modules the wrapper editor wrote (a "# wrapper-chroot:" header), in the tree or standalone. */
+function wrapperModules() {
+  const out = [];
+  for (const m of idx.modules()) {
+    if (!m.files.te || (treeRoot && !m.files.te.startsWith(treeRoot + path.sep) && !isStandaloneModule(m.files.te))) continue;
+    const text = readSource(m.files.te);
+    if (!text || !/^# wrapper-chroot: /m.test(text)) continue;
+    out.push({ module: m.module, layer: m.layer, files: m.files, standalone: usingDevel || isStandaloneModule(m.files.te) });
+  }
+  return out;
+}
+
+/** Which of `names` are types, and the roles, of this host's running policy (standalone modules are installed there). */
+async function hostPolicyNames(names) {
+  const active = build.installedPolicies().find(p => p.active);
+  if (!active || process.platform === 'win32') return { types: new Set(), roles: new Set() };
+  const r = await policyQuery.request({ op: 'users', bin: active.policy, types: [], names: [...new Set(names.filter(Boolean))] });
+  return { types: new Set(r.exists || []), roles: new Set(Object.keys(r.roleTypes || {})) };
+}
+
+/** A type the tree's build has: declared, and by a module modules.conf turns on (or outside modules). */
+function treeTypeBuilt(t) {
+  if (!idx.decls.has(t)) return false;
+  const mods = idx.declaringModules(t);
+  return !mods || !idx.moduleKinds || [...mods].some(m => idx.isEnabled(m));
+}
+
+/** Roles with a domain of the same name (staff_r / staff_t): who may run the wrappers. */
+async function wrapperUsers(sa) {
+  if (!sa) {
+    const roles = [...idx.decls].filter(([, l]) => l.some(d => d.kind === 'role')).map(([n]) => n);
+    return roles.filter(r => /_r$/.test(r) && treeTypeBuilt(r.replace(/_r$/, '_t'))).sort().map(r => ({ role: r, domain: r.replace(/_r$/, '_t') }));
+  }
+  const first = await hostPolicyNames([]);
+  const cands = [...first.roles].filter(r => /_r$/.test(r)).map(r => r.replace(/_r$/, '_t'));
+  const have = await hostPolicyNames(cands);
+  return [...first.roles].filter(r => /_r$/.test(r) && have.types.has(r.replace(/_r$/, '_t'))).sort().map(r => ({ role: r, domain: r.replace(/_r$/, '_t') }));
+}
+
+function wrapperChecksPath() { return checksPath(); }
+
+/** The form's context: the service editor's (tree or devel headers) plus where new modules go. */
+connection.onRequest('selinux/wrapperInfo', async ({ module: mod, standalone } = {}) => {
+  await indexing;
+  if (!treeRoot && !usingDevel) return { unavailable: 'Open a policy source tree, or a folder for standalone modules, first.' };
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
+  const m = mod ? wrapperModules().find(x => x.module === mod) : null;
+  if (mod && !m) return { unavailable: `${mod} wasn't written by the wrapper editor (no "# wrapper-chroot:" line in its .te).` };
+  const sa = m ? m.standalone : (usingDevel || (canStandalone && !!standalone));
+  const ctx = serviceCtx(sa);
+  const dev = sa && !usingDevel ? develInterfaces() : null;
+  const inTree = !!treeRoot && !usingDevel && !sa;
+  const info = {
+    users: await wrapperUsers(sa), standalone: sa, canStandalone: canStandalone && !m,
+    folder: roots[0] || null, folderSuffix: sa && !usingDevel ? '-selinux' : '',
+    layers: inTree ? fs.readdirSync(path.join(treeRoot, 'policy', 'modules'), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() : null,
+    interfaces: dev ? serviceInterfaces().filter(x => dev.names.has(x.n)) : serviceInterfaces(),
+    defaults: wrapper.DEFAULT_IFACES.filter(n => ctx.has(n)),
+    licenses: sa && !m ? { common: packaging.LICENSES, custom: [...new Set((settings.packaging.customLicenses || []).map(x => String(x).trim()).filter(Boolean))], default: (settings.packaging.license || '').trim() || 'MIT' } : null,
+    checksFile: wrapperChecksPath(),
+    linux: process.platform !== 'win32',
+  };
+  if (info.layers) info.defaultLayer = ['admin', 'services'].find(l => info.layers.includes(l)) || info.layers[0];
+  if (!m) return { ...info, isNew: true, model: wrapper.newModel() };
+  const texts = serviceTexts(m.files);
+  const rec = wrapper.recognize(texts);
+  if (rec.error) return { unavailable: rec.error };
+  return { ...info, isNew: false, module: mod, files: m.files, model: rec.model, kept: wrapper.plan(rec.model, ctx, texts).kept };
+});
+
+/**
+ * A program to wrap: its label and domain (the tree's build, or this host's policy
+ * for a standalone module), the domains it may run as with the rules each has on
+ * the program's own file (copied to the copy's type) and the domains each starts
+ * on its own (the role needs them), its package (to refresh the copy), and what
+ * the copy will find in the chroot: the libraries it links and the paths of the
+ * file types its domain uses.
+ */
+connection.onRequest('selinux/wrapperProgram', async ({ path: p, standalone, chroot } = {}) => {
+  await indexing;
+  if (process.platform === 'win32') return { error: 'Looking up programs needs the Linux host (use Remote-SSH).' };
+  if (typeof p !== 'string' || !/^\/\S+$/.test(p.trim())) return { error: 'Give the program\'s absolute path on this system.' };
+  p = p.trim();
+  const sa = usingDevel || !!standalone;
+  const pols = denialPolicies();
+  const pol = (!sa && pols.find(x => x.build)) || pols.find(x => x.active) || pols[0];
+  if (!pol) return { error: 'No policy to look in: build the tree, or use a host with an installed policy.' };
+  const look = await lookupFile(p, 'file');
+  if (look.error) return { error: look.error };
+  if (!look.exists) return { error: `${p} isn't on this host: the copy is made from it.` };
+  const pl = look.policies.find(x => x.id === pol.id) || {};
+  if (!pl.type) return { error: `The ${pol.label.replace(/^\w/, c => c.toLowerCase())} gives ${p} no label.` };
+  const lp = await loginPolicy(pol.id);
+  if (lp.error) return { error: lp.error };
+  const info = await policyQuery.request({ op: 'fileinfo', bin: lp.bin, type: pl.type });
+  if (info.error) return { error: `Policy query failed: ${info.error}` };
+  const stem = pl.type.replace(/_exec_t$/, '').replace(/_t$/, '');
+  const doms = info.entrypointOf.map(d => d.domain).filter(d => !GENERIC_ENTRY.has(d))
+    .sort((a, b) => ((b === `${stem}_t`) - (a === `${stem}_t`)) || (b.startsWith(stem) - a.startsWith(stem)) || a.localeCompare(b));
+  // A label that unconfined domains enter (bin_t) gives no domain of its own.
+  const generic = info.entrypointOf.some(d => GENERIC_ENTRY.has(d.domain));
+  const candidates = [];
+  for (const d of generic ? [] : doms.slice(0, 8)) {
+    const selfRules = [];
+    let conditional = 0;
+    for (const a of info.access.filter(x => x.s === d && x.t === info.type)) {
+      if (a.cond) { conditional++; continue; }
+      for (const [c, perms] of Object.entries(a.classes)) {
+        const ps = perms.filter(x => !(c === 'file' && x === 'entrypoint'));
+        if (ps.length) selfRules.push({ c, perms: ps });
+      }
+    }
+    const tr = await policyQuery.request({ op: 'transitions', bin: lp.bin, name: d, dir: 'out' });
+    const auto = (tr.transitions || []).filter(t => t.auto.length).map(t => ({ domain: t.target, conditional: t.conditional }));
+    candidates.push({ domain: d, selfRules, conditionalRules: conditional, auto, permissive: !!(info.entrypointOf.find(x => x.domain === d) || {}).permissive });
+  }
+  const q = await execFileP('rpm', ['-qf', '--qf', '%{NAME}\n', '--', p]);
+  const pkg = q.err ? null : q.stdout.trim().split('\n')[0] || null;
+  // What the copy will find in the chroot.
+  const root = typeof chroot === 'string' && /^\/\S+$/.test(chroot.trim()) ? chroot.trim().replace(/\/+$/, '') : null;
+  const inChroot = (x) => { try { return fs.existsSync(root + x); } catch { return false; } };
+  let libs = null, needs = null;
+  if (root && fs.existsSync(root)) {
+    const l = await execFileP('ldd', [p]);
+    const paths = [...new Set([...l.stdout.matchAll(/(\/\S+)\s+\(0x/g)].map(m => m[1]))];
+    libs = { total: paths.length, missing: paths.filter(x => !inChroot(x)) };
+    const d = candidates[0] && candidates[0].domain;
+    if (d) {
+      const rules = await policyQuery.request({ op: 'rules', bin: lp.bin, name: d, dir: 'source', kinds: ['allow'] });
+      const FILEISH = new Set(['file', 'dir', 'lnk_file', 'sock_file', 'chr_file', 'blk_file', 'fifo_file']);
+      const access = new Map();
+      for (const r of rules.rules || []) {
+        if (!FILEISH.has(r.c) || r.t === 'self' || r.t === info.type || r.cond) continue;
+        const lv = access.get(r.t) || new Set();
+        for (const x of filelabel.permLevels(r.perms)) lv.add(x);
+        access.set(r.t, lv);
+      }
+      const fl = fcLists(pol);
+      const byType = new Map();
+      for (const s of (fl && fl.order) || []) if (s.type && access.has(s.type) && !s.template) { if (!byType.has(s.type)) byType.set(s.type, []); byType.get(s.type).push(s); }
+      const seen = new Set();
+      needs = [];
+      for (const [t, list] of byType) {
+        for (const s of list) {
+          const fixed = s.spec.slice(0, s.meta ? s.stem : s.spec.length).replace(/\\(.)/g, '$1');
+          const dir = s.meta ? fixed.replace(/\/[^/]*$/, '') : fixed;
+          if (!dir || dir === '/' || seen.has(dir) || /^\/(proc|sys)(\/|$)/.test(dir)) continue;
+          seen.add(dir);
+          needs.push({ type: t, path: dir, present: inChroot(dir), access: [...access.get(t)].sort((a, b) => (filelabel.LEVEL_RANK[b] || 0) - (filelabel.LEVEL_RANK[a] || 0)) });
+        }
+      }
+      needs.sort((a, b) => (a.present - b.present) || a.path.localeCompare(b.path));
+    }
+  }
+  const counts = needs ? { total: needs.length, present: needs.filter(n => n.present).length } : null;
+  return { path: p, origType: pl.type, context: pl.context, policy: pol.label, generic, candidates, target: generic ? '' : (doms[0] || ''), pkg,
+    chroot: root, chrootExists: !!(root && fs.existsSync(root)), libs, needs: needs && needs.slice(0, 80), needsCount: counts };
+});
+
+connection.onRequest('selinux/wrapperList', async () => {
+  await indexing;
+  return { modules: wrapperModules().map(m => ({ module: m.module, layer: m.layer, standalone: m.standalone })) };
+});
+
+connection.onRequest('selinux/wrapperPlan', async (params) => { await indexing; return wrapperPlan(params); });
+
+const CHECKS_BEGIN = (n) => `# >>> wrapped programs: ${n} (rewritten by the wrapper editor)`;
+const CHECKS_END = (n) => `# <<< wrapped programs: ${n}`;
+
+/** The files a wrapper model writes: { problems, files, commands }. */
+async function wrapperPlan({ model, module: mod, standalone, where, license }) {
+  if (!treeRoot && !usingDevel) return { problems: ['Open a policy source tree, or a folder for standalone modules, first.'], files: [] };
+  const m = mod ? wrapperModules().find(x => x.module === mod) : null;
+  if (mod && !m) return { problems: [`${mod} is no longer a wrapper module.`], files: [] };
+  const sa = m ? m.standalone : (usingDevel || (!!treeRoot && !!develInterfaces() && !!standalone));
+  const ctx = serviceCtx(sa);
+  const isNew = !m;
+  const progs = model.programs || [];
+  let typeExists, roleExists;
+  if (sa) {
+    const W = progs.flatMap(p => Object.values(wrapper.names(model, p)));
+    const host = await hostPolicyNames([model.domain, ...progs.flatMap(p => [p.target, ...(p.roles || [])]), ...W]);
+    // The host's policy, unless nothing could be read (no SELinux here): then don't guess.
+    const known = host.roles.size > 0;
+    typeExists = (t) => !known || host.types.has(t);
+    roleExists = (r) => !known || host.roles.has(r);
+  } else {
+    typeExists = treeTypeBuilt;
+    roleExists = (r) => (idx.decls.get(r) || []).some(d => d.kind === 'role');
+  }
+  const hostExists = process.platform === 'win32' ? null : (x) => { try { return fs.existsSync(x); } catch { return false; } };
+  const problems = wrapper.validate(model, ctx, { isNew, typeExists: isNew ? typeExists : (t) => typeExists(t) || progs.some(p => Object.values(wrapper.names(model, p)).includes(t)), roleExists, hostExists });
+  if (problems.some(p => /module name must|already exists/.test(p))) return { problems, files: [] };
+  let paths, before = { te: null, if: null, fc: null };
+  if (m) {
+    paths = { te: m.files.te, if: m.files.if || m.files.te.replace(/\.te$/, '.if'), fc: m.files.fc || m.files.te.replace(/\.te$/, '.fc') };
+    before = serviceTexts(m.files);
+  } else {
+    paths = newServicePaths(model.name, where || (sa ? null : 'admin'), sa);
+    for (const k of ['te', 'if', 'fc']) if (fs.existsSync(paths[k])) { problems.push(`${rel(paths[k])} already exists.`); return { problems, files: [] }; }
+  }
+  const prev = m ? wrapper.recognize(before).model : null;
+  const out = wrapper.plan(model, ctx, m ? before : null);
+  const files = [];
+  const push = (p, kind, old, text) => { if (text != null && text !== (old || '')) files.push({ path: p, kind, exists: old != null, text, changed: true, diff: service.lineDiff(old || '', text) }); };
+  for (const k of ['te', 'if', 'fc']) push(paths[k], k, m ? before[k] : null, out[k]);
+  const chroot = wrapper.trimDir(model.chroot);
+  let commands = null;
+  if (!sa) {
+    // The tree installs the chroot's equivalence with its other file_contexts.subs_dist lines.
+    const subsPath = path.join(treeRoot, 'config', 'file_contexts.subs_dist');
+    const subs = readSource(subsPath);
+    if (subs != null) {
+      let lines = subs.replace(/\n$/, '').split('\n');
+      const isLine = (l, c) => l.trim().split(/\s+/).join(' ') === `${c} /`;
+      if (prev && prev.likeRoot && prev.chroot && (prev.chroot !== chroot || !model.likeRoot)) lines = lines.filter(l => !isLine(l, prev.chroot));
+      if (model.likeRoot && chroot && !lines.some(l => isLine(l, chroot))) lines.push(`${chroot} /`);
+      push(subsPath, 'subs', subs, lines.join('\n') + '\n');
+    } else if (model.likeRoot) problems.push(`Note: the tree has no config/file_contexts.subs_dist; label the chroot like / on each system with semanage fcontext -a -e / ${chroot}.`);
+    // A new module in a tree is built only when modules.conf lists it.
+    if (isNew) {
+      const { conf, states } = moduleStates(treeRoot);
+      if (conf && !states.has(model.name)) {
+        const part = conf.parts[conf.parts.length - 1];
+        const text = part.text.replace(/\s*$/, '\n') + `\n# ${model.summary || `Wrapped programs for ${chroot}`}\n${model.name} = module\n`;
+        push(part.path, 'conf', part.text, text);
+      }
+    }
+    commands = wrapper.setupCommands(model);
+  } else {
+    // Standalone: the spec puts the copies in place (marked blocks, rewritten on edits) and a Makefile.
+    const dir = path.dirname(paths.te);
+    const spec = path.join(dir, `${model.name}-selinux.spec`), mk = path.join(dir, 'Makefile');
+    const w = { likeRoot: model.likeRoot, chroot, protected: wrapper.hostPath(model, wrapper.trimDir(model.protectedDir)),
+      copies: progs.map(p => ({ from: p.original, to: wrapper.hostPath(model, wrapper.insideCopy(model, p)), pkg: p.pkg || null })) };
+    const old = readSource(spec);
+    if (old == null) {
+      const lic = license != null ? String(license).trim() : ((settings.packaging.license || '').trim() || 'MIT');
+      const why = packaging.licenseProblem(lic);
+      if (why) problems.push(why);
+      push(spec, 'spec', null, packaging.specText({ name: model.name, version: model.version || '1.0.0', summary: model.summary, packager: gitPackager(dir), license: lic, wrapper: w }));
+    } else {
+      const upd = packaging.updateWrapperSpec(old, w);
+      if (upd == null) problems.push(`Note: ${rel(spec)} no longer has its "wrapped programs" blocks; update the copies in its %post, %postun and triggers by hand.`);
+      else push(spec, 'spec', old, upd);
+    }
+    if (readSource(mk) == null) push(mk, 'make', null, packaging.makefileText(model.name));
+    for (const p of progs) if (!p.pkg && p.original) problems.push(`Note: ${p.original} belongs to no package, so nothing refreshes its copy when it changes; copy it again yourself.`);
+  }
+  // What must stay true, checked after every build.
+  const cp = wrapperChecksPath();
+  if (cp && model.name && model.domain && progs.length) {
+    const old = readSource(cp);
+    const block = `${CHECKS_BEGIN(model.name)}\n${wrapper.checksText(model)}${CHECKS_END(model.name)}`;
+    let text;
+    const at = old == null ? -1 : old.indexOf(CHECKS_BEGIN(model.name));
+    if (old == null) text = `${block}\n`;
+    else if (at >= 0) {
+      const end = old.indexOf(CHECKS_END(model.name), at);
+      text = end < 0 ? null : old.slice(0, at) + block + old.slice(end + CHECKS_END(model.name).length);
+      if (text == null) problems.push(`Note: the wrapper checks in ${rel(cp)} lost their end marker; edit them by hand.`);
+    } else text = `${old.replace(/\s*$/, '')}\n\n${block}\n`;
+    if (text != null) push(cp, 'checks', old, text);
+  }
+  return { problems, files, commands };
+}
 
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */
 let ruleIndex = { key: null, side: null };

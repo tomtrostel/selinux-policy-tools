@@ -69,6 +69,8 @@ check(F.applySubs('/usr/lib64/libc.so', [], dist) === '/usr/lib/libc.so' && F.ap
 check(F.applySubs('/usr/lib64x/a', [], dist) === '/usr/lib64x/a', 'not in the middle of a name');
 check(F.applySubs('/srv/web/a', F.parseSubs('/srv/web /var/www'), dist) === '/var/www/a', 'local subs');
 check(F.applySubs('/data/lib64/a', F.parseSubs('/data /usr'), dist) === '/usr/lib/a', 'local subs, then dist subs on the result');
+const rootSubs = F.parseSubs('/var/chroot/ro /\n');
+check(F.applySubs('/var/chroot/ro/etc/passwd', rootSubs, []) === '/etc/passwd' && F.applySubs('/var/chroot/ro', rootSubs, []) === '/', 'a directory labeled like / (a chroot): its paths as at the root');
 const runSubs = F.parseSubs('/run /var/run\n/run/systemd/generator /usr/lib/systemd/system\n');
 check(F.applySubs('/run/systemd/generator/home.mount', [], runSubs) === '/usr/lib/systemd/system/home.mount' && F.applySubs('/run/x.pid', [], runSubs) === '/var/run/x.pid',
   'later lines are tried first (libselinux prepends them): /run/systemd/generator before /run');

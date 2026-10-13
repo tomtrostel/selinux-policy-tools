@@ -179,7 +179,7 @@ class Index:
         vals = {"u1": u, "r1": r1, "t1": t1, "u2": u, "r2": r2, "t2": t2}
         return all(self.eval_constraint(e, vals, []) for e in self._proc_cons.get(perm, ()))
 
-    def reach(self, user, starts, limit=12, roles=None):
+    def reach(self, user, starts, limit=12, roles=None, avoid=frozenset()):
         """What a session of `user` can reach: BFS over (role, domain) states from
         the start contexts. A domain transition s → t needs the transition rule
         and an entrypoint s may execute (or dyntransition + setcurrent); t must be
@@ -218,6 +218,8 @@ class Index:
                     cand_cache[s] = (cand, dyn, self.can(s, "setexec"))
                 cand, dyn, setexec = cand_cache[s]
                 for t in sorted(set(cand) | dyn):
+                    if t in avoid:  # paths through these don't count (a wrapper that is the allowed way in)
+                        continue
                     # Deterministic (a set's order changes between runs): the same role, the role named
                     # like the domain (sysadm_r for sysadm_t), then by name.
                     order = sorted(roles, key=lambda r2: (r2 != role, r2[:-2] != t[:-2], r2))
@@ -312,9 +314,12 @@ class Index:
                 if srcs:
                     yield r, srcs, hit
 
-    def transition_path(self, sources, targets, limit=8):
-        """Shortest domain-transition path from any source to any target (BFS), or None."""
+    def transition_path(self, sources, targets, limit=8, avoid=frozenset()):
+        """Shortest domain-transition path from any source to any target (BFS), or None.
+        Paths through `avoid` (e.g. the wrapper that is the only allowed way in) don't count."""
         prev = {s: None for s in sources}
+        for a in avoid:
+            prev.setdefault(a, None)
         frontier = list(sources)
         for _ in range(limit):
             nxt = []
@@ -442,7 +447,7 @@ class Index:
                 return self.check_rbac(kind, c["sources"], c["targets"])
             if kind == "reaches":
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
-                p = self.transition_path(srcs, tgts)
+                p = self.transition_path(srcs, tgts, avoid=frozenset(self.names(c.get("through") or [])) - srcs - tgts)
                 return {"ok": p is None, "path": p}
             if kind == "flows":
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
@@ -786,7 +791,7 @@ def main():
                 resp.update(users=users, roleTypes={r: sorted(ts & want) for r, ts in idx.role_types.items()},
                             exists=[n for n in req.get("names", []) if n in idx.attrs or n in idx.members])
             elif req.get("op") == "reach":
-                res = idx.reach(req["user"], req.get("starts", []), req.get("limit", 12), req.get("roles"))
+                res = idx.reach(req["user"], req.get("starts", []), req.get("limit", 12), req.get("roles"), frozenset(idx.names(req.get("avoid") or [])))
                 doms = set(res["reached"])
                 acc = {}
                 for a in req.get("access", []):

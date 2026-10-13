@@ -4,7 +4,9 @@
  *
  *   only   <names> may <perms> <targets>[:<classes>]   nobody else may (attributes expanded)
  *   never  <names> may <perms> <targets>[:<classes>]   none of these may ('*' = every domain)
- *   never  <names> reaches <names>                     no domain-transition path, direct or indirect
+ *   never  <names> reaches <names> [except through <names>]
+ *                                                      no domain-transition path, direct or indirect
+ *                                                      (paths through the 'except through' domains allowed)
  *   never  <types> flows to <types> [except <types>] [weight N]
  *                                                      no information flow (reads and writes, through any
  *                                                      chain of domains and objects; 'except' types may
@@ -13,7 +15,8 @@
  *   only|never <roles> may run <types>                 role → domain authorization
  *   only|never <users> may use <roles>                 user → role authorization
  *   only|never <users> may log in                      which SELinux users seusers maps logins to
- *   never login <logins> reaches <domains>             what a login's sessions can reach (seusers →
+ *   never login <logins> reaches <domains> [except through <domains>]
+ *                                                      what a login's sessions can reach (seusers →
  *                                                      user → its ways in → domain transitions and role changes)
  *   never login <logins> may <perms> <targets>[:<classes>]
  *                                                      … and what they may do there
@@ -34,7 +37,7 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps'];
 
 /** Tokens with columns: words (incl. '*' and %group), braces, ':' and ','. */
 function tokens(line) {
@@ -81,9 +84,17 @@ function parseChecks(text) {
       const lv = tok[i] && tok[i].v;
       if (lv === 'reaches') {
         i++;
-        const targets = names([]);
+        const targets = names(['except']);
         if (!targets.length) { err('Expected the domain(s) its sessions must not reach'); return; }
-        checks.push({ id: checks.length, line: l, kind: 'login-reaches', logins, targets, text: raw.trim() });
+        let through = [];
+        if (tok[i] && tok[i].v === 'except') {
+          i++;
+          if (!tok[i] || tok[i].v !== 'through') { err(`Expected 'through' (never login %ro reaches passwd_t except through wrap_t)`); return; }
+          i++;
+          through = names([]);
+          if (!through.length) { err(`Expected the domain(s) after 'except through'`); return; }
+        }
+        checks.push({ id: checks.length, line: l, kind: 'login-reaches', logins, targets, ...(through.length ? { through } : {}), text: raw.trim() });
         return;
       }
       if (lv === 'maps') {
@@ -120,9 +131,18 @@ function parseChecks(text) {
     if (verb === 'reaches') {
       if (kind !== 'never') { err(`'reaches' only works with 'never' (never X reaches Y)`); return; }
       i++;
-      const targets = names([]);
+      const targets = names(['except']);
       if (!targets.length) { err('Expected the domain(s) that must not be reachable'); return; }
-      checks.push({ id: checks.length, line: l, kind: 'reaches', sources, targets, text: raw.trim() });
+      // except through <domains>: paths through these don't count (a wrapper is the only way in).
+      let through = [];
+      if (tok[i] && tok[i].v === 'except') {
+        i++;
+        if (!tok[i] || tok[i].v !== 'through') { err(`Expected 'through' (never user_t reaches passwd_t except through wrap_t)`); return; }
+        i++;
+        through = names([]);
+        if (!through.length) { err(`Expected the domain(s) after 'except through'`); return; }
+      }
+      checks.push({ id: checks.length, line: l, kind: 'reaches', sources, targets, ...(through.length ? { through } : {}), text: raw.trim() });
       return;
     }
     if (verb === 'flows') {

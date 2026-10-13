@@ -26,7 +26,9 @@ never login * may read shadow_t:file
 ```
 
 * `only` / `never` / `require` … `may` *permissions* *types*: who may access what.
-* `reaches`: no domain transition path.
+* `reaches`: no domain transition path; `except through <domains>` allows
+  the paths through those (e.g. a wrapper that is the only way in, as
+  **SELinux: New Wrapped Programs…** writes them).
 * `flows to`: no information flow through any chain of domains and files.
   `except` names the types trusted to pass the data on.
 * Permission groups: `read`, `write`, `execute`, `any`, or `{ exact perms }`;

@@ -88,7 +88,8 @@ function subOnce(p, subs) {
   // (/run/systemd/generator before /run).
   for (let i = subs.length - 1; i >= 0; i--) {
     const [from, to] = subs[i];
-    if (p === from || (p.startsWith(from) && p[from.length] === '/')) return to + p.slice(from.length);
+    // A target of / (a chroot labeled like the root) keeps the rest as is: /var/chroot/ro/etc → /etc.
+    if (p === from || (p.startsWith(from) && p[from.length] === '/')) return to === '/' ? (p.slice(from.length) || '/') : to + p.slice(from.length);
   }
   return null;
 }

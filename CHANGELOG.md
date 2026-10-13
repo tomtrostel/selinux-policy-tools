@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Wrapped programs** (*SELinux: New Wrapped Programs…* / *Edit Wrapped
+  Programs…*): users whose sessions run in a chroot run programs only
+  through wrappers. Each wrapper is a domain of its own and the only one
+  that may run its program's protected copy, kept in a directory the users
+  can't list. The copy runs in the original program's domain, with its
+  privileges: the rules on the program's own file are copied, and the role
+  gets the domains it starts. Programs are looked up by path (label,
+  domain, package, and what the copy will miss in the chroot); the chroot
+  can be labeled like / (an equivalence). Writes a tree module (with
+  `file_contexts.subs_dist` and the setup commands for each system) or a
+  standalone module packaged on its own, which makes the copies when
+  installed and refreshes them when their packages update. Adds checks to
+  `selinux.checks`. Modules are read back with hand edits kept.
+* **`… reaches <domains> except through <domains>`** in `selinux.checks`,
+  for `never <names> reaches` and `never login <logins> reaches`: paths
+  through the given domains don't count.
+
+**Fixed**
+
+* File labels: a directory made equivalent to `/` (`semanage fcontext -e /
+  DIR`) looked paths up as `//etc/…` instead of `/etc/…`.
+
 ## 0.14.0 (2026-10-13)
 
 **Added**

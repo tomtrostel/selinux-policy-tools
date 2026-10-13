@@ -12,7 +12,7 @@
     },
     {
       "name": "keyword.operator.selinux-checks",
-      "match": "\\b(may|reaches|flows|to|except|weight|run|use|login|log|in|maps)\\b"
+      "match": "\\b(may|reaches|flows|to|except|through|weight|run|use|login|log|in|maps)\\b"
     },
     {
       "name": "support.constant.selinux-checks",

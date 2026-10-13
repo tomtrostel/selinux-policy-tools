@@ -840,6 +840,84 @@ from its module, its contexts file and the spec's `%post` lines; the form
 edits the module and the contexts file, and points to the spec for logins,
 levels and granted users.
 
+**Wrapped programs** (*SELinux: New Wrapped Programs…*, *SELinux: Edit
+Wrapped Programs…*; full trees and standalone modules)
+
+For users whose sessions run in a chroot (e.g. a read-only shell login with
+sshd's `ChrootDirectory`) who may use certain programs only through
+wrappers. Your wrapper decides what it allows (which arguments, for
+example) and then `execve`s a protected copy of the real program. The policy
+makes sure that:
+
+* the users may run the wrappers, but can't run the protected copies, or
+  even list the directory they're in;
+* each wrapper (a domain of its own) may run only its own program's copy;
+* the copy runs in the original program's domain, so it has exactly the
+  privileges the program has outside the chroot. The rules that domain has
+  on the program's own file are given on the copy too, and the user's role
+  gets the domain and the domains it starts on its own.
+
+The copy's type is deliberately not one of the attributes for programs
+(`exec_type`, `entry_type`): rules other domains have on those, such as
+running any program, don't reach it, so the wrapper is its only way in. The
+copy and the protected directory are declared as security files where the
+policy has `files_security_file`: broad rules on other files (on RHEL every
+user domain may stat any ordinary directory) don't reach them either.
+
+The form takes the chroot, the directories inside it for the wrappers and
+the protected copies, the user (a role with its domain; *New User…* creates
+one) and its Linux logins (`%chrootusers`, for the checks), and the
+programs: give a program's path (`/usr/sbin/someprog`) and it
+is looked up in the tree's build (or this host's policy for a standalone
+module):
+* its label and domain; programs without a domain of their own run in the
+  wrapper's domain, which the form says;
+* the domains that domain starts on its own;
+* the package it comes from;
+* what the copy will find in the chroot: the libraries it links and the
+  paths of the file types its domain uses, missing ones first. Bind mounts
+  are yours to set up.
+
+Each wrapper's domain gets what an `execve` hop needs (libraries, locale,
+the user's terminal); add interfaces if your wrapper does more.
+
+*Label the chroot like /* (on by default) labels everything in the chroot
+like its counterpart outside (`semanage fcontext -e / CHROOT`; in a tree a
+line of `config/file_contexts.subs_dist`). File contexts for the wrappers
+and copies are then written for the paths as seen inside the chroot, so they
+must be paths the host itself doesn't use: the form refuses ones that exist
+on the host, since their lines would relabel the host's files too.
+
+What it writes:
+
+* **In a tree:** the module (`policy/modules/<layer>`), its `modules.conf`
+  line, the equivalence in `file_contexts.subs_dist`, and the commands to
+  run on each system, which put the copies in place, label the chroot and
+  re-copy a program whenever it is updated.
+* **Standalone:** the module, a spec and a Makefile, packaged on its own like
+  the other standalone modules. Installing the package labels the chroot
+  and makes the copies; a trigger per program package refreshes its copy
+  when that package is updated, so the copies get its fixes; removing it
+  takes them away. Editing the module rewrites only the spec's marked
+  wrapped-programs blocks.
+* **Checks** in `selinux.checks`, rewritten with the module and run after
+  every build:
+  ```
+  never ro_t may { execute read getattr } ro_someprog_real_exec_t:file
+  never ro_t may { getattr search read } ro_protected_t:dir
+  never login %chrootusers reaches someprog_t except through ro_someprog_t
+  ```
+  `except through` is new: a path into the domain that goes through the
+  wrapper doesn't count, any other way in does. The reach check follows the
+  logins as *Logins and Users* does (their SELinux user, roles, ways in), so
+  it needs the logins; a check on the domain alone would count transitions
+  the user's role can never take. (On CLIP, with `staff_r` as the user, it
+  reports that staff logins may land in `sysadm_t`, which runs the
+  program's domain directly.)
+
+Reopening a module reads it back. Lines added to it by hand are kept, in a
+*Local additions* section at the end.
+
 **Compiled Policy view** (full trees; standalone modules linked with the
 installed policy)
 
@@ -982,7 +1060,10 @@ require syslogd_t may { append create } var_log_t:file
   and the steps as related locations.
 * `only <names> may <perms> <targets>[:<classes>]`: nobody else may;
   `never <names> may …`: none of these may (`*` = every domain);
-  `never <names> reaches <names>`: no transition path;
+  `never <names> reaches <names> [except through <names>]`: no transition
+  path (paths through the `except through` domains, e.g. a wrapper that is
+  the only allowed way in, don't count; `never login … reaches` takes it
+  too);
   `require <names> may …`: must stay allowed.
 * `never <types> flows to <types> [except <types>] [weight N]`: no
   information flow, through any chain of domains and objects. A domain
@@ -1102,6 +1183,23 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Wrapped programs (`npm run test:wrapper-e2e`, melody, on copies of the
+  CLIP, RHEL 9 and RHEL 10 trees): a chroot on the host; a program with a
+  domain of its own and one without (`bin_t`) looked up (label, domain,
+  package; the chroot's missing libraries and paths); the module, its
+  `modules.conf` line, the equivalence and the checks written; the tree
+  builds. In the compiled policy, the wrapper enters the original's domain
+  through the copy, the user's domain may not execute it, and only the
+  original domain is entered through it. The labels inside the chroot are
+  as intended, and the checks that the user can't execute, read or stat the
+  copies or the protected directory hold on all three. The login reach
+  check reports the other ways in each policy offers: on RHEL, `user_u`'s
+  sessions can also start the program's domain through `newrole_t` once
+  that domain is in `user_r`.
+  Then: read back, no-op, an edit that removes a program and keeps a
+  hand-written line. Standalone: built against the devel headers, packaged,
+  its scripts and trigger checked; adding a program changes only the spec's
+  wrapped-programs blocks.
 * File labels (`npm run test:filelabel-e2e`, melody): for 7,355 paths on
   the host (every kind of file, under `/usr`, `/etc`, `/var`, `/dev`,
   `/run`, home, plus missing paths as each kind and paths through linked
@@ -1367,6 +1465,22 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   intended.
 
 ## Limitations
+
+**Wrapped programs**
+
+* The editor labels your wrappers; it doesn't write them, and what they let
+  through (arguments, environment) is up to them. A copy runs with the full
+  privileges of the original program's domain, so a wrapper that passes
+  everything on gives the user everything the program can do.
+* What the copy needs in the chroot is listed, not set up: bind mounts and
+  libraries are yours. The list comes from the file types the domain uses,
+  so it can name paths the program never touches.
+* Adding the program's domain to the users' role is what lets the wrapper
+  start it; any other program the role may run that enters that domain is
+  a way around the wrapper. The `never login … except through` check finds
+  such paths.
+* In a tree, the copies are made by the commands shown, on each system;
+  only the standalone package keeps them up to date by itself.
 
 **File labels**
 

@@ -50,14 +50,57 @@ function userScripts(user, R) {
   return { add: add.join('\n'), del: del.join('\n') };
 }
 
-function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date(), license = 'MIT', user = null }) {
-  const desc = summary || (user ? `SELinux user ${user.U} and its role ${name}_r` : `SELinux policy for the ${name} service`);
-  const semanage = ports.length > 0 || !!user;
+/*
+ * Wrapped programs (wrapper = { likeRoot, chroot, protected (host path), copies: [{ from, to, pkg }] }):
+ * %post labels the chroot like / (an equivalence; a module can't declare one) and puts the
+ * protected copies in place; a trigger per package refreshes its copies when it is updated, so
+ * they get its fixes; %postun takes them away. The blocks are between markers, so the editor
+ * can rewrite them when programs are added or removed (the rest of the spec is yours).
+ */
+const WRAP_BEGIN = '# BEGIN wrapped programs (rewritten by SELinux Policy Tools)';
+const WRAP_END = '# END wrapped programs';
+function wrapperBlocks(w) {
+  const q = (s) => `'${String(s).replace(/'/g, "'\\''").replace(/%/g, '%%')}'`;
+  const post = [WRAP_BEGIN];
+  if (w.likeRoot) post.push(`semanage fcontext -a -e / ${q(w.chroot)} 2>/dev/null || :`);
+  post.push(`install -d -m 0711 ${q(w.protected)}`);
+  for (const c of w.copies) post.push(`cp -p ${q(c.from)} ${q(c.to)} || :`);
+  post.push(`restorecon -R ${q(w.chroot)} || :`, WRAP_END);
+  const del = [`    ${WRAP_BEGIN}`, ...w.copies.map(c => `    rm -f ${q(c.to)}`), `    rmdir ${q(w.protected)} 2>/dev/null || :`];
+  if (w.likeRoot) del.push(`    semanage fcontext -d -e / ${q(w.chroot)} 2>/dev/null || :`);
+  del.push(`    ${WRAP_END}`);
+  const byPkg = new Map();
+  for (const c of w.copies) if (c.pkg) { if (!byPkg.has(c.pkg)) byPkg.set(c.pkg, []); byPkg.get(c.pkg).push(c); }
+  const trig = [WRAP_BEGIN];
+  for (const [pkg, cs] of byPkg) {
+    trig.push(`%triggerin -- ${pkg}`, `# ${pkg} was installed or updated: refresh the protected copies of its programs.`,
+      ...cs.map(c => `cp -p ${q(c.from)} ${q(c.to)} && restorecon ${q(c.to)} || :`), '');
+  }
+  trig.push(WRAP_END);
+  return { post: post.join('\n'), postun: del.join('\n'), triggers: trig.join('\n') };
+}
+
+/** The spec with its wrapped-programs blocks rewritten for `w`, or null when the markers are gone. */
+function updateWrapperSpec(text, w) {
+  const b = wrapperBlocks(w);
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^([ \\t]*)${esc(WRAP_BEGIN)}\\n[\\s\\S]*?^[ \\t]*${esc(WRAP_END)}$`, 'gm');
+  const found = text.match(re) || [];
+  if (found.length !== 3) return null;
+  let i = 0;
+  return text.replace(re, () => [b.post, b.postun, b.triggers][i++]);
+}
+
+function specText({ name, version = '1.0.0', summary = '', ports = [], packager = 'Your Name <you@example.com>', date = new Date(), license = 'MIT', user = null, wrapper = null }) {
+  const desc = summary || (user ? `SELinux user ${user.U} and its role ${name}_r` : wrapper ? `Wrapped programs for a chroot (${wrapper.chroot})` : `SELinux policy for the ${name} service`);
+  const semanage = ports.length > 0 || !!user || !!(wrapper && wrapper.likeRoot);
+  const wb = wrapper ? wrapperBlocks(wrapper) : null;
   const portAdd = ports.map(p => `semanage port -a -t ${p.type} -p ${p.proto} ${p.port} 2>/dev/null || semanage port -m -t ${p.type} -p ${p.proto} ${p.port} || :`).join('\n');
   const portDel = ports.map(p => `    semanage port -d -t ${p.type} -p ${p.proto} ${p.port} 2>/dev/null || :`).join('\n');
   const us = user ? userScripts(user, `${name}_r`) : null;
   const ctxPath = user && user.contexts ? `%{_sysconfdir}/selinux/%{selinuxtype}/contexts/users/${user.U}` : null;
-  return `# SELinux policy module for ${name}, packaged on its own${user ? ` with the SELinux user ${user.U}` : ` so the service's
+  return `# SELinux policy module for ${name}, packaged on its own${user ? ` with the SELinux user ${user.U}` : wrapper ? ` with the protected copies of the
+# programs it wraps (made when installed, refreshed when their packages update)` : ` so the service's
 # package can require it (Requires: ${name}-selinux)`}.
 # Build: make rpm   (or: rpmbuild -bb --define "_sourcedir $PWD" ${name}-selinux.spec)
 # Written by SELinux Policy Tools; edit freely (keep Version in step with
@@ -106,12 +149,12 @@ ${ctxPath ? `install -D -p -m 0644 %{SOURCE3} %{buildroot}${ctxPath}\n` : ''}
 
 %post
 %selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/%{modulename}.pp.bz2
-${ports.length ? `# Port numbers for the module's port types.\n${portAdd}\n` : ''}${us ? `${us.add}\n` : ''}
+${ports.length ? `# Port numbers for the module's port types.\n${portAdd}\n` : ''}${us ? `${us.add}\n` : ''}${wb ? `${wb.post}\n` : ''}
 %postun
 if [ $1 -eq 0 ]; then
-${ports.length ? `${portDel}\n` : ''}${us ? `${us.del}\n` : ''}    %selinux_modules_uninstall -s %{selinuxtype} %{modulename}
+${ports.length ? `${portDel}\n` : ''}${us ? `${us.del}\n` : ''}${wb ? `${wb.postun}\n` : ''}    %selinux_modules_uninstall -s %{selinuxtype} %{modulename}
 fi
-
+${wb ? `\n${wb.triggers}\n` : ''}
 %posttrans
 %selinux_relabel_post -s %{selinuxtype}
 
@@ -177,4 +220,4 @@ function licenseProblem(s) {
   return null;
 }
 
-module.exports = { specText, makefileText, changelogDate, LICENSES, licenseProblem };
+module.exports = { specText, makefileText, changelogDate, LICENSES, licenseProblem, updateWrapperSpec, wrapperBlocks };

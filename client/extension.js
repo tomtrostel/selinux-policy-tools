@@ -436,6 +436,8 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('selinux.showLogins', () => showLogins(context)),
     vscode.commands.registerCommand('selinux.showFeatures', () => showFeatures()),
+    vscode.commands.registerCommand('selinux.newWrapper', () => showWrapperEditor(context)),
+    vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
       // From the explorer or an editor (a Uri), a path given by a link, the selected text, or asked for.
       let p = arg instanceof vscode.Uri ? arg.fsPath : typeof arg === 'string' ? arg : null;
@@ -982,6 +984,80 @@ ${EDITOR_CSS}</style></head><body>
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { userPanels.delete(key); }, undefined, context.subscriptions);
+}
+
+const wrapperPanels = new Map(); // module ('' = new) → panel
+
+/** Wrapped programs editor (media/wrapper.js): a new module, or one it wrote before (mod). */
+function showWrapperEditor(context, mod = null) {
+  const key = mod || '';
+  if (wrapperPanels.has(key)) { wrapperPanels.get(key).reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxWrapper', mod ? `Wrapped Programs: ${mod}` : 'New Wrapped Programs', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  wrapperPanels.set(key, panel);
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'wrapper.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+${EDITOR_CSS}</style></head><body>
+<div id="bar">
+  <span id="title">New Wrapped Programs</span>
+  <button id="apply" disabled>Create</button>
+  <span id="status"></span>
+</div>
+<div id="main"><div id="form"></div><div id="preview"></div></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  const post = (m) => panel.webview.postMessage(m);
+  let current = mod;
+  let standalone = false;
+  const load = async (keepModel = null) => {
+    const info = await client.sendRequest('selinux/wrapperInfo', { module: current, standalone });
+    if (info.unavailable) post({ cmd: 'error', msg: info.unavailable }); else post({ cmd: 'init', info, keep: !!keepModel, model: keepModel });
+  };
+  const planOf = (m) => client.sendRequest('selinux/wrapperPlan', { model: m.model, module: current, standalone: !!m.standalone, where: m.where, license: m.license });
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') await load();
+      else if (m.cmd === 'standalone') { standalone = !!m.on; await load(m.model); }
+      else if (m.cmd === 'program') post({ cmd: 'program', key: m.key, result: await client.sendRequest('selinux/wrapperProgram', { path: m.path, chroot: m.chroot, standalone: !!m.standalone }) });
+      else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await planOf(m) });
+      else if (m.cmd === 'newUser') showUserEditor(context);
+      else if (m.cmd === 'apply') {
+        const plan = await planOf(m);
+        if ((plan.problems || []).some(p => !p.startsWith('Note:'))) { post({ cmd: 'plan', plan }); return; }
+        const n = await applyServicePlan(plan);
+        if (!current) {
+          wrapperPanels.delete('');
+          current = m.model.name;
+          wrapperPanels.set(current, panel);
+          panel.title = `Wrapped Programs: ${current}`;
+          vscode.window.showInformationMessage(plan.files.some(f => f.kind === 'spec')
+            ? `Created the ${current} module (${n} files). Package it with SELinux: Build RPM; installing the package labels the chroot and puts the copies in place.`
+            : `Created the ${current} module (${n} files). Saving builds the tree and runs its checks; on each system, put the copies in place with the commands shown.`);
+        } else vscode.window.showInformationMessage(`Updated ${current} (${n} file${n > 1 ? 's' : ''}).`);
+        // The server indexes the saved files after a short debounce; read the module back from them.
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 250));
+          const l = await client.sendRequest('selinux/wrapperList');
+          if (l.modules.some(x => x.module === current)) break;
+        }
+        await load();
+      }
+    } catch (e) {
+      vscode.window.showErrorMessage(`Wrapped programs: ${e.message}`);
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { for (const [k, p] of wrapperPanels) if (p === panel) wrapperPanels.delete(k); }, undefined, context.subscriptions);
+}
+
+async function editWrapperCommand(context) {
+  const r = await client.sendRequest('selinux/wrapperList');
+  const mods = r.modules || [];
+  if (!mods.length) { vscode.window.showInformationMessage('No wrapped-programs modules here yet: create one with SELinux: New Wrapped Programs….'); return; }
+  const pick = mods.length === 1 ? { module: mods[0].module } : await vscode.window.showQuickPick(mods.map(x => ({ label: x.module, description: x.standalone ? 'standalone' : x.layer, module: x.module })), { placeHolder: 'Module to edit' });
+  if (pick) showWrapperEditor(context, pick.module);
 }
 
 /** Pick a user role module of the tree and open it in the user editor. */
@@ -1833,6 +1909,8 @@ const FEATURES = [
     ['selinux.editService', 'edit', 'Edit Service…', 'Open an existing service module in the form'],
     ['selinux.newUser', 'person-add', 'New User…', 'An SELinux user and role, its logins and ways in'],
     ['selinux.editUser', 'account', 'Edit User…', 'Open an existing user\'s role module in the form'],
+    ['selinux.newWrapper', 'lock', 'New Wrapped Programs…', 'Let a chroot\'s users run programs only through wrappers: protected copies that keep the programs\' own domains'],
+    ['selinux.editWrapper', 'unlock', 'Edit Wrapped Programs…', 'Open a wrapped-programs module in the form'],
     ['selinux.openChecks', 'checklist', 'Open Property Checks', 'Security requirements checked after every build (selinux.checks)'],
   ]],
   ['Fix problems', [

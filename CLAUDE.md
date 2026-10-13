@@ -937,6 +937,75 @@ so far covered by the e2e tests only.
    traced to rpm.te). Answer to the user's question: CLIP labels
    /usr/bin/rpm system_u:object_r:rpm_exec_t:s0 (admin/rpm.fc:16).
 
+11. **Wrapped programs** (done, unreleased; user 2026-10-13: chroot'ed
+   read-only users run wrapper programs that execve protected copies of
+   programs, which keep the originals' privileges; "a real chroot", "you
+   don't need to know how the wrapper works … it runs something like
+   execve", argument limits are the wrapper's job, "both in tree and stand
+   alone", no mount units, generic for any program; document it but don't
+   use one specific program as the example). `server/wrapper.js` (pure):
+   model {name, summary, version, chroot, likeRoot (equivalence chroot = /),
+   protectedDir, wrapperDir (paths inside the chroot), role, domain,
+   logins (Linux logins / %groups of the chroot users, for the reach check;
+   header `# wrapper-logins:`), programs [{stem, original, wrapper, copy, pkg, origType, target ('' = no
+   domain of its own: can_exec in the wrapper), roles (domains target
+   starts by type_transition, for the role), selfRules (target's rules on
+   origType, entrypoint dropped), ifaces (DEFAULT_IFACES libs/locale/
+   terminal)}]}. Types: NAME_STEM_t / _exec_t (domain_type +
+   domain_entry_file), copy NAME_STEM_real_exec_t (NOT exec_type/entry_type:
+   domain_entry_file_spec_domtrans and "run any program" rules would reach
+   it), NAME_protected_t (dir, search for the wrappers); both declared with
+   files_security_file where ctx.has it, else files_type (RHEL: `allow
+   user_t non_security_file_type:dir getattr` let the user stat the
+   protected dir — found by the RHEL e2e). Rules: domtrans_pattern(U, WE, W), domtrans_pattern(W, C, T),
+   allow T C:file { entrypoint mmap_exec_file_perms ioctl lock } + selfRules,
+   role R types {W, T, roles}; gen_require for U/R/T. .fc: paths inside the
+   chroot (likeRoot) or chroot-prefixed, regex-escaped. Header comments
+   `# wrapper-chroot/labels/protected/dir/user:` and per program `# STEM:
+   ORIGINAL, copied to PATH (package P)` → recognize(); plan() re-renders
+   and keeps lines the old render doesn't produce in a "Local additions"
+   section (te + fc; .if kept as is); validate (names, paths, overlapping
+   dirs, user, interfaces, type clashes for new, likeRoot paths that exist
+   on the host refused: their lines would relabel the host; a note without
+   logins); checksText (never U may {execute read getattr} copies; never U
+   may {getattr search read} D:dir; with logins: never login L reaches T
+   except through W — role-aware; the type-level `never U reaches T` was
+   dropped because it counts transitions the role can't take, e.g. RHEL
+   user_t → init_t); setupCommands. packaging.js
+   wrapperBlocks/updateWrapperSpec: marked blocks (BEGIN/END "wrapped
+   programs") in %post (semanage fcontext -a -e / CHROOT, install -d 0711,
+   cp -p, restorecon -R), %postun (rm, rmdir, semanage -d) and
+   %triggerin -- PKG per package (re-copy + restorecon); % doubled.
+   Server: wrapperModules() (te with the header), treeTypeBuilt(t) (declared
+   by an enabled module — CLIP's user_t is off: found by the e2e as a link
+   error), wrapperUsers (roles R with R-stem_t built; standalone: host
+   policy via policy_query users), requests `selinux/wrapperInfo`,
+   `selinux/wrapperProgram` {path, chroot, standalone} (lookupFile() — the
+   fileLabel request body as a function — fileinfo entrypointOf minus
+   GENERIC_ENTRY, selfRules per candidate (cond rules skipped, counted),
+   transitions out with auto, rpm -qf NAME, ldd libs vs chroot, the domain's
+   file-class rule targets → fc specs' fixed dirs → present in chroot;
+   needsCount before slicing to 80), `selinux/wrapperList`,
+   `selinux/wrapperPlan` (te/if/fc; tree: config/file_contexts.subs_dist
+   line (old chroot line removed when it changes), modules.conf for new,
+   commands; standalone: spec once / updateWrapperSpec, Makefile, note for
+   programs without a package; both: selinux.checks block between
+   `# >>> wrapped programs: NAME` / `# <<<` markers). Client:
+   showWrapperEditor (media/wrapper.js; EDITOR_CSS), selinux.newWrapper /
+   editWrapper, FEATURES entries. Checks: `never X reaches Y except through
+   Z` (checks.js `through`; policy_query transition_path avoid set; message
+   "without going through"; grammar keyword) and `never login L reaches Y
+   except through Z` (policy_query reach `avoid`: transitions into those
+   types skipped; userReach(bin, U, starts, roles, avoid), cache key incl.
+   avoid; loginChecks userReachFor(U, avoid)). Also: reach iterated roles
+   in set order → fixed earlier. Also fixed: applySubs with a
+   target of / (libselinux special case) gave //etc/…. Tests:
+   test/wrapper-test.js (npm test), test/wrapper-e2e.js (melody; [tree
+   [spec [variant]]]; adds `%rousers:<role>_u:s0` to the tree copy's
+   appconfig-mcs/seusers): CLIP, RHEL 9, RHEL 10. On CLIP the only user
+   roles built are admin ones (staff_r picked); the login reach check
+   reports staff logins landing in sysadm_t, which runs setfiles_t (true).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1101,6 +1170,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
+- `server/wrapper.js`: wrapped-programs module (model, render, read back,
+  validate, checks, setup commands); `media/wrapper.js` its webview.
 - `server/filelabel.js`: file-context parsing, fc_sort order, libselinux
   lookup order / subs / home templates; `media/filelabel.js` the File
   Labels webview.
@@ -1187,6 +1258,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/wrapper-test.js` (in `npm test`) and `test/wrapper-e2e.js`
+  (`npm run test:wrapper-e2e`, melody; `[tree [spec [variant]]]`).
 - `test/filelabel-test.js` (in `npm test`) and `test/filelabel-e2e.js`
   (`npm run test:filelabel-e2e`, melody; optional tree arg, default CLIP).
 - `test/user-test.js` (in `npm test`) and `test/user-e2e.js`
