@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-12: **v0.12.0 released** (GitHub release `v0.12.0`;
+Status as of 2026-10-13: **v0.13.0 released** (GitHub release `v0.13.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -39,6 +39,8 @@ all appears to work right").
 existing users, standalone users as RPMs, automation preset, reach
 preview). The user tried them before the release ("That all seems to
 work").
+0.13.0: login checks in selinux.checks (the user tried them before the
+release: "that all seems to work").
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -845,7 +847,7 @@ so far covered by the e2e tests only.
    checkmodule "This block has no require section"; editTe now deletes a
    touched optional_policy whose remaining content is only nested
    optional_policy blocks or comments (service survey unchanged).
-   Step 9 released as 0.12.0. Login checks (done, unreleased; "ok lets add
+   Step 9 released as 0.12.0. Login checks (done, 0.13.0; "ok lets add
    the login checks in selinux.checks now"): checks.js kinds login-reaches,
    login-may, login-maps (`never login <logins> …`), only-login /
    never-login (`<users> may log in`); tokens allow %group. Server
