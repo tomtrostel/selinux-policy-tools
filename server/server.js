@@ -2893,25 +2893,101 @@ connection.onRequest('selinux/domains', async () => {
 /* ---------------- denial assistant ---------------- */
 
 /**
- * The file contexts of a tree build, for matchpathcon: file_contexts or
- * tmp/all_mods.fc when the build wrote one (upstream refpolicy's validate),
- * else base.fc plus every module's tmp/<mod>.mod.fc combined (RHEL's
- * Makefile writes no combined file). null without a build.
+ * The file contexts of a tree build, for matchpathcon: base.fc and the .fc of
+ * every module the build packaged, sorted as semodule sorts them (libselinux
+ * lets the last match win, so the unsorted tmp/all_mods.fc gave e.g.
+ * /usr/bin/rpmbuild usr_t instead of bin_t), home directory templates
+ * expanded for /home. null without a build.
  */
 function treeFileContexts(res) {
   if (!res || !res.workDir) return null;
-  const direct = [path.join(res.workDir, 'file_contexts'), path.join(res.workDir, 'tmp', 'all_mods.fc')].find(p => fs.existsSync(p));
-  if (direct) return direct;
-  let parts = [];
-  try { parts = fs.readdirSync(path.join(res.workDir, 'tmp')).filter(n => n.endsWith('.mod.fc')).map(n => path.join(res.workDir, 'tmp', n)); } catch { return null; }
-  const base = path.join(res.workDir, 'base.fc');
-  if (fs.existsSync(base)) parts.unshift(base);
-  if (!parts.length) return null;
+  const fl = fcLists({ build: true, res });
+  if (!fl) return null;
   const out = path.join(res.workDir, 'tmp', 'zz_file_contexts');
-  const newest = Math.max(...parts.map(p => fs.statSync(p).mtimeMs));
-  try { if (fs.statSync(out).mtimeMs >= newest) return out; } catch { /* write it */ }
-  fs.writeFileSync(out, parts.map(p => fs.readFileSync(p, 'utf8')).join('\n'));
+  try { if (fs.statSync(out).mtimeMs >= fl.newest) return out; } catch { /* write it */ }
+  fs.writeFileSync(out, filelabel.renderSpecs(fl.order));
+  // matchpathcon -f reads the equivalent directories from <file>.subs_dist.
+  const subs = readSource(path.join(res.root || treeRoot, 'config', 'file_contexts.subs_dist'));
+  if (subs != null) fs.writeFileSync(`${out}.subs_dist`, subs); else fs.rmSync(`${out}.subs_dist`, { force: true });
   return out;
+}
+
+/* ---------------- file contexts as libselinux reads them ---------------- */
+
+const filelabel = require('./filelabel');
+const readIf = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+const mtimeOf = (p) => { try { return fs.statSync(p).mtimeMs; } catch { return 0; } };
+let fcListCache = new Map();
+
+/** An installed policy's file contexts: { main, homedirs, local, subs: { local, dist }, files }. */
+function installedFc(name) {
+  const dir = path.join('/etc/selinux', name, 'contexts', 'files');
+  const f = (n) => path.join(dir, n);
+  const specs = (n) => filelabel.parseSpecs(readIf(f(n)), f(n));
+  return {
+    main: specs('file_contexts'), homedirs: specs('file_contexts.homedirs'), local: specs('file_contexts.local').map(s => ({ ...s, local: true })),
+    subs: { local: filelabel.parseSubs(readIf(f('file_contexts.subs'))), dist: filelabel.parseSubs(readIf(f('file_contexts.subs_dist'))) },
+    files: ['file_contexts', 'file_contexts.homedirs', 'file_contexts.local', 'file_contexts.subs', 'file_contexts.subs_dist'].map(f),
+  };
+}
+
+/** The .fc outputs of a tree build: base.fc + tmp/<mod>.mod.fc of each packaged module (or a monolithic file_contexts). */
+function treeFcFiles(res) {
+  const work = res.workDir;
+  if (res.monolithic && fs.existsSync(path.join(work, 'file_contexts'))) return [{ p: path.join(work, 'file_contexts'), module: null }];
+  let pps = [];
+  try { pps = fs.readdirSync(work).filter(n => n.endsWith('.pp') && n !== 'base.pp'); } catch { return []; }
+  return [{ p: path.join(work, 'base.fc'), module: 'base' }, ...pps.map(n => ({ p: path.join(work, 'tmp', `${n.slice(0, -3)}.mod.fc`), module: n.slice(0, -3) }))]
+    .filter(x => fs.existsSync(x.p));
+}
+
+/**
+ * File contexts of a policy (a denialPolicies entry, or { build: true, res })
+ * in libselinux's lookup order: { order, subs, newest }. A tree build is
+ * sorted as semodule would install it; a standalone module joins the running
+ * policy's (sorted together, as semodule -i would). Cached by file times.
+ */
+function fcLists(pol) {
+  let key; let make;
+  if (pol.build && (pol.res || !usingDevel)) {
+    const res = pol.res || lastBuild.get(treeRoot);
+    if (!res || !res.workDir) return null;
+    const files = treeFcFiles(res);
+    if (!files.length) return null;
+    const newest = Math.max(...files.map(x => mtimeOf(x.p)));
+    key = `tree:${res.workDir}:${files.length}:${newest}`;
+    make = () => {
+      const specs = files.flatMap(x => filelabel.parseSpecs(readIf(x.p), null, x.module));
+      const [tpl, rest] = filelabel.splitHomeTemplates(specs);
+      const subsDist = readSource(path.join(res.root || treeRoot, 'config', 'file_contexts.subs_dist'));
+      return { order: filelabel.lookupOrder(filelabel.sortSpecs(rest), filelabel.sortSpecs(tpl)), subs: { local: [], dist: filelabel.parseSubs(subsDist) }, newest, tree: true };
+    };
+  } else if (pol.build) {
+    const res = lastModule && lastBuild.get(lastModule);
+    const active = build.installedPolicies().find(p => p.active);
+    if (!res || !res.workDir || !active) return null;
+    const own = path.join(res.workDir, 'tmp', `${res.module}.mod.fc`);
+    const inst = path.join('/etc/selinux', active.name, 'contexts', 'files');
+    const newest = Math.max(mtimeOf(own), ...['file_contexts', 'file_contexts.homedirs', 'file_contexts.local'].map(n => mtimeOf(path.join(inst, n))));
+    key = `module:${own}:${newest}`;
+    make = () => {
+      const i = installedFc(active.name);
+      const [tpl, rest] = filelabel.splitHomeTemplates(filelabel.parseSpecs(readIf(own), null, res.module));
+      return { order: filelabel.lookupOrder(filelabel.sortSpecs([...i.main, ...rest]), filelabel.sortSpecs([...i.homedirs, ...tpl]), i.local), subs: i.subs, newest };
+    };
+  } else {
+    const name = pol.name;
+    const dir = path.join('/etc/selinux', name, 'contexts', 'files');
+    const newest = Math.max(...['file_contexts', 'file_contexts.homedirs', 'file_contexts.local', 'file_contexts.subs', 'file_contexts.subs_dist'].map(n => mtimeOf(path.join(dir, n))));
+    key = `installed:${name}:${newest}`;
+    make = () => { const i = installedFc(name); return { order: filelabel.lookupOrder(i.main, i.homedirs, i.local), subs: i.subs, newest }; };
+  }
+  const id = pol.res ? 'tree' : pol.id;
+  const c = fcListCache.get(id);
+  if (c && c.key === key) return c.v;
+  const v = make();
+  fcListCache.set(id, { key, v });
+  return v;
 }
 
 const denials = require('./denials');
@@ -3388,18 +3464,20 @@ async function denialTransitions(groups, fc, bin) {
   return out;
 }
 
-/** For a standalone module build: the running policy's file contexts plus the module's own (they win), in one file for matchpathcon. */
+/** For a standalone module build: the running policy's file contexts and the module's own, sorted together as semodule -i would, in one file for matchpathcon. */
 function moduleFileContexts() {
   const res = lastModule && lastBuild.get(lastModule);
-  if (!res || !res.workDir) return null;
-  const own = path.join(res.workDir, 'tmp', `${res.module}.mod.fc`);
-  const active = build.installedPolicies().find(p => p.active);
-  if (!active || !fs.existsSync(own)) return null;
-  const dir = path.join('/etc/selinux', active.name, 'contexts', 'files');
-  const parts = ['file_contexts', 'file_contexts.homedirs', 'file_contexts.local'].map(n => path.join(dir, n)).filter(p => fs.existsSync(p)).map(p => fs.readFileSync(p, 'utf8'));
+  if (!res || !res.workDir || !fs.existsSync(path.join(res.workDir, 'tmp', `${res.module}.mod.fc`))) return null;
+  const fl = fcLists({ id: 'build', build: true });
+  if (!fl) return null;
   const out = path.join(res.workDir, 'denial_file_contexts');
-  // m4's leftovers (blank lines, #line markers) are harmless comments to matchpathcon.
-  fs.writeFileSync(out, [...parts, fs.readFileSync(own, 'utf8')].join('\n'));
+  fs.writeFileSync(out, filelabel.renderSpecs(fl.order));
+  // matchpathcon -f reads the equivalent directories from <file>.subs and .subs_dist.
+  const active = build.installedPolicies().find(p => p.active);
+  for (const n of ['subs', 'subs_dist']) {
+    const s = active && readIf(path.join('/etc/selinux', active.name, 'contexts', 'files', `file_contexts.${n}`));
+    if (s != null) fs.writeFileSync(`${out}.${n}`, s); else fs.rmSync(`${out}.${n}`, { force: true });
+  }
   return out;
 }
 
@@ -3648,6 +3726,90 @@ connection.onRequest('selinux/loginCan', async ({ against, user, starts, target,
   const n = logins.nearest(rr, Object.keys(r.access));
   if (!n) return { target, resolved, can: false, reached: Object.keys(rr.reached).length };
   return { target, resolved, can: true, domain: n.d, count: Object.keys(r.access).length, rule: r.access[n.d].rule, perms: r.access[n.d].perms, path: pathOut(rr, n.d) };
+});
+
+/* ---------------- file label lookup ---------------- */
+
+let fcSrcCache = { gen: null, map: null };
+/** The source .fc line of a compiled file-context line (same spec and type), preferring its module's and the tree's. */
+function fcSourceOf(s) {
+  if (!s.type) return null;
+  if (fcSrcCache.gen !== idx.fcByType) {
+    const map = new Map();
+    for (const [type, list] of idx.fcByType || []) for (const e of list) { const k = `${e.spec}\t${type}`; if (!map.has(k)) map.set(k, []); map.get(k).push(e); }
+    fcSrcCache = { gen: idx.fcByType, map };
+  }
+  const list = fcSrcCache.map.get(`${s.template || s.spec}\t${s.type}`) || [];
+  const modOf = (e) => (idx.files.get(e.path) || {}).module;
+  const inTree = (e) => treeRoot && e.path.startsWith(treeRoot + path.sep);
+  const e = (s.module && s.module !== 'base' && list.find(x => modOf(x) === s.module)) || list.find(inTree) || list[0];
+  return e ? { p: e.path, l: e.l, c: e.c, m: modOf(e) || null } : null;
+}
+
+const specOut = (s) => ({ spec: s.template || s.spec, flag: s.flag, mode: s.mode, context: s.context, type: s.type, module: s.module || null,
+  local: !!s.local, template: !!s.template, file: s.file ? { p: s.file, l: s.l } : null, src: fcSourceOf(s) });
+
+/**
+ * The label every known policy gives a path: { path, lookedUp, exists, mode,
+ * current, linkTarget, pkg, policies: [{ id, label, context, type, winner,
+ * others (matching lines that lose, most specific first), key (after
+ * file_contexts.subs) }] }. On this host also what the file is now.
+ */
+connection.onRequest('selinux/fileLabel', async ({ path: p, mode } = {}) => {
+  await indexing;
+  if (typeof p !== 'string' || !p.trim().startsWith('/')) return { error: 'Give an absolute path, such as /usr/bin/rpm.' };
+  p = p.trim();
+  if (p.length > 1) p = p.replace(/\/+$/, '');
+  const out = { path: p, lookedUp: p, exists: false, mode: mode || null, current: null, linkTarget: null, pkg: null, policies: [] };
+  if (process.platform !== 'win32') {
+    let st = null;
+    try { st = fs.lstatSync(p); } catch { /* not on this host */ }
+    // matchpathcon and restorecon resolve the directories (not the last component): /bin/rpm is looked up as /usr/bin/rpm.
+    try { if (p !== '/') out.lookedUp = path.posix.join(fs.realpathSync(path.posix.dirname(p)), path.posix.basename(p)); } catch { /* no such directory */ }
+    if (st) {
+      out.exists = true;
+      out.mode = mode || filelabel.modeOf(st);
+      out.executable = st.isFile() && (st.mode & 0o111) !== 0;
+      const c = await execFileP('stat', ['-c', '%C', '--', p]);
+      const cur = c.stdout.trim();
+      out.current = cur && cur !== '?' ? cur : null;
+      if (st.isSymbolicLink()) { try { out.linkTarget = fs.realpathSync(p); } catch { out.linkTarget = null; } }
+      const q = await execFileP('rpm', ['-qf', '--qf', '%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n', '--', p]);
+      if (!q.err) out.pkg = q.stdout.trim().split('\n')[0] || null;
+    }
+  }
+  out.mode = out.mode || 'file';
+  for (const pol of denialPolicies()) {
+    const fl = fcLists(pol);
+    const entry = { id: pol.id, label: pol.label, build: !!pol.build, active: !!pol.active };
+    if (!fl || !fl.order.length) { out.policies.push({ ...entry, error: 'Its file contexts are not available.' }); continue; }
+    const key = filelabel.applySubs(out.lookedUp, fl.subs.local, fl.subs.dist);
+    const ms = filelabel.matches(fl.order, key, out.mode, 8);
+    out.policies.push({ ...entry, key: key !== out.lookedUp ? key : null, context: ms.length ? ms[0].context : null, type: ms.length ? ms[0].type : null,
+      winner: ms.length ? specOut(ms[0]) : null, others: ms.slice(1).map(specOut), homeAssumed: !!(fl.tree && ms.length && ms[0].template) });
+  }
+  if (!out.policies.length) {
+    out.error = process.platform === 'win32' ? 'Looking up labels needs a Linux host (use Remote-SSH).' : 'No policy to look in: no installed policy under /etc/selinux, and no workspace build.';
+  }
+  return out;
+});
+
+/**
+ * What a policy lets happen to objects of a type: who may access it (rules as
+ * written, for the type or its attributes), which domains it starts and from
+ * where, and the type transitions that create it or happen inside it.
+ */
+connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
+  await indexing;
+  if (!/^[A-Za-z_]\w*$/.test(type || '')) return { error: 'No type to describe.' };
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const r = await policyQuery.request({ op: 'fileinfo', bin: lp.bin, type });
+  if (r.error) return { error: /KeyError/.test(r.error) ? `${type} is not a type in the ${lp.pol.label.replace(/^\w/, c => c.toLowerCase())}.` : `Policy query failed: ${r.error}` };
+  const locs = {};
+  for (const n of new Set([r.type, ...r.attrs, ...r.entrypointOf.map(d => d.domain)])) { const l = sourceLocation(n, ['type', 'attribute']); if (l) locs[n] = l; }
+  delete r.id;
+  return { ...r, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build }, locs, traceable: !!lp.pol.build };
 });
 
 /** Statement index of the last tree build (shared with Changes since HEAD's idle drop). */

@@ -877,6 +877,64 @@ so far covered by the e2e tests only.
    "automation account" preset (restricted user, ssh/cron, sudo into one
    narrow role). Reuse reach as its preview.
 
+10. **File labels + features menu** (done, unreleased; user 2026-10-13:
+   "on melody if we use the clip policy for RHEL 9 what would the rpm
+   program be marked with? … any binary or file on the system … see what
+   policies would apply to it … a menu item making it easier to find all
+   the SELinux features"). `server/filelabel.js` (pure): parseSpecs
+   (spec, flag, mode, context, type, l, file, module + fc_sort measures),
+   specificity/compareSpecs/sortSpecs = refpolicy fc_sort.py exactly
+   (meta, stem, len, flag; stable), lookupOrder(...lists) = libselinux:
+   concat file_contexts, .homedirs, .local, then specs without regex chars
+   moved to the end; LAST match wins (`matches()` walks backwards, mode
+   filter, anchored `^(?:…)$`, POSIX classes translated), parseSubs /
+   applySubs (local then dist on the result; later lines tried first,
+   libselinux prepends them — found by the e2e with /run vs
+   /run/systemd/generator), splitHomeTemplates (HOME_DIR → /home/[^/]+,
+   HOME_ROOT, USER, %{USERID}, %{USERNAME}; template keeps the original),
+   modeOf(lstat), permLevels. Server: `fcLists(pol)` (installed: its
+   files; tree build: base.fc + tmp/<m>.mod.fc of each packaged <m>.pp,
+   sorted, templates as homedirs, tree config/file_contexts.subs_dist;
+   standalone: running policy + module sorted together), cached by mtimes;
+   `treeFileContexts()` now writes the sorted tmp/zz_file_contexts (+
+   .subs_dist; matchpathcon -f reads <file>.subs_dist) and
+   `moduleFileContexts()` the sorted union (+ .subs/.subs_dist): the old
+   unsorted all_mods.fc gave CLIP /usr/bin/rpmbuild usr_t (bug fixed for
+   denials + loginCan). `fcSourceOf()` maps a compiled line to the .fc
+   source by `spec\ttype` over idx.fcByType (module's own first).
+   Requests `selinux/fileLabel` {path, mode} (lstat, directories resolved
+   like restorecon — matchpathcon does NOT resolve them, so the e2e passes
+   resolved paths — stat %C, rpm -qf, link target; per denialPolicies():
+   winner + up to 7 losing lines, key after subs, homeAssumed) and
+   `selinux/fileTypeInfo` {against, type} (loginPolicy → policy_query op
+   `fileinfo`: allow groups by (s, t as written, cond) with attr size /
+   domains, entrypointOf (rules on the type itself) with transitions in
+   through it, entryViaAttr count, created (type_transition default = T)
+   and inside (parent = T), 200 unnamed + 200 named each; Index rules now
+   carry `name` for filename transitions; locs via sourceLocation).
+   Client: `selinux.lookUpFile` (Uri from menus, string arg, selected
+   path) → `showFileLabel` (media/filelabel.js: path box, kind select,
+   Browse… = showOpenDialog, "Rules from" policy select; cards per path:
+   on this host, Label table, what the policy lets happen: type + attrs,
+   Running it starts / runs in caller's domain + New Service…, created /
+   inside, access rows ranked relabel>manage>write>enter>execute>read with
+   filter, Show all, *where from* → selinux/ruleOrigins per class; reloads
+   after builds). Features menu: `FEATURES` + `showFeatures()` quick pick
+   (groups with separators, detail lines), `selinux.showFeatures`; the
+   main status bar item now opens it (tree switching is in the menu);
+   Policy Explorer title (menu icon) and submenu `selinux.contextMenu`
+   ("SELinux") in explorer/context and editor/context (lookUpFile,
+   buildModule for .te/.if/.fc — takes the Uri now —, analyzeDenials,
+   showFeatures). Getting-started navigate page mentions both. Also fixed:
+   policy_query reach iterated the user's roles as a set (hash order
+   changes per run), so logins-e2e's "staff_u reaches sysadm_t as
+   sysadm_r" was flaky; now same role, role named like the domain, name.
+   Tests: test/filelabel-test.js (npm test), test/filelabel-e2e.js
+   (melody: 7,355 host paths vs matchpathcon on targeted, 2,452 on the CLIP
+   build, fc_sort.py order identical for 3,002 lines, rpm_exec_t → rpm_t
+   traced to rpm.te). Answer to the user's question: CLIP labels
+   /usr/bin/rpm system_u:object_r:rpm_exec_t:s0 (admin/rpm.fc:16).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1041,6 +1099,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
+- `server/filelabel.js`: file-context parsing, fc_sort order, libselinux
+  lookup order / subs / home templates; `media/filelabel.js` the File
+  Labels webview.
 - `server/userfiles.js`: user editor's users / seusers / contexts / kernel.te
   edits; the user model itself lives in `server/service.js` (model.user);
   `media/user.js` its webview.
@@ -1124,6 +1185,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/filelabel-test.js` (in `npm test`) and `test/filelabel-e2e.js`
+  (`npm run test:filelabel-e2e`, melody; optional tree arg, default CLIP).
 - `test/user-test.js` (in `npm test`) and `test/user-e2e.js`
   (`npm run test:user-e2e`, melody; `[tree [spec [variant]]]` like
   service-e2e).

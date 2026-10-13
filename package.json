@@ -266,10 +266,70 @@
         "command": "selinux.buildRpm",
         "title": "SELinux: Build RPM",
         "icon": "$(package)"
+      },
+      {
+        "command": "selinux.showFeatures",
+        "title": "SELinux: All Features…",
+        "icon": "$(menu)"
+      },
+      {
+        "command": "selinux.lookUpFile",
+        "title": "SELinux: Look Up File Label…",
+        "icon": "$(file-symlink-file)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "selinux.contextMenu",
+        "label": "SELinux"
       }
     ],
     "menus": {
+      "selinux.contextMenu": [
+        {
+          "command": "selinux.lookUpFile",
+          "group": "1_look@1"
+        },
+        {
+          "command": "selinux.buildModule",
+          "when": "resourceExtname =~ /^\\.(te|if|fc)$/",
+          "group": "2_build@1"
+        },
+        {
+          "command": "selinux.analyzeDenials",
+          "when": "editorTextFocus",
+          "group": "3_fix@1"
+        },
+        {
+          "command": "selinux.showFeatures",
+          "group": "9_all@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "selinux.contextMenu",
+          "when": "resourceScheme == file || resourceScheme == vscode-remote",
+          "group": "7_selinux"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "selinux.contextMenu",
+          "when": "resourceScheme == file || resourceScheme == vscode-remote",
+          "group": "9_selinux"
+        }
+      ],
       "view/title": [
+        {
+          "command": "selinux.showFeatures",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation@-1"
+        },
+        {
+          "command": "selinux.lookUpFile",
+          "when": "view == selinuxPolicyExplorer",
+          "group": "navigation@6"
+        },
         {
           "command": "selinux.newService",
           "when": "view == selinuxPolicyExplorer",
@@ -933,7 +993,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
@@ -956,6 +1016,7 @@
     "test:tutorial": "node test/tutorial-e2e.js",
     "test:denials": "node test/denials-test.js",
     "test:logins-e2e": "node test/logins-e2e.js",
+    "test:filelabel-e2e": "node test/filelabel-e2e.js",
     "test:user-e2e": "node test/user-e2e.js",
     "test:denials-e2e": "node test/denials-e2e.js",
     "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80",

@@ -192,7 +192,7 @@ function activate(context) {
 
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.text = '$(shield) SELinux: starting…';
-  status.command = 'selinux.showStats';
+  status.command = 'selinux.showFeatures';
   status.show();
   context.subscriptions.push(status);
   const checksStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9);
@@ -248,8 +248,8 @@ function activate(context) {
         const active = policyTrees.find(t => t.active);
         status.text = `$(shield) SELinux: ${several && active ? `${active.name} · ` : ''}${count(s.modules, 'module')}, ${count(s.interfaces, 'interface')}`;
         status.tooltip = `${count(s.files, 'file')}, ${count(s.types, 'type')}, ${count(s.classes, 'class')}. Indexed in ${s.ms} ms.` +
-          (several ? `\nPolicy tree: ${active ? active.name : '?'} (${policyTrees.length} in this workspace). Click to switch.` : ' Click for details.');
-        status.command = several ? 'selinux.selectTree' : 'selinux.showStats';
+          (several ? `\nPolicy tree: ${active ? active.name : '?'} (${policyTrees.length} in this workspace).` : '') + '\nClick for all SELinux features.';
+        status.command = 'selinux.showFeatures';
         explorer.refresh();
         compiled.refresh();
         dimAll();
@@ -277,6 +277,7 @@ function activate(context) {
       // The denial assistant re-checks applied fixes against the new build.
       if (denialPanel) denialPanel.webview.postMessage({ cmd: 'built', ok: p.ok, module: p.module });
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
 
@@ -312,9 +313,11 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('selinux.buildModule', async (arg) => {
       // 'tree' (from the views and panels): the policy, whatever editor happens to be active.
-      const ed = arg !== 'tree' && vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri.scheme === 'file' ? vscode.window.activeTextEditor : null;
+      // A file from the explorer's context menu: that module.
+      const fromMenu = arg instanceof vscode.Uri ? arg : null;
+      const ed = !fromMenu && arg !== 'tree' && vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri.scheme === 'file' ? vscode.window.activeTextEditor : null;
       // Without a policy editor (e.g. from the Compiled Policy view), build the workspace's tree.
-      const target = ed ? ed.document.uri : (vscode.workspace.workspaceFolders || [])[0] && vscode.workspace.workspaceFolders[0].uri;
+      const target = fromMenu || (ed ? ed.document.uri : (vscode.workspace.workspaceFolders || [])[0] && vscode.workspace.workspaceFolders[0].uri);
       if (!target) return;
       if (ed) await ed.document.save();
       const r = await vscode.window.withProgress({ location: { viewId: 'selinuxCompiledPolicy' } },
@@ -432,6 +435,18 @@ function activate(context) {
       showDenials(context, text);
     }),
     vscode.commands.registerCommand('selinux.showLogins', () => showLogins(context)),
+    vscode.commands.registerCommand('selinux.showFeatures', () => showFeatures()),
+    vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
+      // From the explorer or an editor (a Uri), a path given by a link, the selected text, or asked for.
+      let p = arg instanceof vscode.Uri ? arg.fsPath : typeof arg === 'string' ? arg : null;
+      if (arg instanceof vscode.Uri && arg.scheme === 'vscode-remote') p = arg.path;
+      if (!p) {
+        const ed = vscode.window.activeTextEditor;
+        const sel = ed ? ed.document.getText(ed.selection).trim() : '';
+        if (/^\/\S*$/.test(sel)) p = sel;
+      }
+      showFileLabel(context, p ? p.replace(/\\/g, '/') : null);
+    }),
     vscode.commands.registerCommand('selinux.newUser', () => showUserEditor(context)),
     vscode.commands.registerCommand('selinux.editUser', (user) => editUserCommand(context, typeof user === 'string' ? user : null)),
     vscode.commands.registerCommand('selinux.buildRpm', async () => {
@@ -1801,6 +1816,152 @@ function showLogins(context) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { loginsPanel = null; }, undefined, context.subscriptions);
+}
+
+/** Every feature, by what it's for: [group, [[command, icon, title, what it does]]]. */
+const FEATURES = [
+  ['Look into a policy', [
+    ['selinux.lookUpFile', 'file-symlink-file', 'Look Up File Label…', 'Any file or program: the label each policy gives it, the line that sets it, what may access it and what it runs as'],
+    ['selinux.findInPolicy', 'search', 'Find in Compiled Policy', 'A type, attribute, role or user of the last build, with its rules'],
+    ['selinux.transitionGraph', 'type-hierarchy', 'Domain Transition Graph', 'Which domains a domain starts, and which start it'],
+    ['selinux.showLogins', 'person', 'Logins and Users…', 'Who logs in as which SELinux user, and what their sessions can reach'],
+    ['selinux.findModule', 'go-to-file', 'Open Module…', 'A module\'s .te, .if or .fc file'],
+    ['selinux.showExpanded', 'unfold', 'Show Expanded Policy', 'What the module in the editor compiles to'],
+  ]],
+  ['Write policy', [
+    ['selinux.newService', 'add', 'New Service…', 'Confine a program: its domain, files, network and rights, in a form'],
+    ['selinux.editService', 'edit', 'Edit Service…', 'Open an existing service module in the form'],
+    ['selinux.newUser', 'person-add', 'New User…', 'An SELinux user and role, its logins and ways in'],
+    ['selinux.editUser', 'account', 'Edit User…', 'Open an existing user\'s role module in the form'],
+    ['selinux.openChecks', 'checklist', 'Open Property Checks', 'Security requirements checked after every build (selinux.checks)'],
+  ]],
+  ['Fix problems', [
+    ['selinux.analyzeDenials', 'shield', 'Analyze Denials…', 'From AVC denials to the smallest correct fix'],
+  ]],
+  ['Build and install', [
+    ['selinux.buildModule', 'tools', 'Build', 'Compile the module or tree, with errors in the editor'],
+    ['selinux.installModule', 'cloud-download', 'Install Module', 'Install the standalone module on this host (sudo semodule -i)'],
+    ['selinux.buildRpm', 'package', 'Build RPM', 'Package a standalone module as an RPM'],
+    ['selinux.configureFromSpec', 'settings-gear', 'Configure Build from Spec File…', 'Build a RHEL/Fedora tree the way its selinux-policy.spec does'],
+    ['selinux.selectTree', 'list-tree', 'Select Policy Tree…', 'Switch between the trees in this workspace'],
+  ]],
+  ['Compare and preview', [
+    ['selinux.compareHead', 'git-compare', 'Compare with HEAD', 'What your uncommitted changes grant or take away'],
+    ['selinux.compareWith', 'git-branch', 'Compare with…', 'Another branch, tag, commit or saved build'],
+    ['selinux.compareInstalled', 'server', 'Compare Build with Installed Policy', 'The build against a policy installed on this host'],
+    ['selinux.previewModule', 'eye', 'Preview Turning a Module Off/On…', 'What a lockdown change would remove or add, before you make it'],
+  ]],
+  ['Learn', [
+    ['selinux.openTutorials', 'book', 'Open Tutorials', 'Walkthroughs of the extension and of writing policy'],
+    ['selinux.createPracticeModule', 'mortar-board', 'Create Practice Module…', 'A small module with mistakes to fix'],
+    ['selinux.showStats', 'info', 'Show Index Statistics', 'How many modules, interfaces and types are indexed'],
+    ['selinux.reindex', 'refresh', 'Re-index Policy Sources', 'Read every policy source again'],
+  ]],
+];
+
+/** One menu with every SELinux feature (status bar, Policy Explorer, context menus). */
+async function showFeatures() {
+  const items = [];
+  for (const [group, list] of FEATURES) {
+    items.push({ label: group, kind: vscode.QuickPickItemKind.Separator });
+    for (const [command, icon, title, detail] of list) items.push({ label: `$(${icon}) ${title}`, detail, command });
+  }
+  const pick = await vscode.window.showQuickPick(items, { placeHolder: 'SELinux: what would you like to do?', matchOnDetail: true });
+  if (pick && pick.command) vscode.commands.executeCommand(pick.command);
+}
+
+let filePanel = null;
+function showFileLabel(context, p) {
+  if (filePanel) {
+    filePanel.reveal();
+    if (p) filePanel.webview.postMessage({ cmd: 'lookup', path: p });
+    return;
+  }
+  const panel = vscode.window.createWebviewPanel('selinuxFileLabel', 'File Labels', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  filePanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'filelabel.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  #path { flex: 1 1 22em; min-width: 12em; font-family: var(--vscode-editor-font-family); }
+  select, input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; font-family: var(--vscode-editor-font-family); }
+  button.link:hover { text-decoration: underline; }
+  #main { padding: 10px 14px 40px; }
+  .intro { opacity: .8; margin: 0 0 10px; max-width: 70em; }
+  table { border-collapse: collapse; margin: 4px 0 8px; }
+  td, th { text-align: left; padding: 3px 14px 3px 0; vertical-align: top; }
+  th { font-weight: 600; opacity: .75; }
+  .card { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-left-color: var(--vscode-focusBorder); border-radius: 4px; margin: 0 0 10px; }
+  .card.warn { border-left-color: var(--vscode-editorWarning-foreground); }
+  .card > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .fname { font-weight: 600; font-family: var(--vscode-editor-font-family); }
+  .body { padding: 2px 14px 10px; }
+  .sub { font-weight: 600; margin: 12px 0 4px; }
+  .badge { font-size: .8em; padding: 1px 7px; border-radius: 8px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .lvl { font-size: .8em; padding: 0 6px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); margin-right: 4px; }
+  .lvl.relabel, .lvl.manage, .lvl.write { color: var(--vscode-editorWarning-foreground); border-color: var(--vscode-editorWarning-foreground); }
+  .note { margin: 3px 0; }
+  .note.warn { color: var(--vscode-editorWarning-foreground); }
+  .note.bad { color: var(--vscode-errorForeground); }
+  code, .mono { font-family: var(--vscode-editor-font-family); }
+  .muted { opacity: .7; }
+  .chips code { margin-right: 8px; }
+  pre.rule { margin: 2px 0 6px 16px; padding: 4px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; font-family: var(--vscode-editor-font-family); font-size: .92em; }
+  .origins { margin: 2px 0 6px 16px; font-size: .92em; }
+  .filter { margin: 4px 0; }
+</style></head><body>
+<div id="bar">
+  <span id="title">File Labels</span>
+  <input id="path" placeholder="/usr/bin/rpm" spellcheck="false">
+  <select id="mode"></select>
+  <button id="go" class="primary">Look up</button>
+  <button id="browse">Browse…</button>
+  <label>Rules from <select id="against"></select></label>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        if (p) panel.webview.postMessage({ cmd: 'lookup', path: p });
+      } else if (m.cmd === 'label') {
+        panel.webview.postMessage({ cmd: 'label', key: m.key, result: await client.sendRequest('selinux/fileLabel', { path: m.path, mode: m.mode || null }) });
+      } else if (m.cmd === 'info') {
+        panel.webview.postMessage({ cmd: 'info', key: m.key, result: await client.sendRequest('selinux/fileTypeInfo', { against: m.against, type: m.type }) });
+      } else if (m.cmd === 'origins') {
+        const res = [];
+        for (const c of m.classes) res.push(await client.sendRequest('selinux/ruleOrigins', { rule: { rt: 'allow', s: m.s, t: m.t, c, perms: m.perms[c] } }));
+        panel.webview.postMessage({ cmd: 'origins', key: m.key, result: { origins: res.flatMap(r => r.origins || []), more: res.reduce((n, r) => n + (r.more || 0), 0) } });
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      } else if (m.cmd === 'browse') {
+        const wf = (vscode.workspace.workspaceFolders || [])[0];
+        const start = m.path && m.path.startsWith('/') ? m.path.replace(/\/[^/]*$/, '') || '/' : '/usr/bin';
+        const picked = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: true, canSelectMany: false, openLabel: 'Look Up',
+          defaultUri: wf ? wf.uri.with({ path: start }) : vscode.Uri.file(start) });
+        if (picked && picked[0]) panel.webview.postMessage({ cmd: 'lookup', path: picked[0].scheme === 'file' && process.platform !== 'win32' ? picked[0].fsPath : picked[0].path });
+      } else if (m.cmd === 'graph') {
+        vscode.commands.executeCommand('selinux.transitionGraph', m.domain);
+      } else if (m.cmd === 'newService') {
+        showServiceEditor(context, null, { exec: m.exec });
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { filePanel = null; }, undefined, context.subscriptions);
 }
 
 /** Write a planned fix (one undoable edit, with any other file it needs, e.g. a new interface), save it so it builds, and show the inserted lines. */

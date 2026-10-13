@@ -163,6 +163,12 @@ Open one of these as the workspace folder:
   booleans, interfaces and file contexts, each clickable.
 * *SELinux: Open Module…* (Ctrl+Alt+M) and commands to jump between a
   module's `.te`, `.if` and `.fc`.
+* **All features in one menu** (*SELinux: All Features…*): click the
+  *SELinux* item in the status bar, the ☰ button in the Policy Explorer's
+  title bar, or *SELinux* in the right-click menu of the explorer and the
+  editor. Features are grouped by what they're for (look into a policy,
+  write policy, fix problems, build and install, compare, learn), each with
+  a line saying what it does.
 
 **Authoring**
 
@@ -639,6 +645,47 @@ install it with *SELinux: Install Module*.
   each block headed by the source line that produced it.
 * Build logs go to the *SELinux Build* output channel.
 
+**File labels** (*SELinux: Look Up File Label…*, *SELinux → Look Up File
+Label* on any file in the explorer or editor, or the button in the Policy
+Explorer; Linux)
+
+What a policy does with any file or program on the system. Type a path
+(`/usr/bin/rpm`; it doesn't have to exist) or pick one with *Browse…*; each
+path gets a card:
+
+* **On this host**: what it is (regular file, directory, link, device, …),
+  its label now, the package that owns it (`rpm -qf`), and for a link its
+  target (*Look up the target*). Paths are looked up as restorecon does:
+  the directories resolved (`/bin/rpm` is `/usr/bin/rpm`), then the
+  policy's equivalent directories (`file_contexts.subs`: `/usr/lib64` is
+  `/usr/lib`).
+* **Label**, for every policy at once (this host's installed ones and the
+  workspace's last build): the context, and the file-context line that
+  sets it, opened at its `.fc` source line with the module (a tree build),
+  or at its line in `/etc/selinux/<name>/contexts/files` (local
+  customizations from `semanage fcontext` say so). The other lines that also
+  match and lose are listed with the rule that decides (the most specific
+  wins). When the running policy's label differs from the file's: what
+  `restorecon` would change it to. A kind (`-d`, `--`, …) can be chosen for
+  paths that don't exist yet.
+* **What the policy lets happen to the type** (*Rules from*: any of the
+  policies): its declaration and attributes; for a program, the domains it
+  starts and which domains start them that way (automatically or when they
+  ask), with the transition graph, or that it starts no domain of its own
+  (it runs in the caller's domain, with *Confine it: New Service…*); the
+  type transitions that create objects with this label, and for a directory
+  those that give new objects in it another one; and **who may access it**:
+  the allow rules as written, for the type or one of its attributes (an
+  attribute with its number of types and domains), strongest access first
+  (relabel, manage, write, enter, execute, read), with conditions, a
+  filter, and for the build *where from*: the source statements.
+
+A tree build's file contexts are sorted the way `semodule` installs them.
+The lookups of the denial assistant and of "can it …?" in Logins and Users
+use the same order (earlier versions read the build's unsorted `.fc`
+output, where a general line could win: CLIP's `/usr/bin/rpmbuild` came out
+`usr_t` instead of `bin_t`).
+
 **Logins and Users** (*SELinux: Logins and Users…*, or the person icon in
 the Policy Explorer; Linux)
 
@@ -1055,6 +1102,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* File labels (`npm run test:filelabel-e2e`, melody): for 7,355 paths on
+  the host (every kind of file, under `/usr`, `/etc`, `/var`, `/dev`,
+  `/run`, home, plus missing paths as each kind and paths through linked
+  and equivalent directories) the lookup agrees with `matchpathcon` on the
+  running targeted policy, and for 2,452 of them on a CLIP build; the
+  build's 3,002 lines sort exactly as refpolicy's `fc_sort.py` sorts them.
+  CLIP: `/usr/bin/rpm` is `rpm_exec_t` from `admin/rpm.fc` line 16,
+  `/usr/bin/rpmbuild` `bin_t`; `rpm_exec_t` starts `rpm_t` from `sysadm_t`,
+  `init_t` and four more, traced to `rpm.te`. Running policy: `/bin/rpm` is
+  looked up as `/usr/bin/rpm`, `/usr/lib64/x.so` as `/usr/lib/x.so`
+  (`lib_t`), `shadow_t`'s rules include `passwd_t` writing it, and the type
+  transitions in `var_run_t` include named ones.
 * Standalone service modules as RPMs (`npm run test:package`, melody): in a
   workspace holding a copy of the CLIP tree, a new standalone service with
   runtime and log files, syslog and a port type of its own gets RHEL 9's
@@ -1308,6 +1367,20 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   intended.
 
 ## Limitations
+
+**File labels**
+
+* A tree build doesn't know the target system's users: home directory
+  lines (`HOME_DIR`, `HOME_ROOT`, `%{USERID}`) are taken as `/home/<user>`,
+  as `genhomedircon` writes them for ordinary users; other home roots and
+  per-user prefixes aren't modelled. Installed policies use their real
+  `file_contexts.homedirs`.
+* Patterns are matched with JavaScript's regular expressions (PCRE syntax,
+  POSIX classes like `[[:digit:]]` translated); the tests found no line
+  that matches differently from `matchpathcon`, but an exotic pattern could.
+* Rules are listed as written (for the type or one of its attributes), not
+  per domain; dontaudit and neverallow rules aren't shown. Source statements
+  can be traced for the workspace's build only.
 
 **Logins and Users**
 

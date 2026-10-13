@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **File labels** (*SELinux: Look Up File Label…*, or *SELinux → Look Up
+  File Label* on any file in the explorer or editor): for any path on the
+  system, the label each policy gives it (installed policies and the
+  workspace's build side by side) and the file-context line that sets it,
+  traced to its `.fc` source line and module, with the lines that also
+  match and lose; what the file is labeled now, its package, link target,
+  and what `restorecon` would change; and what the policy lets happen to
+  that type: who may access it (rules as written, strongest first, traced
+  to their source for the build), the domains a program starts and from
+  where (or that it runs in its caller's domain, with *Confine it: New
+  Service…*), and the type transitions that create it.
+* **All features in one menu** (*SELinux: All Features…*): from the
+  SELinux status bar item, the Policy Explorer's title bar, or the new
+  *SELinux* submenu in the explorer's and editor's right-click menus.
+  Grouped by purpose, each feature with a one-line description.
+
+**Fixed**
+
+* File-context lookups on a tree build (denial assistant, "can it …?" in
+  Logins and Users) used the build's `.fc` output unsorted, so a general
+  line could win over a specific one (CLIP: `/usr/bin/rpmbuild` came out
+  `usr_t` instead of `bin_t`). They are now sorted as `semodule` sorts
+  them, with the tree's `file_contexts.subs_dist`; a standalone module's
+  lines are sorted together with the running policy's.
+* The domains a login reaches were attributed to a role picked in a random
+  order when several of the user's roles could run them (e.g. `sysadm_t`
+  as `system_r` instead of `sysadm_r` for `staff_u`); the same role, then
+  the role named like the domain, now come first.
+
 ## 0.13.0 (2026-10-13)
 
 **Added**

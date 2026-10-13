@@ -226,7 +226,7 @@ const LOG = [
     const tb = await c2.sendRequest('selinux/build', { uri: uri(logging) });
     check(tb.ok, `tree builds (${tb.ms} ms)`, tb.ok ? undefined : tb);
     r = await c2.sendRequest('selinux/analyzeDenials', { text: LOG, against: 'build' });
-    check(r.policy && r.policy.id === 'build' && /Last build of/.test(r.policy.label) && /\/(file_contexts|all_mods\.fc)$/.test(r.policy.fileContexts) && r.policy.fileContexts.startsWith(os.tmpdir()), `against ${r.policy && r.policy.label}, labels from ${r.policy && r.policy.fileContexts}`, r.notes);
+    check(r.policy && r.policy.id === 'build' && /Last build of/.test(r.policy.label) && /\/(zz_)?file_contexts$/.test(r.policy.fileContexts) && r.policy.fileContexts.startsWith(os.tmpdir()), `against ${r.policy && r.policy.label}, labels from ${r.policy && r.policy.fileContexts}`, r.notes);
     const h2 = by('httpd_t', 'user_home_t');
     check(h2 && h2.v.verdict === 'label' && h2.labels.some(l => l.expected === 'httpd_sys_content_t'), `tree build: /var/www/html labeled by the tree's file contexts: ${h2 && h2.v.title}`, h2 && h2.labels);
     check(by('demo_t', 'demo_data_t').v.verdict === 'unknown', 'tree build: the standalone module\'s types are not in it');

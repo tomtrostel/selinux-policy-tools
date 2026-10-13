@@ -59,6 +59,10 @@ class Index:
             except setools.exception.RuleUseError:
                 perms = [str(r.default)]
             rule = {"rt": str(r.ruletype), "s": str(r.source), "t": str(r.target), "c": str(r.tclass), "perms": perms, "cond": cond}
+            try:
+                rule["name"] = str(r.filename)  # named type_transition
+            except Exception:  # not a named transition
+                pass
             i = len(self.rules)
             self.rules.append(rule)
             self.by_src.setdefault(rule["s"], []).append(i)
@@ -214,7 +218,10 @@ class Index:
                     cand_cache[s] = (cand, dyn, self.can(s, "setexec"))
                 cand, dyn, setexec = cand_cache[s]
                 for t in sorted(set(cand) | dyn):
-                    targets = [r2 for r2 in roles if t in self.role_types.get(r2, ()) and (r2 == role or r2 in ra.get(role, ()))]
+                    # Deterministic (a set's order changes between runs): the same role, the role named
+                    # like the domain (sysadm_r for sysadm_t), then by name.
+                    order = sorted(roles, key=lambda r2: (r2 != role, r2[:-2] != t[:-2], r2))
+                    targets = [r2 for r2 in order if t in self.role_types.get(r2, ()) and (r2 == role or r2 in ra.get(role, ()))]
                     targets = [r2 for r2 in targets if (r2, t) not in seen]
                     if not targets:
                         continue
@@ -666,6 +673,63 @@ class Index:
             rules[a] = [self.rules[i] for i in self.by_src.get(a, ()) if self.rules[i]["rt"] == "allow"][:400]
         return {"info": info, "rules": rules}
 
+    def fileinfo(self, t, limit=400):
+        """What the policy lets happen to objects of type t (file lookup): allow rules on it
+        (written for it or for its attributes), the domains it is an entrypoint of and who
+        transitions into them through it, type_transitions creating it, and those for new
+        objects inside it (t as the parent directory)."""
+        t2 = self.aliases.get(t, t)
+        if t2 not in self.attrs:
+            raise KeyError(t)
+        own_attrs = self.attrs[t2]
+        names = [t2] + own_attrs
+        groups = {}
+        for n in names:
+            for i in self.by_tgt.get(n, ()):
+                r = self.rules[i]
+                if r["rt"] != "allow":
+                    continue
+                g = groups.setdefault((r["s"], r["t"], r["cond"]), {"s": r["s"], "t": r["t"], "cond": r["cond"], "classes": {}})
+                g["classes"].setdefault(r["c"], set()).update(r["perms"])
+        access = []
+        for g in groups.values():
+            members = self.members.get(g["s"])
+            access.append({"s": g["s"], "t": g["t"], "cond": g["cond"], "attr": members is not None,
+                           "size": len(members) if members is not None else 1,
+                           "domains": sum(1 for m in members if m in self.domains) if members is not None else int(g["s"] in self.domains),
+                           "classes": {c: sorted(p) for c, p in sorted(g["classes"].items())}})
+        # Entrypoints: written for t itself, or through one of its attributes (counted apart).
+        entries, via_attr = {}, {}
+        for n in names:
+            for i in self.by_tgt.get(n, ()):
+                r = self.rules[i]
+                if r["rt"] == "allow" and r["c"] == "file" and "entrypoint" in r["perms"]:
+                    for d in self.expand(r["s"]):
+                        if d in self.domains:
+                            (entries if n == t2 else via_attr).setdefault(d, set()).add(r["s"])
+        domains = []
+        for d in sorted(entries):
+            froms = [tr for tr in self.transitions(d, "in") if t2 in tr["entrypoints"]]
+            domains.append({"domain": d, "via": sorted(entries[d]), "permissive": d in self.permissive,
+                            "from": [{"source": tr["source"], "auto": t2 in tr["auto"], "setexec": tr["setexec"], "conditional": tr["conditional"]} for tr in froms[:60]],
+                            "fromCount": len(froms)})
+        created, inside = [], []
+        for i, r in enumerate(self.rules):
+            if r["rt"] != "type_transition" or r["c"] == "process":
+                continue
+            if r["perms"] and r["perms"][0] == t2:
+                created.append(r)
+            elif r["t"] in names:
+                inside.append(r)
+        def some(rules):
+            # Rules on the type itself first; named (file name) transitions come last in setools' order, keep some of each.
+            rules = sorted(rules, key=lambda r: (r["t"] != t2, "name" in r))
+            return [r for r in rules if "name" not in r][:limit // 2] + [r for r in rules if "name" in r][:limit // 2]
+        return {"type": t2, "alias": t if t2 != t else None, "attrs": own_attrs, "permissive": t2 in self.permissive,
+                "isDomain": t2 in self.domains, "access": access[:limit], "accessCount": len(access),
+                "entrypointOf": domains, "entryViaAttr": len(via_attr),
+                "created": some(created), "createdCount": len(created), "inside": some(inside), "insideCount": len(inside)}
+
     def query(self, name, direction, kinds):
         # A type matches rules written for it or for any attribute it has.
         names = [name] + self.attrs.get(name, [])
@@ -702,6 +766,8 @@ def main():
                 resp.update(failing=idx.constraints(req["s"], req["t"], req["c"], set(req.get("perms") or [])))
             elif req.get("op") == "entrypoints":
                 resp.update(domains=idx.entrypoint_domains(req.get("types") or []))
+            elif req.get("op") == "fileinfo":
+                resp.update(idx.fileinfo(req["type"]))
             elif req.get("op") == "typeinfo":
                 resp.update(idx.typeinfo(req.get("names", []), req.get("sourceRules", [])))
             elif req.get("op") == "avc":
