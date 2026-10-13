@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-13: **v0.13.0 released** (GitHub release `v0.13.0`;
+Status as of 2026-10-13: **v0.14.0 released** (GitHub release `v0.14.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -41,6 +41,8 @@ preview). The user tried them before the release ("That all seems to
 work").
 0.13.0: login checks in selinux.checks (the user tried them before the
 release: "that all seems to work").
+0.14.0: file labels lookup and the all-features menu (step 10; released
+at the user's request before they tried it interactively).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -877,7 +879,7 @@ so far covered by the e2e tests only.
    "automation account" preset (restricted user, ssh/cron, sudo into one
    narrow role). Reuse reach as its preview.
 
-10. **File labels + features menu** (done, unreleased; user 2026-10-13:
+10. **File labels + features menu** (done, 0.14.0; user 2026-10-13:
    "on melody if we use the clip policy for RHEL 9 what would the rpm
    program be marked with? … any binary or file on the system … see what
    policies would apply to it … a menu item making it easier to find all
