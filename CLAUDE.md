@@ -1047,7 +1047,13 @@ so far covered by the e2e tests only.
    mcs_constrained_type (no container/virt modules), so MCS binds nothing;
    CLIP RHEL 8 (policy/mcs written MLS-style, 228 constraints, exemptions
    by mls* attributes): 200+ domains held, exempt ones grouped by
-   attribute. Told the user (possible protection loss RHEL 8 → 9). Tests: test/levels-test.js (npm test),
+   attribute. Told the user (possible protection loss RHEL 8 → 9).
+   Scratch experiment (CLIP 9 copy + CLIP 8's policy/mcs): builds, 228
+   constraints, 208/250 held, the 226 shared domains treated exactly as on
+   CLIP 8 (same 42 exempt, same attributes), 24 RHEL 9-only domains held
+   (systemd_journal_init_t etc. may need exemptions; runtime test needed).
+   The user decided (2026-10-13): document only, don't change their CLIP
+   clone; written up in README "## Findings". Tests: test/levels-test.js (npm test),
    test/levels-e2e.js (melody; [tree]).
    Items 3-6 (done, unreleased; "lets do the rest of the MCS items"):
    server/levels.js (pure: parseCats/catsText/canon (setools form, runs as

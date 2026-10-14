@@ -735,6 +735,9 @@ down. "Rules from" picks the policy: an installed one or the last build.
   * **RHEL 9** uses upstream refpolicy's `mcs_constrained_type` form, and
     no domain in the build is in it. So categories restrict none of its
     domains.
+
+  See [MCS in CLIP RHEL 8 vs RHEL 9](#mcs-in-clip-rhel-8-vs-rhel-9) under
+  Findings for what restoring RHEL 8's protection on RHEL 9 would take.
 * **Kept apart by levels?** Two containers run in the same domain
   (`container_t`) and use files of the same types, so only their categories
   tell them apart. For the domains you give (by default the ones held to
@@ -1598,6 +1601,79 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   above but haven't had interactive use yet. The tutorials (0.9.0) were
   checked in VS Code over Remote-SSH: the walkthrough pages render as
   intended.
+
+## Findings
+
+Things the tools found in the policies they were tested on (2026-10-13).
+They are notes for the people who maintain those policies; nothing here
+was changed in them.
+
+### MCS in CLIP RHEL 8 vs RHEL 9
+
+**The difference.** CLIP's two branches enforce MCS categories very
+differently. Categories are what keep two processes of the same domain
+apart, such as two containers, or data labeled with categories (`s0:c5`)
+from users not cleared for them.
+
+* **CLIP RHEL 8** (`sealingtech/CLIP`, branch `RHEL8`): `policy/mcs`, 907
+  lines and 228 constraints, is written the MLS way. Every domain is bound
+  unless it holds an exemption attribute (`mlsfileread`, `mlsfilewrite`,
+  `mlstrustedobject`, …). 192 of 237 domains are held to every
+  constraint, and `require staff_t isolated by levels` holds.
+* **CLIP RHEL 9** (branch `RHEL9`): `policy/mcs`, 200 lines and 110
+  constraints, is upstream refpolicy's. A domain is bound only if it is in
+  `mcs_constrained_type`, and no domain in CLIP's build is. Categories
+  restrict nothing there: 0 of 250 domains are held, and levels don't
+  check 144 of `staff_t`'s accesses to objects other `staff_t` processes
+  can share.
+
+If a system keeps everything at `s0` and never uses categories, the
+difference doesn't matter. If anything relies on categories, the
+protection CLIP RHEL 8 has is missing on CLIP RHEL 9.
+
+**Restoring it on RHEL 9 (tried on a scratch build, not on a running
+system).**
+* Copy CLIP RHEL 8's `policy/mcs` over RHEL 9's. That one file is enough.
+  The exemptions are granted in the modules by calls such as
+  `mls_file_read_all_levels(init_t)`. Those calls are already in the RHEL
+  9 tree, but the upstream `mcs` file ignores them, and every attribute
+  RHEL 8's file uses exists in RHEL 9.
+* With RHEL 8's file, the RHEL 9 tree builds with 228 constraints, and
+  208 of its 250 domains are held to all of them.
+* The 226 domains both branches have get exactly the same treatment as
+  on RHEL 8. The same 42 domains are exempt with the same attributes,
+  e.g. `init_t`, `kernel_t`, `udev_t`, `rpm_t`, `sshd_t`, `syslogd_t`,
+  `setfiles_t`, `sysadm_t` (reading at any level).
+* `staff_t` is back to 0 unchecked accesses.
+* The 24 domains new in RHEL 9 get no exemptions, so they are held to
+  every constraint. That is the safe default, but some may need an
+  exemption to work. Candidates:
+  * `systemd_journal_init_t` (journald, `syslogd_t`, is exempt for writing
+    at any level on RHEL 8);
+  * `systemd_userdbd_t`, `systemd_homed_t`, `systemd_homework_t`;
+  * `systemd_sysctl_t`, `systemd_pstore_t`, `systemd_machine_id_setup_t`,
+    `systemd_pcrphase_t`.
+* What remains is a runtime test: install the result on a RHEL 9 test
+  system, run it permissive, and feed the denials to *Analyze Denials*.
+  Denials caused by level rules show as "constraint" verdicts; add the
+  matching exemption call (e.g. `mls_file_write_all_levels(D)`) only for
+  domains that really must cross levels.
+* Then pin the result down in `selinux.checks`:
+  * `require staff_t sshd_t isolated by levels`;
+  * `never staff_t may ignore levels`;
+  * `only <the agreed exempt domains> may ignore levels`, so a new
+    exemption fails the check until someone decides on it.
+
+### MCS on RHEL 9 targeted
+
+`container_t` is bound by all 72 level constraints, yet 48 of its accesses
+to objects other containers can share aren't level-checked. They include
+`connectto` on another `container_t` unix socket (abstract sockets have no
+socket file to check), System V messages (`msg send/receive`), and reads
+of message queues, semaphores and shared memory. Reads and writes on
+another container's FIFO aren't checked either, but opening one is, so
+they need a descriptor handed over. Network and IPC namespaces normally
+keep containers from reaching these objects at all.
 
 ## Limitations
 
