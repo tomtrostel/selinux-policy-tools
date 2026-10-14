@@ -2016,7 +2016,16 @@ npm run test:filelabel-e2e  # File Labels vs matchpathcon
 npm run test:levels-e2e   # Levels and Categories, level and isolation checks
 npm run test:tutorial     # the practice module
 npm run test:denials-bench  # interface suggestion ranking benchmark
+npm run test:clip-all     # all tree tests on CLIP RHEL 8 and RHEL 9, plus a diagnostics survey of each
 ```
+
+`test:clip-all` runs every tree-based test above on each CLIP branch (or
+the trees you name) and prints one line per test. It then surveys each
+tree's diagnostics and compares them with `test/survey-baseline.json`, the
+reviewed findings for that refpolicy version: a new finding (a possible
+false warning) or a vanished one fails. After reviewing a change, refresh
+the baseline with `--update-baseline`; `--only build-tree,checks` limits
+the tests.
 
 Layout: `server/parser.js` (tokenizer and structural parser),
 `server/indexer.js` (workspace index and template expansion),

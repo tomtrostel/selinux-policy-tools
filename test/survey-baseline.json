@@ -1,0 +1,18 @@
+{
+ "2.20200229": [
+  "missing-require | modules/admin/rpm.if | 'rpm_script_t' is used in rpm_run but not declared in its gen_require block",
+  "missing-require | modules/services/ssh.if | 'ssh_server' is used in ssh_server_template but not declared in its gen_require block",
+  "unknown-macro | modules/contrib/cockpit.if | Unknown interface, template or macro 'init_reload_services'",
+  "unknown-macro | modules/contrib/cockpit.if | Unknown interface, template or macro 'systemd_exec_systemctl'",
+  "unknown-macro | modules/contrib/cockpit.if | Unknown interface, template or macro 'systemd_read_fifo_file_passwd_run'",
+  "unknown-macro | modules/system/systemd.if | Unknown interface, template or macro 'systemd_manage_passwd_run'",
+  "unknown-perm | modules/system/userdomain.if | Permission 'append_inherited_file_perms' is not defined for class file",
+  "unknown-perm | modules/system/userdomain.if | Permission 'read_inherited_file_perms' is not defined for class file"
+ ],
+ "2.20240226": [
+  "missing-require | modules/kernel/files.if | 'var_run_t' is used in files_write_var_run_sockets but not declared in its gen_require block",
+  "missing-require | modules/services/chronyd.if | 'var_run_t' is used in chronyd_create_runtime_dirs but not declared in its gen_require block",
+  "unknown-macro | modules/system/systemd.if | Unknown interface, template or macro 'systemd_manage_passwd_run'",
+  "unknown-macro | modules/system/udev.if | Unknown interface, template or macro 'files_search_pids'"
+ ]
+}

@@ -41,14 +41,19 @@ const { diagnose } = require('../server/diagnostics');
   }
   const byCode = {}; const samples = {};
   const names = {};
+  const all = [];
   for (const f of idx.files.values()) {
     for (const d of diagnose(idx, f)) {
+      all.push({ code: d.code, file: path.relative(path.resolve(root), f.path).split(path.sep).join('/'), line: d.l + 1, msg: d.msg });
       byCode[d.code] = (byCode[d.code] || 0) + 1;
       (samples[d.code] = samples[d.code] || []).push(`${f.path.replace(root, '')}:${d.l + 1}: ${d.msg}`);
       const k = d.code + ' ' + (d.msg.match(/'([^']+)'/) || [])[1];
       names[k] = (names[k] || 0) + 1;
     }
   }
+  // --json FILE: every finding, for comparing with a baseline (test/clip-all.js).
+  const ji = process.argv.indexOf('--json');
+  if (ji > 0) require('fs').writeFileSync(process.argv[ji + 1], JSON.stringify(all.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line), null, 1));
   console.log(byCode);
   for (const [k, v] of Object.entries(samples)) console.log('\n==', k, '\n' + v.slice(0, 6).join('\n'));
   console.log('\nTop names:', Object.entries(names).sort((a, b) => b[1] - a[1]).slice(0, 30));

@@ -1059,7 +1059,8 @@
     "test:user-e2e": "node test/user-e2e.js",
     "test:denials-e2e": "node test/denials-e2e.js",
     "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80",
-    "test:package": "node test/package-e2e.js"
+    "test:package": "node test/package-e2e.js",
+    "test:clip-all": "node test/clip-all.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

@@ -1380,7 +1380,14 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/user-test.js` (in `npm test`) and `test/user-e2e.js`
   (`npm run test:user-e2e`, melody; `[tree [spec [variant]]]` like
   service-e2e).
-- `test/diag-survey.js` (prints undecided branch counts with `--make`): runs all diagnostics over a tree and summarizes;
+- `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
+  tree-based e2e test (build-tree checks diff preview filelabel logins
+  denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
+  per tree vs test/survey-baseline.json keyed by the tree's VERSION
+  (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);
+  `--update-baseline` after review. Logs in /tmp/clip-all-*.
+- `test/diag-survey.js` (prints undecided branch counts with `--make`; `--json FILE` writes every finding): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 
 ## Testing
