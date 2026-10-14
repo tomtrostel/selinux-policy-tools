@@ -1009,7 +1009,7 @@ so far covered by the e2e tests only.
    roles built are admin ones (staff_r picked); the login reach check
    reports staff logins landing in sysadm_t, which runs setfiles_t (true).
 
-12. **Levels and categories (MLS/MCS)** (done, unreleased; user 2026-10-13
+12. **Levels and categories (MLS/MCS)** (done, all six items, unreleased; user 2026-10-13
    asked about s0 levels and container categories; agreed order: 1 bypass
    report + checks, 2 context compare, then 3 levels shown elsewhere with
    setrans names, 4 range_transition in graph/File Labels, 5 container
@@ -1049,6 +1049,42 @@ so far covered by the e2e tests only.
    by mls* attributes): 200+ domains held, exempt ones grouped by
    attribute. Told the user (possible protection loss RHEL 8 → 9). Tests: test/levels-test.js (npm test),
    test/levels-e2e.js (melody; [tree]).
+   Items 3-6 (done, unreleased; "lets do the rest of the MCS items"):
+   server/levels.js (pure: parseCats/catsText/canon (setools form, runs as
+   cA.cB), parseSetrans (raw=Name lines; advanced mcstrans lines counted as
+   skipped), translate (whole range, else each end), describe, problems
+   (sens/cats limits, high covers low), covers). Server setransFor(pol):
+   installed /etc/selinux/NAME/setrans.conf; build: appconfig-TYPE/,
+   dist/NAME/, selinux_config/setrans-{NAME,TYPE}.conf (CLIP 8),
+   ../support/ (CLIP 9), ../, spec dirs of build.tree.files (RHEL 9);
+   levelLimits() from idx.m4 flags; levelHover() (level/range regex on the
+   line, before wordAt); names in selinux/levels (setrans), contextCheck
+   (levels.*.name, userName), lookupFile (per policy level/levelName,
+   currentLevelName), logins (users' range canon + rangeName, mappings
+   rangeName). Range transitions: policy_query range_rules()/ranges_for();
+   transition() has `ranges` [{entry, range}]; fileinfo from[].range;
+   transitions.js edge class `ranged` (purple) + tooltip + legend; File
+   Labels "at RANGE". Isolation: policy_query isolation(domains, weight,
+   classes, limit, scope own|all): binds = constraints whose eval_levels
+   isn't True; own scope = targets the domain is or may create (create
+   perm) and SHAREABLE classes (file classes, sem msgq msg shm ipc key
+   process) + SHARE_PERMS (unix_stream connectto, unix_dgram sendto);
+   perms with permmap weight ≥ N not covered by a binding constraint;
+   fdOnly when (class, open) is checked; op `isolation`, check kind
+   require-isolated (checks.js `require <d> isolated by levels [on …]
+   [weight N]`), server selinux/isolation (origins traced for a build),
+   checkMessage/lens/related, completion "isolated by levels". Webview
+   "Kept apart by levels?" card (domains default container_t/svirt_t from
+   the held group, weight select, every target, Add check). User editor:
+   userPlan response carries `levels` (userLevelsInfo: MCS tree → gen_user
+   ignores level/range, range = s0[-s0:CATS] with macros resolved
+   (mls/mcs_systemhigh, mcs_allcats); standalone: hostLevelLimits() from
+   /sys/fs/selinux/mls), media/user.js levelHelp() (#lvhelp refreshed per
+   plan), quick choices, datalist of setrans names. Findings: RHEL 9
+   container_t binds 72/72 yet 48 shared accesses unchecked (connectto,
+   msg, shm/sem/msgq read; fifo read/write fd-only); CLIP 8 staff_t
+   isolated, CLIP 9 staff_t 144 unchecked; RHEL init_t → setrans_t at
+   s0-s0:c0.c1023; CLIP 8 init_t starts 9 domains at fixed levels.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
@@ -1217,6 +1253,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
+- `server/levels.js`: level canonical form, setrans.conf names, descriptions.
 - `media/levels.js`: Levels and Categories webview (context check, who
   ignores levels); the analysis is in policy_query.py (`levels`, `context`).
 - `server/wrapper.js`: wrapped-programs module (model, render, read back,

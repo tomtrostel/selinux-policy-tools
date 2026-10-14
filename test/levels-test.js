@@ -26,6 +26,22 @@ check(p.checks[1].kind === 'only-levels' && p.checks[1].classes.join() === 'file
 const err = (l) => (p.errors.find(e => e.l === l) || {}).msg || '';
 check(/works with 'only' and 'never'/.test(err(3)) && /Expected 'levels'/.test(err(4)) && /after 'on'/.test(err(5)) && /Unexpected 'file'/.test(err(6)), 'errors: require, missing levels, missing class, extra word', p.errors);
 
+/* ---------- levels.js: canonical form, setrans names, descriptions ---------- */
+
+const LV = require('../server/levels');
+check(LV.canon('s0:c1,c2') === 's0:c1.c2' && LV.canon('s0 - s0:c0.c1023') === 's0-s0:c0.c1023' && LV.canon('s0:c5,c1,c2,c3') === 's0:c1.c3,c5' && LV.canon('s0:c1,c3') === 's0:c1,c3',
+  'canonical levels: sorted, runs of two or more as cA.cB', [LV.canon('s0:c1,c2'), LV.canon('s0:c5,c1,c2,c3')]);
+check(LV.canon('x0') === null && LV.canon('s0:c1-c2') === null && LV.canon('s0-s1-s2') === null && LV.canon('s0:c3.c1') === null, 'not levels: null');
+const ST = LV.parseSetrans('# names\ns0=SystemLow\ns0-s0:c0.c1023=SystemLow-SystemHigh\ns0:c0.c1023=SystemHigh\ns2:c0,c1=Secret:AB\nBase=Sensitivity\n\n');
+check(ST.entries.length === 4 && ST.skipped.length === 1 && ST.byRaw.get('s2:c0.c1').name === 'Secret:AB', 'setrans.conf: simple lines read, advanced ones counted', ST.entries);
+check(LV.translate('s0', ST) === 'SystemLow' && LV.translate('s0 - s0:c0,c1,c2.c1023', ST) === 'SystemLow-SystemHigh' && LV.translate('s0-s2:c0,c1', ST) === 'SystemLow-Secret:AB' && LV.translate('s0:c7', ST) === null && LV.translate('s0', null) === null,
+  'translate: whole range, else each end, else none');
+check(LV.describe('s0:c1,c5') === 's0 with 2 categories (c1,c5)' && LV.describe('s0-s0:c0.c1023', { cats: 1024 }) === 'from s0 with no categories up to s0 with all 1024 categories' && LV.describe('s0:c3') === 's0 with category c3',
+  'describe in plain words', [LV.describe('s0:c1,c5'), LV.describe('s0-s0:c0.c1023', { cats: 1024 })]);
+check(LV.problems('s3', { sens: 1, cats: 1024 })[0] === 's3 doesn\'t exist: this policy has only s0' && /c2000 is out of range/.test(LV.problems('s0:c2000', { sens: 1, cats: 1024 })[0])
+  && /doesn't cover the low level/.test(LV.problems('s0:c1-s0:c2', {})[0]) && !LV.problems('s0-s0:c0.c1023', { sens: 1, cats: 1024 }).length, 'problems: sensitivity, category, high below low');
+check(LV.covers('s0:c0.c1023', 's0:c5') && !LV.covers('s0:c1,c2', 's0:c1,c3') && LV.covers('s2', 's1') && !LV.covers('s0', 's0:c1'), 'covers (dominance)');
+
 /* ---------- webview ---------- */
 
 class El {
@@ -85,7 +101,7 @@ send({ cmd: 'checkAdded', text: 'Added to selinux.checks' });
 check(byId.status.textContent === 'Added to selinux.checks', 'status shows the result');
 const f = input('find a domain');
 f.value = 'ssh'; f.fire('input');
-t = byId.main.textContent;
+t = find('levelsBox').textContent;
 check(/sshd_t/.test(t) && !/syslogd_t/.test(t) && !/container_t/.test(t) && focused && focused.attrs.id === 'lvfilter', 'filter narrows the domains and keeps the focus', t.slice(-500));
 f.value = ''; input('find a domain').value = ''; input('find a domain').fire('input');
 
@@ -108,10 +124,33 @@ check(/the process's clearance \(high level\) \(s0:c1\.c2\) covers the object's 
 check(/its user may have s0-s0:c0\.c1023/.test(t) && /1 constraint hold/.test(t) && /container\.te:41/.test(t), 'levels, held constraints folded, rule source linked');
 send({ cmd: 'label', key: 9, result: { policies: [{ id: 'installed:targeted', context: 'system_u:object_r:etc_t:s0' }] } });
 check(input('system_u:object_r:container_file_t').value === 'system_u:object_r:etc_t:s0', 'a file\'s label fills the object context');
+// Kept apart by levels?
+const isoBtn = all(e => e.tag === 'button' && e.textContent === 'Check')[1];
+isoBtn.fire('click');
+const iq = last('isolation');
+check(iq && iq.domains === 'container_t svirt_t' && iq.weight === 10 && iq.scope === 'own', 'isolation: the held domains suggested, checked for shared objects', iq);
+send({ cmd: 'isolation', key: iq.key, result: { locs: {}, results: [
+  { domain: 'container_t', binds: 72, constraints: 72, count: 2, open: 1, scope: 'own', unchecked: [
+    { target: 'container_t', class: 'unix_stream_socket', perms: ['connectto'], dirs: ['write'], rules: [{ s: 'container_t', t: 'container_t', c: 'unix_stream_socket' }], conditional: [], fdOnly: false, origin: { path: '/t/container.te', line: 9 } },
+    { target: 'container_file_t', class: 'fifo_file', perms: ['read', 'write'], dirs: ['read/write'], rules: [{ s: 'svirt_sandbox_domain', t: 'container_file_t', c: 'fifo_file' }], conditional: [], fdOnly: true }] },
+  { domain: 'svirt_t', binds: 72, constraints: 72, count: 0, open: 0, scope: 'own', unchecked: [] }] } });
+t = byId.main.textContent;
+check(/container_t: 2 accesses levels don't check \(1 only through a descriptor it is given\)/.test(t) && /container_t:unix_stream_socket\{ connectto \}/.test(t) && /opening is checked/.test(t) && /container\.te:10/.test(t),
+  'isolation result: unchecked accesses, descriptor-only ones marked, source linked', t.slice(t.indexOf('container_t: 2'), t.indexOf('container_t: 2') + 300));
+check(/svirt_t: every such access is level-checked/.test(t), 'a domain with none says so');
+all(e => e.tag === 'button' && e.textContent === 'Add check').find(b => /isolated/.test(b.parent.textContent)).fire('click');
+check(last('addCheck').text === 'require container_t isolated by levels', 'Add check: require … isolated by levels', last('addCheck'));
 send({ cmd: 'prefill', state: { source: 'a:b:c_t:s0', target: 'd:e:f_t:s0', tclass: 'dir', perms: 'search' } });
 check(last('check').source === 'a:b:c_t:s0' && last('check').tclass === 'dir', 'prefill (from the denial assistant) checks at once');
 send({ cmd: 'check', key: last('check').key, result: { error: 'c_t (the source type) is not a type in this policy.' } });
 check(/c_t \(the source type\) is not a type/.test(byId.main.textContent), 'errors shown');
+send({ cmd: 'levels', key: last('levels').key, result: { mls: true, kind: 'mcs', sensitivities: 1, categories: 1024, domains: 1, policies, policy: policies[0], constraints: [], targetTerms: [], locs: {},
+  groups: [{ constraints: [], via: [], domains: ['container_t'], classes: {} }], setrans: { path: '/etc/selinux/targeted/setrans.conf', entries: [{ raw: 's0', name: 'SystemLow', l: 3 }, { raw: 's0-s0:c0.c1023', name: 'SystemLow-SystemHigh', l: 4 }], skipped: 1 } } });
+t = byId.main.textContent;
+check(/Level names: 2 in setrans\.conf \(1 line in mcstrans' advanced format not read\)/.test(t) && /s0SystemLow/.test(t), 'level names listed from setrans.conf', t.slice(t.indexOf('Level names'), t.indexOf('Level names') + 120));
+send({ cmd: 'check', key: last('check').key, result: { problems: [], mls: true, te: {}, constraints: [], levels: { source: { low: 's0', high: 's0:c0.c1023', name: 'SystemLow-SystemHigh' }, target: { low: 's0', high: 's0', name: 'SystemLow' }, user: 's0 - s0:c0.c1023', userName: 'SystemLow-SystemHigh', setrans: '/etc/selinux/targeted/setrans.conf' } } });
+t = byId.main.textContent;
+check(/s0 – s0:c0\.c1023 SystemLow-SystemHigh/.test(t) && /Object.*s0 SystemLow/.test(t) && /Names from \/etc\/selinux\/targeted\/setrans\.conf/.test(t), 'check result shows level names', t.slice(t.indexOf('Levels'), t.indexOf('Levels') + 220));
 send({ cmd: 'levels', key: last('levels').key, result: { mls: false, policies, policy: policies[1] } });
 check(/no levels: it was built without MLS or MCS/.test(byId.main.textContent), 'a policy without levels says so');
 

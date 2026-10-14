@@ -735,6 +735,54 @@ down. "Rules from" picks the policy: an installed one or the last build.
   * **RHEL 9** uses upstream refpolicy's `mcs_constrained_type` form, and
     no domain in the build is in it. So categories restrict none of its
     domains.
+* **Kept apart by levels?** Two containers run in the same domain
+  (`container_t`) and use files of the same types, so only their categories
+  tell them apart. For the domains you give (by default the ones held to
+  every constraint), this lists the accesses levels don't check, limited
+  to objects two such processes can share:
+  * objects of its own type or of a type it creates;
+  * files, System V IPC, keys and processes;
+  * connecting or sending to another process's unix socket.
+
+  It counts reads and writes of data; pick a lower weight for weaker
+  channels, or *every target* for all of them. An access is marked
+  "opening is checked" when opening the object is level-checked but the
+  access isn't: it then needs a descriptor another process hands over.
+  Example on RHEL 9 targeted: `container_t` is bound by all 72 level
+  constraints, yet 48 such accesses aren't level-checked, including
+  `connectto` on another `container_t` unix socket and reads of System V
+  shared memory, semaphores and message queues. *Add check* writes
+  `require container_t isolated by levels`. On CLIP's RHEL 8 build
+  `staff_t` passes it; on RHEL 9, levels don't check 144 of its accesses.
+* **Level names** (`setrans.conf`, what `ls -Z` shows with mcstrans
+  running) appear wherever levels show:
+  * the context check and a list in the report;
+  * File Labels (expected and current label);
+  * Logins and Users (users' and logins' ranges);
+  * hovering a level in the sources (`s0`, `s0:c0.c1023` in `gen_user` or
+    `gen_context`), with what it means and whether it fits the tree's
+    sensitivities and categories.
+
+  The file is the installed policy's `/etc/selinux/NAME/setrans.conf`, or
+  for a build the one its packaging installs: `config/appconfig-TYPE/`,
+  RHEL 10's `dist/NAME/`, CLIP RHEL 8's `selinux_config/`, CLIP RHEL 9's
+  `../support/`, or next to a RHEL 9 spec.
+* **Range transitions** (`range_transition`: a program started from a
+  given domain runs at a fixed level) show in the transition graph as
+  purple edges, with the range in the tooltip. File Labels shows them
+  under "Running it starts …", e.g. on RHEL `init_t` starts `setrans_t` at
+  `s0-s0:c0.c1023`.
+* **User editor:** under the level fields it shows the level and range
+  the user will actually have, with their names, plain words and
+  problems:
+  * a category beyond the policy's;
+  * a default level outside the range.
+
+  In an MCS tree, `gen_user` ignores its level and range arguments
+  ("level s0 range s0 - s0:CATEGORIES"), and the editor says so: only the
+  categories count. Quick choices: *No categories*, *All categories*,
+  *Some categories…*. Named levels from `setrans.conf` are offered in the
+  fields.
 
 **Logins and Users** (*SELinux: Logins and Users…*, or the person icon in
 the Policy Explorer; Linux)
@@ -1103,6 +1151,10 @@ require syslogd_t may { append create } var_log_t:file
   …` lists who holds an exemption attribute such as `mlsfileread`. A
   failure names the domains and the term that exempts them, with their
   declarations as related locations.
+* `require <domains> isolated by levels [on <classes>] [weight N]`
+  (MLS/MCS): every access these domains have to objects two of their
+  processes can share is level-checked, as in *Kept apart by levels?*. A
+  failure lists the accesses and the rules behind them.
 * Logins (with the seusers and contexts files of the checked policy: the
   tree's `config/appconfig-<TYPE>`, or this host's for a standalone module):
   `only|never <users> may log in` (the SELinux users any seusers line maps

@@ -24,6 +24,9 @@
  *   only|never <domains> may ignore levels [on <classes>]
  *                                                      domains that pass MLS/MCS constraints whatever
  *                                                      the levels (MCS: not in mcs_constrained_type)
+ *   require <domains> isolated by levels [on <classes>] [weight N]
+ *                                                      every access to objects two processes of the domain
+ *                                                      can share (own type, types it creates) is level-checked
  *
  * logins: Linux login names (a name without a line of its own gets __default__'s), %group,
  * __default__, or '*' (every seusers line).
@@ -40,7 +43,7 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps', 'ignore', 'levels', 'on'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps', 'ignore', 'levels', 'on', 'isolated', 'by'];
 
 /** Tokens with columns: words (incl. '*' and %group), braces, ':' and ','. */
 function tokens(line) {
@@ -128,9 +131,33 @@ function parseChecks(text) {
       checks.push({ id: checks.length, line: l, kind: 'login-may', logins, targets, classes, perms, permsLabel: p.join(' '), text: raw.trim() });
       return;
     }
-    const sources = names(['may', 'reaches', 'flows']);
+    const sources = names(['may', 'reaches', 'flows', 'isolated']);
     if (!sources.length) { err('Expected one or more types or attributes'); return; }
     const verb = tok[i] && tok[i].v;
+    // require <domains> isolated by levels [on <classes>] [weight N]: every access such a process
+    // has to objects another one of its domain can share is level-checked (two containers).
+    if (verb === 'isolated') {
+      if (kind !== 'require') { err(`'isolated by levels' works with 'require' (require container_t isolated by levels)`); return; }
+      i++;
+      if (!tok[i] || tok[i].v !== 'by' || !tok[i + 1] || tok[i + 1].v !== 'levels') { err(`Expected 'by levels' (require container_t isolated by levels)`); return; }
+      i += 2;
+      let classes = [], weight = 10;
+      if (tok[i] && tok[i].v === 'on') {
+        i++;
+        const cl = set();
+        if (!cl || !cl.length) { err(`Expected a class or { class ... } after 'on'`); return; }
+        classes = cl;
+      }
+      if (tok[i] && tok[i].v === 'weight') {
+        i++;
+        weight = tok[i] && /^([1-9]|10)$/.test(tok[i].v) ? Number(tok[i++].v) : NaN;
+        if (Number.isNaN(weight)) { err('Expected a weight from 1 (every permission that carries information) to 10 (only reads and writes of data)'); return; }
+      }
+      if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+      if (sources.includes('*')) { err(`'*' doesn't work with 'isolated by levels'`, tok.find(t => t.v === '*')); return; }
+      checks.push({ id: checks.length, line: l, kind: 'require-isolated', sources, classes, weight, text: raw.trim() });
+      return;
+    }
     if (verb === 'reaches') {
       if (kind !== 'never') { err(`'reaches' only works with 'never' (never X reaches Y)`); return; }
       i++;

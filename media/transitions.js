@@ -85,7 +85,7 @@
 
   function edgeStyle(tr) {
     const auto = tr.auto && tr.auto.length, dyn = tr.dynamic && !(tr.entrypoints && tr.entrypoints.length);
-    return { dash: dyn ? '2 3' : auto ? '' : '6 4', cls: tr.conditional && tr.conditional.length ? 'edge cond' : 'edge' };
+    return { dash: dyn ? '2 3' : auto ? '' : '6 4', cls: `edge${tr.conditional && tr.conditional.length ? ' cond' : ''}${tr.ranges && tr.ranges.length ? ' ranged' : ''}` };
   }
 
   function edgeTip(tr) {
@@ -95,6 +95,7 @@
     else if (tr.entrypoints && tr.entrypoints.length) lines.push(tr.setexec ? 'explicit: the source sets the context itself (setexec), e.g. runcon / sudo' : 'needs a type_transition or setexec to happen');
     if (tr.dynamic) lines.push('dynamic transition (dyntransition + setcurrent)');
     if (tr.conditional && tr.conditional.length) lines.push(`only when ${tr.conditional.join(', ')}`);
+    for (const r of tr.ranges || []) lines.push(`runs at ${r.range} when started from ${r.entry} (range_transition)`);
     return lines.join('\n');
   }
 

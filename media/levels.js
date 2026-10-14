@@ -33,6 +33,7 @@
   };
 
   let policies = [], against = null, levels = null, levelsKey = null, checkKey = 0, seq = 0;
+  const iso = { domains: '', weight: 10, all: false, result: null, key: 0, touched: false };
   const state = { source: '', target: '', tclass: 'file', perms: 'read open', path: '' };
   let lastCheck = null, filter = '';
   const open = new Map();
@@ -107,8 +108,12 @@
     if (ctxBad.length) out.push(h('div', { class: 'note muted' }, 'The answer below is for these contexts as given, even though a process can\'t get the source context.'));
     if (r.levels && r.levels.source) {
       out.push(h('div', { class: 'sub' }, 'Levels'), h('table', {}, h('tbody', {},
-        h('tr', {}, h('th', {}, 'Process'), h('td', {}, h('code', {}, r.levels.source.low === r.levels.source.high ? r.levels.source.low : `${r.levels.source.low} – ${r.levels.source.high}`), r.levels.user ? h('span', { class: 'muted' }, `  (its user may have ${r.levels.user.replace(/ - /, '-')})`) : null)),
-        h('tr', {}, h('th', {}, 'Object'), h('td', {}, h('code', {}, r.levels.target.low === r.levels.target.high ? r.levels.target.low : `${r.levels.target.low} – ${r.levels.target.high}`))))));
+        h('tr', {}, h('th', {}, 'Process'), h('td', {}, h('code', {}, r.levels.source.low === r.levels.source.high ? r.levels.source.low : `${r.levels.source.low} – ${r.levels.source.high}`),
+          r.levels.source.name ? h('span', {}, ` ${r.levels.source.name}`) : null,
+          r.levels.user ? h('span', { class: 'muted' }, `  (its user may have ${r.levels.user.replace(/ - /, '-')}${r.levels.userName ? `, ${r.levels.userName}` : ''})`) : null)),
+        h('tr', {}, h('th', {}, 'Object'), h('td', {}, h('code', {}, r.levels.target.low === r.levels.target.high ? r.levels.target.low : `${r.levels.target.low} – ${r.levels.target.high}`),
+          r.levels.target.name ? h('span', {}, ` ${r.levels.target.name}`) : null)))),
+      r.levels.setrans && (r.levels.source.name || r.levels.target.name) ? h('div', { class: 'note muted' }, `Names from ${r.levels.setrans}.`) : null);
     }
     out.push(h('div', { class: 'sub' }, 'Type rules'), h('div', {}, te.map(([perm, x]) => {
       if (x.status === 'allowed') {
@@ -167,11 +172,72 @@
         checkLine ? h('div', { class: 'row' }, h('button', { title: 'Add a check to selinux.checks that fails if any of these domains stops being held to the level constraints', onclick: () => vscode.postMessage({ cmd: 'addCheck', text: checkLine }) }, 'Add check'), ' ', h('code', { class: 'muted' }, checkLine)) : null,
       ], !!filter || (!g.constraints.length && gi < 3)));
     });
+    if (L.setrans) {
+      const s = L.setrans;
+      body.push(h('details', {}, h('summary', { class: 'muted' }, `Level names: ${s.entries.length} in `, link(s.path.split('/').pop(), { p: s.path, l: 0 }, `Open ${s.path}`),
+        s.skipped ? ` (${s.skipped} line${s.skipped === 1 ? '' : 's'} in mcstrans' advanced format not read)` : ''),
+        h('div', { class: 'intro' }, 'setrans.conf gives levels readable names; with mcstrans running, ls -Z and ps -Z show them instead of the raw levels.'),
+        h('table', {}, h('tbody', {}, s.entries.map(e => h('tr', {}, h('td', {}, link(e.raw, { p: s.path, l: e.l }, 'Open this line')), h('td', {}, e.name)))))));
+    } else if (L.mls) body.push(h('div', { class: 'note muted' }, 'No setrans.conf found for this policy, so levels have no names.'));
     if (L.targetTerms.length) {
       body.push(h('div', { class: 'note muted' }, 'Terms on the object\'s type: ', L.targetTerms.map(t => `${t.term} (${t.types} type${t.types === 1 ? '' : 's'}, ${t.constraints} constraint${t.constraints === 1 ? '' : 's'})`).join('; '),
         '. Objects of these types are treated differently whatever the process.'));
     }
     return [card('who', 'Who ignores levels', `${passN} of ${L.domains} domains`, body, true)];
+  }
+
+  function runIsolation() {
+    if (!iso.domains.trim()) { iso.result = { error: 'Give one or more domains, e.g. container_t.' }; render(); return; }
+    iso.result = 'checking';
+    vscode.postMessage({ cmd: 'isolation', key: ++iso.key, against, domains: iso.domains, weight: iso.weight, scope: iso.all ? 'all' : 'own' });
+    render();
+  }
+
+  function isolationCard() {
+    // Suggest the domains held to every level constraint (containers, virtual machines) once known.
+    if (!iso.touched && !iso.domains && levels && levels.groups) {
+      const held = levels.groups.filter(g => !g.constraints.length).flatMap(g => g.domains);
+      const pick = ['container_t', 'svirt_t'].filter(d => held.includes(d));
+      iso.domains = (pick.length ? pick : held.slice(0, 2)).join(' ');
+    }
+    const dom = h('input', { type: 'text', value: iso.domains, size: 30, placeholder: 'container_t', spellcheck: 'false', title: 'The domain(s) whose processes should be kept apart by their levels (e.g. one container from another)' });
+    dom.addEventListener('input', () => { iso.domains = dom.value; iso.touched = true; });
+    dom.addEventListener('keydown', (e) => { if (e.key === 'Enter') runIsolation(); });
+    const wsel = h('select', { title: 'Which permissions count: 10 = reads and writes of data; lower also counts weaker channels (setools\' permission map)' },
+      [[10, 'reads and writes of data'], [5, 'also weaker channels'], [1, 'every permission that carries information']].map(([v, t]) => h('option', { value: String(v), selected: iso.weight === v || null }, t)));
+    wsel.addEventListener('change', () => { iso.weight = +wsel.value; });
+    const all = h('input', { type: 'checkbox', checked: iso.all || null, title: 'Also accesses to objects the domain neither is nor creates, and all socket permissions' });
+    all.addEventListener('change', () => { iso.all = all.checked; });
+    return card('iso', 'Kept apart by levels?', 'what two processes of a domain can share that levels don\'t check', [
+      h('div', { class: 'intro' }, 'Two containers run in the same domain (container_t) and use files of the same types; only their categories tell them apart. This lists the accesses of a domain to objects such processes can share (its own type, types it creates; files, IPC, keys, processes, connecting to another process\'s socket) that no level constraint checks for it.'),
+      h('div', { class: 'row' }, 'Domains ', dom, ' Count ', wsel, ' ', h('label', {}, all, ' every target'), ' ', h('button', { class: 'primary', onclick: runIsolation }, 'Check')),
+      isolationResult(),
+    ], true);
+  }
+
+  function isolationResult() {
+    const r = iso.result;
+    if (!r) return null;
+    if (r === 'checking') return h('div', { class: 'muted' }, 'Checking…');
+    if (r.error) return h('div', { class: 'note bad' }, r.error);
+    return r.results.map((d) => {
+      const head = d.binds === 0 ? `${d.domain} ignores levels altogether: categories don't separate its processes`
+        : d.count ? `${d.domain}: ${d.count} access${d.count === 1 ? '' : 'es'} levels don't check${d.open < d.count ? ` (${d.count - d.open} only through a descriptor it is given)` : ''}`
+          : `${d.domain}: every such access is level-checked`;
+      const rows = d.unchecked.map(v => h('tr', { class: v.fdOnly ? 'muted' : null },
+        h('td', {}, h('code', {}, `${v.target}:${v.class}`)), h('td', {}, h('code', {}, `{ ${v.perms.join(' ')} }`)), h('td', { class: 'muted' }, v.dirs.join(', ')),
+        h('td', {}, v.fdOnly ? h('span', { class: 'muted', title: 'Opening such an object is level-checked, so this needs a descriptor another process passes it' }, 'opening is checked ') : null,
+          v.conditional.length ? h('span', { class: 'muted' }, `[${v.conditional.join(', ')}] `) : null,
+          v.origin ? link(`${v.origin.path.split('/').pop()}:${v.origin.line + 1}`, { p: v.origin.path, l: v.origin.line }, v.origin.via ? `via ${v.origin.via}` : null)
+            : h('code', { class: 'muted' }, `allow ${v.rules[0].s} ${v.rules[0].t}`))));
+      const line = `require ${d.domain} isolated by levels${iso.weight !== 10 ? ` weight ${iso.weight}` : ''}`;
+      return h('div', { class: 'cons' },
+        h('div', { class: d.count || d.binds === 0 ? 'verdict bad' : 'verdict ok' }, head, ' ', link('↗', iso.locs && iso.locs[d.domain], `Open where ${d.domain} is declared`)),
+        h('div', { class: 'note muted' }, `Bound by ${d.binds} of ${d.constraints} level constraints.`),
+        rows.length ? h('table', {}, h('tbody', {}, rows)) : null,
+        d.count > d.unchecked.length ? h('div', { class: 'muted' }, `… ${d.count - d.unchecked.length} more`) : null,
+        h('div', { class: 'row' }, h('button', { title: 'Add a check to selinux.checks that fails while such accesses exist (or new ones appear)', onclick: () => vscode.postMessage({ cmd: 'addCheck', text: line }) }, 'Add check'), ' ', h('code', { class: 'muted' }, line)));
+    });
   }
 
   function renderLevelsOnly() {
@@ -189,7 +255,7 @@
     for (const p of policies) sel.append(h('option', { value: p.id, selected: p.id === against || null }, p.label));
     const main = $('main');
     main.textContent = '';
-    main.append(checkForm(), h('div', { id: 'levelsBox' }, levelsCards()));
+    main.append(checkForm(), isolationCard(), h('div', { id: 'levelsBox' }, levelsCards()));
   }
 
   function loadLevels() {
@@ -208,6 +274,11 @@
       if (m.result.policies) policies = m.result.policies;
       if (m.result.policy) { against = m.result.policy.id; levels.policyLabel = m.result.policy.label; }
       $('status').textContent = '';
+      render();
+    } else if (m.cmd === 'isolation') {
+      if (m.key !== iso.key) return;
+      iso.result = m.result;
+      iso.locs = m.result && m.result.locs;
       render();
     } else if (m.cmd === 'check') {
       if (m.key !== checkKey) return;

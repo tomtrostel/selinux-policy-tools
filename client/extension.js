@@ -666,6 +666,7 @@ function showTransitionGraph(context, root, dir = 'out') {
   .node:hover rect { stroke: var(--vscode-focusBorder); }
   .edge { fill: none; stroke: var(--vscode-charts-blue, #3794ff); stroke-width: 1.2; opacity: .85; }
   .edge.cond { stroke: var(--vscode-charts-orange, #d18616); }
+  .edge.ranged { stroke: var(--vscode-charts-purple, #b180d7); stroke-width: 2; }
   .edge:hover { stroke-width: 2.5; opacity: 1; }
   .arrowhead { fill: var(--vscode-foreground); opacity: .7; }
 </style></head><body>
@@ -680,6 +681,7 @@ function showTransitionGraph(context, root, dir = 'out') {
     <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-blue,#3794ff)" stroke-dasharray="6 4"/></svg> explicit (setexec)
     <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-blue,#3794ff)" stroke-dasharray="2 3"/></svg> dynamic
     <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-orange,#d18616)"/></svg> boolean-controlled
+    <svg width="30" height="8"><line x1="0" y1="4" x2="30" y2="4" stroke="var(--vscode-charts-purple,#b180d7)" stroke-width="2"/></svg> sets the level (range_transition)
   </span>
   <span id="status" class="muted"></span>
   <span class="muted">click: expand · double-click: source · alt-click: make root · hover an arrow for entrypoints</span>
@@ -2114,6 +2116,8 @@ function showLevels(context, prefill) {
         if (prefill) panel.webview.postMessage({ cmd: 'prefill', state: prefill });
       } else if (m.cmd === 'levels') {
         panel.webview.postMessage({ cmd: 'levels', key: m.key, result: await client.sendRequest('selinux/levels', { against: m.against }) });
+      } else if (m.cmd === 'isolation') {
+        panel.webview.postMessage({ cmd: 'isolation', key: m.key, result: await client.sendRequest('selinux/isolation', { against: m.against, domains: m.domains, weight: m.weight, scope: m.scope }) });
       } else if (m.cmd === 'check') {
         panel.webview.postMessage({ cmd: 'check', key: m.key, result: await client.sendRequest('selinux/contextCheck', { against: m.against, source: m.source, target: m.target, tclass: m.tclass, perms: m.perms }) });
       } else if (m.cmd === 'label') {

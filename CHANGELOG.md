@@ -16,6 +16,19 @@
   * The denial assistant opens constraint denials there.
 * **`only|never <domains> may ignore levels [on <classes>]`** in
   `selinux.checks`.
+* **Kept apart by levels?** (in Levels and Categories) and **`require
+  <domains> isolated by levels [on <classes>] [weight N]`**: a domain's
+  accesses to objects two of its processes can share that no level
+  constraint checks. On RHEL 9 targeted, `container_t` has 48 such
+  accesses, e.g. `connectto` on another container's unix socket.
+* **Level names** from `setrans.conf` in the context check, File Labels,
+  Logins and Users, and on hover over levels in the sources.
+* **Range transitions** in the transition graph (purple edges) and in File
+  Labels ("Running it starts … at s0-s0:c0.c1023").
+* **User editor:** the level and range the user will have, with names and
+  problems, and quick choices (no, all, some categories). In an MCS tree it
+  says that `gen_user` ignores its level and range arguments; only the
+  categories count.
 
 **Fixed**
 

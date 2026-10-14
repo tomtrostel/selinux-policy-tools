@@ -120,7 +120,8 @@
     if (!r.exists) rows.push(h('div', { class: 'note muted' }, `Not on this host: looked up as a ${KIND[r.mode] || r.mode}. Choose another kind above if it will be something else.`));
     else {
       rows.push(h('div', {}, `A ${KIND[r.mode] || r.mode}${r.executable ? ' (executable)' : ''}`, r.pkg ? [' from package ', h('code', {}, r.pkg)] : r.pkg === null ? h('span', { class: 'muted' }, ' (no package owns it)') : null));
-      rows.push(h('div', {}, 'Labeled now: ', r.current ? h('code', {}, r.current) : h('span', { class: 'muted' }, 'no label (the file system doesn\'t store one)')));
+      rows.push(h('div', {}, 'Labeled now: ', r.current ? h('code', {}, r.current) : h('span', { class: 'muted' }, 'no label (the file system doesn\'t store one)'),
+        r.currentLevelName ? h('span', { class: 'muted' }, ` (level ${r.current.split(':').slice(3).join(':')} = ${r.currentLevelName})`) : null));
       if (r.linkTarget) rows.push(h('div', {}, 'A link to ', h('code', {}, r.linkTarget), '. A link has its own label; what runs or is read is the target. ', h('button', { class: 'link', onclick: () => lookup(r.linkTarget, '') }, 'Look up the target')));
     }
     if (r.lookedUp !== r.path) rows.push(h('div', { class: 'muted' }, 'Looked up as ', h('code', {}, r.lookedUp), ': restorecon resolves the directories in the path (not the last part).'));
@@ -144,7 +145,8 @@
           h('table', {}, p.others.map(o => h('tr', {}, h('td', {}, h('code', {}, o.type || o.context)), h('td', {}, setBy(o))))))) : null;
       return h('tr', {},
         h('td', {}, p.label),
-        h('td', {}, p.context ? h('code', {}, p.context) : h('span', { class: 'muted' }, 'none')),
+        h('td', {}, p.context ? h('code', {}, p.context) : h('span', { class: 'muted' }, 'none'),
+          p.levelName ? h('div', { class: 'muted', title: `The name setrans.conf gives level ${p.level} (what ls -Z shows when mcstrans runs)` }, `${p.level} = ${p.levelName}`) : null),
         h('td', {}, setBy(p.winner), notes, others));
     });
     return h('table', {}, h('tr', {}, h('th', {}, 'Policy'), h('th', {}, 'Label'), h('th', {}, 'Set by')), trs);
@@ -157,7 +159,8 @@
       return [h('div', { class: 'sub' }, 'Running it starts'),
         h('table', {}, info.entrypointOf.map(d => h('tr', {},
           h('td', {}, open(info.locs[d.domain], d.domain, 'Open its declaration'), d.permissive ? [' ', h('span', { class: 'badge' }, 'permissive')] : null),
-          h('td', {}, d.from.length ? ['from ', d.from.slice(0, 12).map((f, i) => [i ? ', ' : '', h('code', {}, f.source), h('span', { class: 'muted' }, f.auto ? ' (automatically)' : f.setexec ? ' (when it asks)' : ''), f.conditional.length ? h('span', { class: 'muted' }, condText(f.conditional[0])) : null]),
+          h('td', {}, d.from.length ? ['from ', d.from.slice(0, 12).map((f, i) => [i ? ', ' : '', h('code', {}, f.source), h('span', { class: 'muted' }, f.auto ? ' (automatically)' : f.setexec ? ' (when it asks)' : ''), f.conditional.length ? h('span', { class: 'muted' }, condText(f.conditional[0])) : null,
+            f.range ? h('span', { class: 'lvl', title: `range_transition: started from ${f.source}, it runs at ${f.range} whatever the caller's level` }, ` at ${f.range}`) : null]),
             d.fromCount > 12 ? h('span', { class: 'muted' }, ` and ${d.fromCount - 12} more`) : null]
             : h('span', { class: 'muted' }, 'no domain may transition into it through this file')),
           h('td', {}, ch.pol.build ? h('button', { class: 'link', title: 'Open the domain transition graph of the last build', onclick: () => post({ cmd: 'graph', domain: d.domain }) }, 'graph') : null)))),

@@ -113,11 +113,40 @@ class Index:
         sn = [s] + self.attrs.get(s, [])
         return any(r["t"] in ("self", s) or s in self.expand(r["t"]) for r in self.with_perm(sn, self.by_src, "process", perm))
 
+    def range_rules(self):
+        """range_transition rules for processes: [(source, target, range text)] (names as written)."""
+        if getattr(self, "_rr", None) is None:
+            out = []
+            if self.policy.mls:
+                for r in self.policy.mlsrules():
+                    try:
+                        if str(r.tclass) == "process":
+                            out.append((str(r.source), str(r.target), str(r.default).replace(" - ", "-")))
+                    except Exception:
+                        pass
+            self._rr = out
+        return self._rr
+
+    def ranges_for(self, s, entries):
+        """The ranges range_transition gives s running each of the entrypoint types: [{entry, range}]."""
+        if not entries or not self.range_rules():
+            return []
+        sn = set([s] + self.attrs.get(s, []))
+        out = []
+        for e in sorted(entries):
+            en = set([e] + self.attrs.get(e, []))
+            for rs, rt, rng in self.range_rules():
+                if rs in sn and rt in en:
+                    out.append({"entry": e, "range": rng})
+                    break
+        return out
+
     def transition(self, s, t, rules):
         eps = self.entrypoints(t) & self.exec_types(s)
         auto = self.auto_entries(s, t) & eps
         return {"source": s, "target": t, "entrypoints": sorted(eps), "auto": sorted(auto),
-                "setexec": self.can(s, "setexec"), "conditional": sorted({r["cond"] for r in rules if r["cond"]})}
+                "setexec": self.can(s, "setexec"), "conditional": sorted({r["cond"] for r in rules if r["cond"]}),
+                "ranges": self.ranges_for(s, eps)}
 
     def transitions(self, name, direction):
         if name not in self.attrs:
@@ -447,6 +476,14 @@ class Index:
                 return self.check_rbac(kind, c["sources"], c["targets"])
             if kind in ("only-levels", "never-levels"):
                 return self.check_levels(kind, c["sources"], set(c.get("classes") or []))
+            if kind == "require-isolated":
+                if not self.policy.mls:
+                    return {"ok": False, "error": "this policy has no levels (built without MLS or MCS)"}
+                doms = self.names(c["sources"]) & self.domains
+                if not doms:
+                    return {"ok": False, "error": "none of these is a domain"}
+                res = [x for x in self.isolation(doms, c.get("weight") or 10, set(c.get("classes") or []) or None, limit=8) if x["count"]]
+                return {"ok": not res, "isolation": res[:20], "count": len(res)}
             if kind == "reaches":
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
                 p = self.transition_path(srcs, tgts, avoid=frozenset(self.names(c.get("through") or [])) - srcs - tgts)
@@ -814,6 +851,84 @@ class Index:
                 "groups": out, "targetTerms": sorted(target_terms.values(), key=lambda x: -x["constraints"]),
                 "domains": sum(len(g["domains"]) for g in out)}
 
+    # Objects two processes of a domain can share by name: file system objects, System V IPC,
+    # keys, processes; for sockets only reaching another process's (its own sockets aren't shared).
+    SHAREABLE = {"file", "dir", "lnk_file", "chr_file", "blk_file", "sock_file", "fifo_file",
+                 "sem", "msgq", "msg", "shm", "ipc", "key", "process"}
+    SHARE_PERMS = {"unix_stream_socket": {"connectto"}, "unix_dgram_socket": {"sendto"}}
+
+    def isolation(self, domains, min_weight=10, classes=None, limit=300, scope="own"):
+        """For each domain: its allowed accesses that carry information (setools permission map,
+        weight >= min_weight) but that no level constraint checks for it — what categories can't
+        keep apart between two processes of that domain at different levels (two containers share
+        container_t, so their own files and sockets are told apart only by level).
+        scope "own": only objects such a process is or creates (its own type, types it may
+        create), the ones two of them can share; "all": every target."""
+        lcs = self.level_constraints()
+        cov = {}
+        for i, c in enumerate(lcs):
+            for p in c["perms"]:
+                cov.setdefault((c["cls"], p), []).append(i)
+        pm = self.permmap()
+        out = []
+        for d in sorted(domains):
+            checked = {}
+            dn = [d] + self.attrs.get(d, [])
+            binds = sum(1 for c in lcs if self.eval_levels(c["expr"], d)[0] is not True)
+            own = None
+            if scope == "own":
+                own = {d}
+                for n in dn:
+                    for i in self.by_src.get(n, ()):
+                        r = self.rules[i]
+                        if r["rt"] == "allow" and "create" in r["perms"]:
+                            own.update(self.side_types(r, "t", d))
+            groups = {}
+            for n in dn:
+                for i in self.by_src.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] != "allow" or (classes and r["c"] not in classes):
+                        continue
+                    if own is not None and not own.intersection(self.side_types(r, "t", d)):
+                        continue
+                    if scope == "own" and r["c"] not in self.SHAREABLE and r["c"] not in self.SHARE_PERMS:
+                        continue
+                    for p in r["perms"]:
+                        direction, weight = pm.get((r["c"], p), ("n", 0))
+                        if scope == "own" and r["c"] in self.SHARE_PERMS:
+                            # Sockets: only reaching another process's socket (connectto, sendto) is shared.
+                            if p not in self.SHARE_PERMS[r["c"]]:
+                                continue
+                            direction, weight = direction if direction != "n" else "w", max(weight, min_weight)
+                        if direction == "n" or weight < min_weight:
+                            continue
+                        key = (r["c"], p)
+                        if key not in checked:
+                            checked[key] = any(self.eval_levels(lcs[j]["expr"], d)[0] is not True for j in cov.get(key, []))
+                        if checked[key]:
+                            continue
+                        g = groups.setdefault((r["t"], r["c"]), {"target": r["t"], "class": r["c"], "perms": set(), "dirs": set(), "rules": [], "cond": set()})
+                        g["perms"].add(p)
+                        g["dirs"].add({"r": "read", "w": "write", "b": "read/write"}[direction])
+                        if r not in g["rules"] and len(g["rules"]) < 3:
+                            g["rules"].append(r)
+                        if r["cond"]:
+                            g["cond"].add(r["cond"])
+            # Where opening the object is level-checked, these accesses need a descriptor someone passed it.
+            def open_checked(cls):
+                k = (cls, "open")
+                if k not in checked:
+                    checked[k] = any(self.eval_levels(lcs[j]["expr"], d)[0] is not True for j in cov.get(k, []))
+                return checked[k] and "open" in self.classperms.get(cls, ())
+            for g in groups.values():
+                g["fdOnly"] = open_checked(g["class"]) and "open" not in g["perms"]
+            items = sorted(groups.values(), key=lambda g: (g["fdOnly"], g["target"] not in ("self", d), -len(g["perms"]), g["target"], g["class"]))
+            out.append({"domain": d, "binds": binds, "constraints": len(lcs), "count": len(items), "scope": scope,
+                        "open": sum(1 for g in items if not g["fdOnly"]),
+                        "unchecked": [{"target": g["target"], "class": g["class"], "perms": sorted(g["perms"]), "dirs": sorted(g["dirs"]),
+                                       "rules": g["rules"], "conditional": sorted(g["cond"]), "fdOnly": g["fdOnly"]} for g in items[:limit]]})
+        return out
+
     def check_levels(self, kind, sources, classes):
         if not self.policy.mls:
             return {"ok": False, "error": "this policy has no levels (built without MLS or MCS)"}
@@ -894,7 +1009,8 @@ class Index:
         for d in sorted(entries):
             froms = [tr for tr in self.transitions(d, "in") if t2 in tr["entrypoints"]]
             domains.append({"domain": d, "via": sorted(entries[d]), "permissive": d in self.permissive,
-                            "from": [{"source": tr["source"], "auto": t2 in tr["auto"], "setexec": tr["setexec"], "conditional": tr["conditional"]} for tr in froms[:60]],
+                            "from": [{"source": tr["source"], "auto": t2 in tr["auto"], "setexec": tr["setexec"], "conditional": tr["conditional"],
+                                      "range": next((x["range"] for x in tr.get("ranges", []) if x["entry"] == t2), None)} for tr in froms[:60]],
                             "fromCount": len(froms)})
         created, inside = [], []
         for i, r in enumerate(self.rules):
@@ -949,6 +1065,9 @@ def main():
                 resp.update(failing=idx.constraints(req["s"], req["t"], req["c"], set(req.get("perms") or [])))
             elif req.get("op") == "levels":
                 resp.update(idx.levels(set(req.get("classes") or []) or None))
+            elif req.get("op") == "isolation":
+                doms = idx.names(req.get("domains") or []) & idx.domains
+                resp.update(results=idx.isolation(doms, req.get("weight") or 10, set(req.get("classes") or []) or None, scope=req.get("scope") or "own"), mls=bool(idx.policy.mls))
             elif req.get("op") == "context":
                 resp.update(idx.context_check(req["s"], req["t"], req["c"], req.get("perms") or [], req.get("bools") or {}))
             elif req.get("op") == "entrypoints":

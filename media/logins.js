@@ -70,7 +70,7 @@
       h('td', {}, open({ p: m.file, l: m.l }, m.group ? `%${m.login}` : m.login, `Open this line of ${m.file}`),
         m.login === '__default__' ? h('span', { class: 'muted' }, ' (every other login)') : m.group ? h('span', { class: 'muted' }, ' (members of the group)') : null),
       h('td', {}, h('code', {}, m.user)),
-      h('td', {}, m.range ? h('code', {}, m.range) : h('span', { class: 'muted' }, 'the user\'s default')),
+      h('td', {}, m.range ? h('code', {}, m.range) : h('span', { class: 'muted' }, 'the user\'s default'), m.rangeName ? h('span', { class: 'muted' }, ` ${m.rangeName}`) : null),
       h('td', {}, m.notes.map(n => h('div', { class: `note ${n.severity}` }, n.text)))));
     return [h('h2', {}, 'Linux logins'),
       h('p', { class: 'intro' }, 'Which SELinux user a Linux login gets (seusers). ', h('code', {}, '__default__'), ' covers every login without a line of its own; ', h('code', {}, '%group'), ' lines cover a group\'s members.'),
@@ -181,6 +181,8 @@
       h('div', { class: 'sub' }, 'Linux logins'),
       u.logins.length ? h('div', {}, u.logins.map((l, i) => [i ? ', ' : '', open({ p: l.file, l: l.l }, l.group ? `%${l.login}` : l.login, 'Open its seusers line')]))
         : h('div', { class: 'muted' }, u.name === 'system_u' ? 'None: system_u is for processes the system starts (services), not logins.' : 'None: no seusers line maps a login to it.'),
+      u.range ? [h('div', { class: 'sub' }, 'Levels'), h('div', {}, h('code', {}, u.range), u.rangeName ? h('span', { class: 'muted' }, ` (${u.rangeName})`) : null,
+        h('span', { class: 'muted' }, ' — the levels its sessions may have; a login\'s seusers range can narrow it'))] : null,
       h('div', { class: 'sub' }, 'Ways in'), entriesBox(u),
       canIn ? [h('div', { class: 'sub' }, 'Risky abilities within reach'), abilitiesBox(u)] : null,
       canIn ? [h('div', { class: 'sub' }, `Everything its sessions can reach (${u.reached} domains${u.roleSet ? `, roles ${u.roleSet.join(' ')}` : ''})`), reachBox(u)] : null,

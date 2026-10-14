@@ -82,6 +82,28 @@ const C = {
   const r = await a.conn.sendRequest('selinux/contextCheck', { source: 'user_u:sysadm_r:user_t:s0:c5', target: 'system_u:object_r:etc_t', tclass: 'file', perms: 'read' });
   const kinds = (r.problems || []).map(p => p.kind);
   check(kinds.includes('role') && kinds.includes('range') && kinds.includes('level'), `invalid source context explained: ${(r.problems || []).map(p => p.text).join(' | ')}`, r);
+  // Level names (setrans.conf) wherever levels show.
+  check(L.setrans && L.setrans.path === '/etc/selinux/targeted/setrans.conf' && L.setrans.entries.some(e => e.raw === 's0' && e.name === 'SystemLow'), 'levels report: names from /etc/selinux/targeted/setrans.conf', L.setrans);
+  const sys = await a.conn.sendRequest('selinux/contextCheck', { source: 'system_u:system_r:init_t:s0-s0:c0.c1023', target: 'system_u:object_r:etc_t:s0', tclass: 'file', perms: 'read' });
+  check(sys.levels && sys.levels.source.name === 'SystemLow-SystemHigh' && sys.levels.target.name === 'SystemLow' && sys.levels.userName === 'SystemLow-SystemHigh', `context check names the levels: ${sys.levels && `${sys.levels.source.name} / ${sys.levels.target.name}`}`, sys.levels);
+  const fl = await a.conn.sendRequest('selinux/fileLabel', { path: '/etc/passwd' });
+  const flp = (fl.policies || []).find(p => p.active);
+  check(flp && flp.level === 's0' && flp.levelName === 'SystemLow' && fl.currentLevelName === 'SystemLow', 'File Labels: /etc/passwd is at s0 = SystemLow (expected and now)', flp);
+  const lg = await a.conn.sendRequest('selinux/logins', {});
+  const staffU = (lg.users || []).find(u => u.name === 'staff_u');
+  check(staffU && staffU.range === 's0-s0:c0.c1023' && staffU.rangeName === 'SystemLow-SystemHigh', `Logins and Users: staff_u's range ${staffU && staffU.range} = ${staffU && staffU.rangeName}`, staffU && staffU.range);
+  // Range transitions: init_t starts mcstransd (setrans_t) at s0-s0:c0.c1023.
+  const fi = await a.conn.sendRequest('selinux/fileTypeInfo', { type: 'setrans_exec_t' });
+  const fromInit = fi.entrypointOf && fi.entrypointOf.flatMap(d => d.from).find(f => f.source === 'init_t');
+  check(fromInit && fromInit.range === 's0-s0:c0.c1023', `File Labels: init_t starts setrans_t at ${fromInit && fromInit.range} (range_transition)`, fi.entrypointOf);
+  if (hasContainers) {
+    const iso = await a.conn.sendRequest('selinux/isolation', { domains: 'container_t' });
+    const ct = iso.results && iso.results[0];
+    const conn = ct && ct.unchecked.find(v => v.class === 'unix_stream_socket' && v.perms.includes('connectto'));
+    check(ct && ct.binds === ct.constraints && ct.count > 0 && conn && !conn.fdOnly, `isolation: container_t is bound by every level constraint, yet ${ct && ct.count} accesses aren't level-checked, e.g. ${conn && `${conn.target}:${conn.class} connectto`}`, ct && ct.unchecked.slice(0, 6));
+    const isoAll = await a.conn.sendRequest('selinux/isolation', { domains: 'container_t', scope: 'all' });
+    check(isoAll.results && isoAll.results[0].count > ct.count, `every target: more (${isoAll.results && isoAll.results[0].count})`);
+  }
   const e1 = await a.conn.sendRequest('selinux/contextCheck', { source: 'a:b', target: 'c:d:e', tclass: 'file', perms: 'read' });
   const e2 = await a.conn.sendRequest('selinux/contextCheck', { source: 'u:r:nosuch_t:s0', target: 'system_u:object_r:etc_t:s0', tclass: 'file', perms: 'fly' });
   const e3 = await a.conn.sendRequest('selinux/contextCheck', { source: 'user_u:user_r:user_t:s9', target: 'system_u:object_r:etc_t:s0', tclass: 'file', perms: 'read' });
@@ -91,8 +113,12 @@ const C = {
   // 2. A tree build.
   const tc = detectToolchain(null);
   if (!tc.ok || !fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP tree part: ${tc.ok ? `no tree at ${src}` : tc.reason}`); return finish(); }
-  const tw = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-levels-tree-'));
+  // CLIP's layout: the tree in packages/selinux-policy/selinux-policy, setrans-*.conf (RHEL 9) in ../support.
+  const twParent = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-levels-tree-'));
+  const tw = path.join(twParent, 'selinux-policy');
+  fs.mkdirSync(tw);
   cp.execFileSync('cp', ['-a', src + '/.', tw]);
+  if (fs.existsSync(path.join(src, '../support'))) cp.execFileSync('cp', ['-a', path.join(src, '../support'), twParent]);
   fs.rmSync(path.join(tw, 'tmp'), { recursive: true, force: true });
   const CHECKS = path.join(tw, 'selinux.checks');
   fs.writeFileSync(CHECKS, '# levels\n');
@@ -152,12 +178,47 @@ const C = {
   } else console.log('  (staff_t can\'t reach sysadm_t here; except through not exercised)');
   const comp = await b.conn.sendRequest('textDocument/completion', { textDocument: { uri: cu }, position: { line: 1, character: 'never init_t may '.length } });
   check(comp.items.some(i => i.label === 'ignore levels'), 'completion offers "ignore levels" after may');
+  // Isolation as a check.
+  const isoLines = [...lines, '# isolation', 'require staff_t isolated by levels', 'require staff_t isolated by levels weight 11'];
+  b.conn.sendNotification('textDocument/didChange', { textDocument: { uri: cu, version: 3 }, contentChanges: [{ text: isoLines.join('\n') + '\n' }] });
+  await sleep(500);
+  await wait(() => b.summary && b.summary.total === (heldOne ? 6 : 5) && !b.summary.note);
+  await sleep(1500);
+  lenses = await b.conn.sendRequest('textDocument/codeLens', { textDocument: { uri: cu } });
+  const li = lines.length + 1;
+  check(/^(✗ 1 domain not kept apart by levels|✓ holds)$/.test(lens(li)) && (lens(li) === '✓ holds' || (D(li) && /^Not kept apart by levels: staff_t/.test(D(li).message))), `require staff_t isolated by levels: "${lens(li)}" — ${D(li) && D(li).message.slice(0, 160)}`, D(li));
+  check(D(li + 1) && /Expected a weight from 1/.test(D(li + 1).message), 'weight out of range reported');
+  // Level names and range transitions in the build.
+  check(TL.setrans && /setrans-mcs\.conf$/.test(TL.setrans.path), `build: level names from ${TL.setrans && TL.setrans.path}`);
+  const tr = await b.conn.sendRequest('selinux/transitions', { name: 'init_t', dir: 'out' });
+  const ranged = (tr.transitions || []).filter(x => x.ranges && x.ranges.length);
+  console.log(`  build: init_t starts ${ranged.length} domains at a set level: ${ranged.slice(0, 5).map(x => `${x.target}@${x.ranges[0].range}`).join(' ')}`);
+  check(ranged.every(x => x.ranges.every(r => /^s\d/.test(r.range) && x.entrypoints.includes(r.entry))), 'range transitions carry the entrypoint and the range');
+  // Hover on a level in the users file.
+  const USERS = path.join(tw, 'policy/users');
+  const ut = fs.readFileSync(USERS, 'utf8').split('\n');
+  const ul = ut.findIndex(x => /^gen_user\(.*\bs0\b/.test(x));
+  if (ul >= 0) {
+    b.conn.sendNotification('textDocument/didOpen', { textDocument: { uri: URI.file(USERS).toString(), languageId: 'selinux', version: 1, text: ut.join('\n') } });
+    await sleep(300);
+    const hv = await b.conn.sendRequest('textDocument/hover', { textDocument: { uri: URI.file(USERS).toString() }, position: { line: ul, character: ut[ul].search(/\bs0\b/) + 1 } });
+    check(hv && /\*\*(Level|Range)\*\* `s0/.test(hv.contents.value) && /SystemLow/.test(hv.contents.value) && /MCS policy: s0 only, c0 to c1023/.test(hv.contents.value), `hover on a level: ${hv && hv.contents.value.replace(/\n+/g, ' ').slice(0, 160)}`, hv);
+  }
+  // User editor: what the levels come to (MCS: gen_user ignores level and range, the categories count).
+  const ui = await b.conn.sendRequest('selinux/userInfo', {});
+  if (ui && ui.model) {
+    const up = await b.conn.sendRequest('selinux/userPlan', { model: { ...ui.model, name: 'lvtest', level: 's9', range: 'bogus', cats: 'mcs_allcats' } });
+    check(up.levels && up.levels.mcsTree && up.levels.level.canon === 's0' && up.levels.range.canon === 's0-s0:c0.c1023' && up.levels.range.name === 'SystemLow-SystemHigh' && !up.levels.level.problems.length,
+      `user editor: MCS ignores level/range, categories give ${up.levels && up.levels.range.canon} (${up.levels && up.levels.range.name})`, up.levels);
+    const up2 = await b.conn.sendRequest('selinux/userPlan', { model: { ...ui.model, name: 'lvtest', cats: 'c0.c2000' } });
+    check(up2.levels && up2.levels.range.problems.some(p => /c1024 is out of range/.test(p)), `user editor: out-of-range category reported (${up2.levels && up2.levels.range.problems.join('; ')})`);
+  }
   // Context check against the build: the allowing rule traced to its source.
   const cc = await b.conn.sendRequest('selinux/contextCheck', { against: 'build', source: 'system_u:system_r:syslogd_t:s0', target: 'system_u:object_r:var_log_t:s0', tclass: 'file', perms: 'append' });
   const rule = cc.te && cc.te.append && cc.te.append.rules && cc.te.append.rules[0];
   check(!cc.error && cc.te.append.status === 'allowed' && rule && rule.origin && /\.te$/.test(rule.origin.path), `build: syslogd_t appends var_log_t, rule from ${rule && rule.origin && `${path.basename(rule.origin.path)}:${rule.origin.line + 1}`}`, cc);
   b.proc.kill();
-  fs.rmSync(tw, { recursive: true, force: true });
+  fs.rmSync(twParent, { recursive: true, force: true });
   finish();
 })().catch((e) => { console.error(e); process.exit(1); });
 

@@ -244,6 +244,18 @@
     ], false);
   }
 
+  /** What the levels come to (from the plan): the user's level and range as the policy will have them. */
+  function levelHelp() {
+    const L = plan && plan.levels;
+    if (!L) return null;
+    const line = (label, x) => (x && x.canon ? h('div', { class: 'small' }, `${label}: `, h('code', {}, x.canon), x.name ? ` — ${x.name}` : '', x.describe ? h('span', { class: 'muted' }, ` (${x.describe})`) : null) : null);
+    return h('div', { class: 'note' },
+      L.mcsTree ? h('div', { class: 'muted small' }, `In this MCS policy gen_user ignores the default level and range and writes "level s0 range s0${model.cats ? ' - s0:CATEGORIES' : ''}": only the categories count.`) : null,
+      line('Level', L.level), line('Range', L.range),
+      [...L.level.problems, ...L.range.problems].map(p => h('div', { class: 'warn small' }, p)),
+      L.names.length ? h('div', { class: 'muted small' }, `Named levels from ${L.setrans.split('/').pop()} are offered in the fields.`) : null);
+  }
+
   function mlsCard() {
     if (!info.isNew && model.standalone) {
       return card('mls', 'Levels and home directory', `${model.level || ''} · ${model.range || ''}`, h('div', { class: 'muted' },
@@ -254,10 +266,26 @@
         ? `${model.name}_u's gen_user line is written with ifdef() or more than once, so the editor leaves it as it is; edit its levels in ${info.usersFile} by hand.`
         : `There is no ${model.name}_u: its users' own gen_user lines set their levels.`), false);
     }
+    const L = plan && plan.levels;
+    const mcsTree = L ? L.mcsTree : false;
+    const named = h('datalist', { id: 'lvnames' }, ((L && L.names) || []).map(n => h('option', { value: n.raw, label: n.name })));
+    const levelIn = text(model.level, (v) => { model.level = v; changed(); }, { size: 10, title: mcsTree ? 'Ignored in this MCS policy: gen_user writes "level s0"' : 'The level sessions start at (gen_user’s 4th argument)' });
+    const rangeIn = text(model.range, (v) => { model.range = v; changed(); }, { size: 22, title: mcsTree ? 'Ignored in this MCS policy: the range comes from the categories below' : 'The levels the user may have, e.g. s0, or s0 - mls_systemhigh for an administrator' });
+    const catsIn = info.standalone ? null : text(model.cats, (v) => { model.cats = v; changed(); }, { size: 22, placeholder: 'e.g. mcs_allcats', title: 'gen_user’s optional 6th argument: in an MCS policy the user\'s range becomes s0 - s0:CATEGORIES (mcs_allcats = all of them)' });
+    for (const i of [levelIn, rangeIn]) i.setAttribute('list', 'lvnames');
+    // Quick choices: what most users need.
+    const set = (lv, rg, cats) => { if (lv != null) model.level = lv; if (rg != null) model.range = rg; if (cats != null) model.cats = cats; render(); changed(); };
+    const quick = L ? h('div', { class: 'row' }, h('span', { class: 'lbl' }, ''),
+      h('button', { title: 'Sessions at s0 with no categories: they can use only objects without categories', onclick: () => set('s0', 's0', '') }, 'No categories'),
+      ' ', h('button', { title: 'Clearance for every category (an administrator, or someone who manages containers\' files)', onclick: () => (mcsTree ? set('s0', 's0 - mcs_systemhigh', 'mcs_allcats') : set('s0', info.standalone ? `s0-${L.high}` : 's0 - mls_systemhigh', null)) }, 'All categories'),
+      ' ', h('button', { title: 'Clearance for some categories: give them below (e.g. c0.c9 or c1,c5)', onclick: () => { const c = (catsIn ? model.cats : '') || 'c0.c9'; if (mcsTree) set('s0', `s0 - s0:${c}`, c); else set('s0', `s0-s0:${c}`, null); } }, 'Some categories…')) : null;
     return card('mls', 'Levels and home directory', `${model.level} · ${model.range}`, [
-      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Default level'), text(model.level, (v) => { model.level = v; changed(); }, { size: 10, title: 'The level sessions start at (gen_user’s 4th argument), s0 in MCS policies' })),
-      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Range'), text(model.range, (v) => { model.range = v; changed(); }, { size: 22, title: 'The levels the user may have, e.g. s0, or s0 - mls_systemhigh for an administrator' })),
-      info.standalone ? null : h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Categories'), text(model.cats, (v) => { model.cats = v; changed(); }, { size: 22, placeholder: 'e.g. mcs_allcats', title: 'gen_user’s optional 6th argument (categories), e.g. mcs_allcats' })),
+      named,
+      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Default level'), levelIn),
+      h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Range'), rangeIn),
+      catsIn ? h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Categories'), catsIn) : null,
+      quick,
+      h('div', { id: 'lvhelp' }, levelHelp()),
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Home prefix'), text(model.prefix, (v) => { model.prefix = v; changed(); }, { size: 12, placeholder: info.prefixDefault, title: 'gen_user’s prefix: home directories of its logins are labeled PREFIX_home_t etc. This tree mostly uses the one shown.' })),
     ], false);
   }
@@ -335,9 +363,16 @@
       reach = { result: m.result, stale: false };
       renderPlan();
     } else if (m.cmd === 'plan') {
+      const hadLevels = !!(plan && plan.levels);
       plan = m.plan;
       $('status').textContent = '';
       renderPlan();
+      // The level help follows each plan without redrawing the form (the cursor stays); the first one draws the quick choices.
+      if (!hadLevels && plan.levels) render();
+      else {
+        const box = $('lvhelp');
+        if (box) { box.textContent = ''; const x = levelHelp(); if (x) box.append(x); }
+      }
     } else if (m.cmd === 'done') {
       $('status').textContent = m.text;
     } else if (m.cmd === 'error') {

@@ -681,6 +681,8 @@ function ifdefConditionHover(doc, position, name) {
 connection.onHover(({ textDocument, position }) => {
   const doc = documents.get(textDocument.uri);
   if (!doc) return null;
+  const lh = levelHover(doc, position);
+  if (lh) return lh;
   const w = wordAt(doc, position);
   if (!w) return null;
   const name = w.word;
@@ -2179,7 +2181,58 @@ async function standaloneUserPlan(model, ctx, where, license) {
   return { problems, files };
 }
 
-connection.onRequest('selinux/userPlan', async (params) => { await indexing; return userPlan(params); });
+connection.onRequest('selinux/userPlan', async (params) => {
+  await indexing;
+  const p = await userPlan(params);
+  try { p.levels = userLevelsInfo(params.model || {}, !!(params.standalone || usingDevel || (params.module && (userModules().find(x => x.module === params.module) || {}).standalone))); } catch { /* no level help */ }
+  return p;
+});
+
+/** This host's levels: MLS or MCS from the installed policies (no build flags to read). */
+function hostLevelLimits() {
+  let on = false;
+  try { on = fs.readFileSync('/sys/fs/selinux/mls', 'utf8').trim() === '1'; } catch { /* not SELinux */ }
+  if (!on) return null;
+  const run = build.installedPolicies().find(p => p.active);
+  return run && /mls/.test(run.name) ? { kind: 'MLS', sens: 16, cats: 1024 } : { kind: 'MCS', sens: 1, cats: 1024 };
+}
+
+/**
+ * What a user model's levels come to: the user's level and range as the
+ * policy will have them, with their setrans names and problems. In an MCS
+ * tree gen_user ignores its level and range arguments ("level s0 range s0
+ * [- s0:CATEGORIES]"), so the categories argument is what counts there.
+ */
+function userLevelsInfo(model, standalone) {
+  const lim = standalone ? hostLevelLimits() : levelLimits();
+  if (!lim) return null;
+  const st = standalone ? setransFor(null) : setransFor({ build: true });
+  const high = lim.kind === 'MCS' ? `s0:c0.c${lim.cats - 1}` : `s${lim.sens - 1}:c0.c${lim.cats - 1}`;
+  const resolve = (s) => String(s || '').replace(/\b(mls|mcs)_systemhigh\b/g, high).replace(/\b(mls|mcs)_systemlow\b/g, 's0').replace(/\bmcs_allcats\b/g, `c0.c${lim.cats - 1}`).trim();
+  const mcsTree = !standalone && lim.kind === 'MCS';
+  let level, range;
+  if (mcsTree) {
+    level = 's0';
+    const cats = resolve(model.cats);
+    range = cats ? `s0-s0:${cats}` : 's0';
+  } else {
+    level = resolve(model.level);
+    range = resolve(model.range);
+  }
+  const one = (raw) => {
+    const c = levelsLib.canon(raw);
+    return { written: raw, canon: c, name: c ? levelsLib.translate(c, st && st.st) : null, describe: c ? levelsLib.describe(c, lim) : null,
+      problems: c ? levelsLib.problems(c, lim) : raw ? [`${raw} isn't a level or range`] : [] };
+  };
+  const out = { kind: lim.kind, sens: lim.sens, cats: lim.cats, mcsTree, standalone, level: one(level), range: one(range), high,
+    names: st ? st.st.entries.map(e => ({ raw: e.raw, name: e.name })) : [], setrans: st ? st.path : null };
+  const lv = out.level.canon, rg = out.range.canon;
+  if (lv && rg && !out.level.problems.length && !out.range.problems.length) {
+    const [lo, hi] = rg.split('-').concat(rg.split('-').length === 1 ? [rg] : []);
+    if (!levelsLib.covers(lv, lo) || !levelsLib.covers(hi, lv)) out.level.problems.push(`the default level ${lv} is outside the range ${rg}`);
+  }
+  return out;
+}
 
 /** The files a user model writes: { problems, files } (new in the tree, new standalone, or edits of an existing user). */
 async function userPlan({ model, module: mod, standalone, where, license }) {
@@ -2538,6 +2591,13 @@ function checksDiagnostics() {
         if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${v.holder} ${users ? 'has roles' : 'may run'} ${v.items.join(', ')}` });
       }
     }
+    for (const d of x.isolation || []) {
+      const loc = sourceLocation(d.domain, ['type']);
+      for (const v of d.unchecked.slice(0, 4)) {
+        const r = v.rules[0];
+        if (loc && r) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${d.domain}: allow ${r.s} ${r.t}:${r.c} { ${v.perms.join(' ')} }${r.cond ? ` [${r.cond}]` : ''} — no level constraint checks ${v.perms.length > 1 ? 'these' : 'it'}${v.fdOnly ? ' (opening is checked)' : ''}` });
+      }
+    }
     for (const g of x.levels || []) {
       for (const dom of g.domains.slice(0, 6)) {
         const loc = sourceLocation(dom, ['type']);
@@ -2598,6 +2658,14 @@ function checkMessage(c, x) {
     const route = (v) => (v.path && v.path.length ? `: ${[v.path[0].from, ...v.path.map(s => s.to)].join(' → ')}` : ' (where it logs in)');
     if (c.kind === 'login-reaches') return list.map(v => `${who(v)} reaches ${v.domain}${c.through ? ` without going through ${names(c.through)}` : ''}${route(v)}`).join('; ') + more;
     return list.map(v => `${who(v)} may ${c.perms === '*' ? 'access' : c.permsLabel} ${v.target} as ${v.domain}${route(v)}`).join('; ') + more;
+  }
+  if (x.isolation) {
+    const one = (d) => {
+      const u = d.unchecked.filter(v => !v.fdOnly);
+      const list = (u.length ? u : d.unchecked).slice(0, 4).map(v => `${v.target}:${v.class} { ${v.perms.join(' ')} }`).join(', ');
+      return `${d.domain} (${d.binds === 0 ? 'ignores levels altogether' : `${d.count} access${d.count === 1 ? '' : 'es'} levels don't check${d.open < d.count ? `, ${d.count - d.open} only through a passed descriptor` : ''}`}: ${list}${d.count > 4 ? ', …' : ''})`;
+    };
+    return `Not kept apart by levels: ${x.isolation.slice(0, 3).map(one).join('; ')}${x.count > 3 ? ` (+${x.count - 3} more domains)` : ''}. Two processes of the domain at different levels can share these objects.`;
   }
   if (x.levels) {
     const ds = x.levels.flatMap(g => g.domains);
@@ -2671,7 +2739,7 @@ function checksCompletion(lineText) {
     for (const x of cfg ? logins.parseSeusers(cfg.read(cfg.seusers)) : []) { const n = x.group ? `%${x.login}` : x.login; if (n.startsWith(prefix)) items.push({ label: n, kind: CompletionItemKind.User, detail: `seusers → ${x.user}` }); }
   }
   if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any', 'run', 'use', 'log', 'ignore']) if (k.startsWith(prefix)) items.push({ label: k === 'log' ? 'log in' : k === 'ignore' ? 'ignore levels' : k, insertText: k === 'log' ? 'log in' : k === 'ignore' ? 'ignore levels' : k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : k === 'run' ? 'roles: may run <domains>' : k === 'use' ? 'users: may use <roles>' : k === 'log' ? 'users: only|never <users> may log in' : k === 'ignore' ? 'MLS/MCS: domains that pass level constraints whatever the levels' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
-  if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches|flows|login)\b/.test(lineText)) for (const k of ['may', 'reaches', 'flows']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches|flows|login|isolated)\b/.test(lineText)) for (const k of ['may', 'reaches', 'flows', ...(/^\s*require\b/.test(lineText) ? ['isolated'] : [])]) if (k.startsWith(prefix)) items.push({ label: k === 'isolated' ? 'isolated by levels' : k, insertText: k === 'isolated' ? 'isolated by levels' : k, kind: CompletionItemKind.Keyword, detail: k === 'isolated' ? 'MLS/MCS: what two processes of the domain can share is level-checked' : undefined });
   if (/\bflows\s+[A-Za-z]*$/.test(lineText) && 'to'.startsWith(prefix)) items.push({ label: 'to', kind: CompletionItemKind.Keyword });
   if (/\bflows\s+to\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText)) {
     for (const k of ['except', 'weight']) {
@@ -2702,7 +2770,8 @@ connection.onCodeLens(({ textDocument }) => {
     else if (c.kind === 'reaches') title = `✗ reachable in ${x.path.length} step${x.path.length > 1 ? 's' : ''}`;
     else if (c.kind === 'require') title = `✗ ${x.count} missing`;
     else if (x.login) title = `✗ ${x.count} login${x.count > 1 ? 's violate' : ' violates'} it`;
-    else if (x.levels) title = `✗ ${x.count} domain${x.count > 1 ? 's ignore' : ' ignores'} levels`;
+    else if (x.isolation) title = `✗ ${x.count} domain${x.count > 1 ? 's' : ''} not kept apart by levels`;
+    else if (x.levels) title =`✗ ${x.count} domain${x.count > 1 ? 's ignore' : ' ignores'} levels`;
     else if (x.rbac) title = `✗ ${x.count} ${c.kind.endsWith('-run') ? 'role' : 'user'}${x.count > 1 ? 's violate' : ' violates'} it`;
     else title = `✗ violated by ${x.domains} domain${x.domains > 1 ? 's' : ''} (${x.count} rule${x.count > 1 ? 's' : ''})`;
     return { range: lineRange(c.line, ''), command: { title, command: '' } };
@@ -3687,6 +3756,10 @@ connection.onRequest('selinux/logins', async ({ against } = {}) => {
   const userByName = new Map(users.map(u => [u.name, u]));
   const adminRoles = ADMIN_ROLES.filter(x => (info.roleTypes || {})[x]);
   const mappings = seusers.map(m => ({ ...m, file: cfg.seusers, notes: logins.mappingNotes(m, userByName.get(m.user), adminRoles) }));
+  // Ranges in canonical form with their setrans.conf names.
+  const st = (setransFor(pol) || {}).st;
+  for (const u of users) if (u.range) { u.range = levelsLib.canon(u.range) || u.range; u.rangeName = levelsLib.translate(u.range, st); }
+  for (const m of mappings) if (m.range) m.rangeName = levelsLib.translate(m.range, st);
   let accounts = null;
   if (cfg.host && process.platform !== 'win32') {
     const pw = logins.parsePasswd(readSource('/etc/passwd'));
@@ -3807,6 +3880,15 @@ async function lookupFile(p, mode) {
     const ms = filelabel.matches(fl.order, key, out.mode, 8);
     out.policies.push({ ...entry, key: key !== out.lookedUp ? key : null, context: ms.length ? ms[0].context : null, type: ms.length ? ms[0].type : null,
       winner: ms.length ? specOut(ms[0]) : null, others: ms.slice(1).map(specOut), homeAssumed: !!(fl.tree && ms.length && ms[0].template) });
+    // The label's level and its setrans.conf name (SystemLow, …).
+    const e = out.policies[out.policies.length - 1];
+    const lv = e.context && e.context !== '<<none>>' ? e.context.split(':').slice(3).join(':') : '';
+    if (lv) { e.level = lv; e.levelName = levelsLib.translate(lv, (setransFor(pol) || {}).st); }
+  }
+  if (out.current) {
+    const lv = out.current.split(':').slice(3).join(':');
+    const run = denialPolicies().find(p => p.active);
+    if (lv && run) out.currentLevelName = levelsLib.translate(lv, (setransFor(run) || {}).st);
   }
   if (!out.policies.length) {
     out.error = process.platform === 'win32' ? 'Looking up labels needs a Linux host (use Remote-SSH).' : 'No policy to look in: no installed policy under /etc/selinux, and no workspace build.';
@@ -3834,6 +3916,77 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
 
 /* ---------------- levels (MLS / MCS) ---------------- */
 
+const levelsLib = require('./levels');
+let setransCache = new Map();
+
+/**
+ * The setrans.conf (level names, mcstrans) that goes with a policy: an
+ * installed one's /etc/selinux/NAME/setrans.conf; for a tree build the file
+ * its packaging installs (config/appconfig-TYPE/, RHEL 10 dist/NAME/, CLIP
+ * RHEL 8 selinux_config/setrans-NAME.conf, CLIP RHEL 9 ../support/, RHEL 9
+ * next to the spec). { path, st } or null.
+ */
+function setransFor(pol) {
+  const cands = [];
+  if (pol && pol.build && treeRoot && !usingDevel) {
+    const cfg = treeCfg();
+    const v = (k) => { let r = null; for (const a of cfg.makeArgs || []) { const m = new RegExp(`^${k}=(\\S+)`).exec(a); if (m) r = m[1]; } return r; };
+    const type = v('TYPE') || 'mcs', name = v('NAME') || type;
+    const specDirs = [...new Set(Object.values(cfg.files || {}).flat().map(x => (typeof x === 'string' ? x : x && x.from)).filter(p => p && path.isAbsolute(p)).map(p => path.dirname(p)))];
+    cands.push(path.join(appconfigDir(treeRoot), 'setrans.conf'), path.join(treeRoot, 'dist', name, 'setrans.conf'),
+      ...[name, type].flatMap(n => [path.join(treeRoot, 'selinux_config', `setrans-${n}.conf`), path.join(treeRoot, '..', 'support', `setrans-${n}.conf`), path.join(treeRoot, '..', `setrans-${n}.conf`)]),
+      ...specDirs.map(d => path.join(d, `setrans-${name}.conf`)));
+  } else {
+    const name = pol && !pol.build ? pol.name : (build.installedPolicies().find(p => p.active) || {}).name;
+    if (name) cands.push(path.join('/etc/selinux', name, 'setrans.conf'));
+  }
+  for (const p of cands) {
+    let st;
+    try { st = fs.statSync(p); } catch { continue; }
+    const text = readSource(p);
+    if (text == null) continue;
+    const key = `${p}:${st.mtimeMs}:${text.length}`;
+    if (!setransCache.has(key)) { if (setransCache.size > 8) setransCache = new Map(); setransCache.set(key, { path: p, st: levelsLib.parseSetrans(text) }); }
+    return setransCache.get(key);
+  }
+  return null;
+}
+
+/** The tree's sensitivities and categories from the build flags: { kind, sens, cats } or null. */
+function levelLimits() {
+  if (!idx.m4) return null;
+  const num = (n) => { const m = new RegExp(`-D\\s*${n}=(\\d+)`).exec(idx.m4.flags || ''); return m ? +m[1] : null; };
+  if (idx.m4.defined.has('enable_mls')) return { kind: 'MLS', sens: num('mls_num_sens'), cats: num('mls_num_cats') };
+  if (idx.m4.defined.has('enable_mcs')) return { kind: 'MCS', sens: 1, cats: num('mcs_num_cats') };
+  return null;
+}
+
+/** Hover on a level or range written in the sources (gen_user, gen_context, …): what it means, its setrans name. */
+function levelHover(doc, position) {
+  const line = doc.getText({ start: { line: position.line, character: 0 }, end: { line: position.line + 1, character: 0 } });
+  const re = /(?<![\w.])s\d+(?::c\d+(?:[.,]c\d+)*)?(?:\s*-\s*s\d+(?::c\d+(?:[.,]c\d+)*)?)?(?![\w])/g;
+  let m;
+  while ((m = re.exec(line))) {
+    if (position.character < m.index || position.character > m.index + m[0].length) continue;
+    const lim = levelLimits();
+    const st = treeRoot && !usingDevel ? setransFor({ build: true }) : setransFor(null);
+    const name = levelsLib.translate(m[0], st && st.st);
+    const probs = levelsLib.problems(m[0], lim || {});
+    const c = levelsLib.canon(m[0]);
+    const value = [`**${m[0].includes('-') ? 'Range' : 'Level'}** \`${c}\`${name ? ` — **${name}**` : ''}`, '',
+      `${levelsLib.describe(m[0], lim || {})}.`,
+      m[0].includes('-') ? 'A process with this range runs at the low level and may use objects up to the high one (its clearance).' : 'With MCS, a process may use an object only if its clearance covers all of the object\'s categories (for domains the constraints bind).',
+      name && st ? `\n*${path.basename(st.path)}* names it ${name}.` : '',
+      probs.length ? `\n⚠ ${probs.join('; ')}.` : '',
+      lim ? `\n*This ${lim.kind} policy: ${lim.sens === 1 ? 's0 only' : `s0 to s${lim.sens - 1}`}, c0 to c${lim.cats - 1}.*` : ''].filter(x => x !== '').join('\n');
+    return { range: { start: { line: position.line, character: m.index }, end: { line: position.line, character: m.index + m[0].length } }, contents: { kind: MarkupKind.Markdown, value } };
+  }
+  return null;
+}
+
+/** For the client: the names (raw → name) and where they come from. */
+const setransOut = (s) => (s ? { path: s.path, entries: s.st.entries.map(e => ({ raw: e.raw, name: e.name, l: e.l })), skipped: s.st.skipped.length } : null);
+
 /** Who ignores levels: domains grouped by the level constraints they pass whatever the levels. */
 connection.onRequest('selinux/levels', async ({ against } = {}) => {
   await indexing;
@@ -3852,7 +4005,33 @@ connection.onRequest('selinux/levels', async ({ against } = {}) => {
   }
   for (const t of r.targetTerms) for (const n of t.term.match(/[A-Za-z_]\w*/g) || []) if (n !== 'in' && n !== 'not') names.add(n);
   for (const n of names) { const l = sourceLocation(n, ['type', 'attribute']); if (l) locs[n] = l; }
-  return { ...r, policies: lp.policies, policy, locs, traceable: !!lp.pol.build };
+  return { ...r, policies: lp.policies, policy, locs, traceable: !!lp.pol.build, setrans: setransOut(setransFor(lp.pol)) };
+});
+
+/** Isolation: a domain's accesses to objects two of its processes can share that no level constraint checks. */
+connection.onRequest('selinux/isolation', async ({ against, domains, weight, scope } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const names = (Array.isArray(domains) ? domains : String(domains || '').split(/[\s,]+/)).filter(Boolean);
+  if (!names.length || names.some(n => !/^\w+$/.test(n))) return { error: 'Give one or more domains, e.g. container_t.' };
+  const r = await policyQuery.request({ op: 'isolation', bin: lp.bin, domains: names, weight: weight || 10, scope: scope === 'all' ? 'all' : 'own' });
+  if (r.error) return { error: /KeyError/.test(r.error) ? `Unknown type or attribute ${r.error.replace(/^KeyError: /, '')}` : `Policy query failed: ${r.error}` };
+  if (!r.mls) return { error: 'This policy has no levels (built without MLS or MCS).' };
+  if (!r.results.length) return { error: `None of ${names.join(', ')} is a domain in this policy.` };
+  const side = lp.pol.build ? await currentSide() : null;
+  const locs = {};
+  for (const d of r.results) {
+    const l = sourceLocation(d.domain, ['type']); if (l) locs[d.domain] = l;
+    if (side) {
+      for (const v of d.unchecked.slice(0, 40)) {
+        const rule = v.rules[0];
+        try { const e = explain.explainRule(rule, v.perms, side, 1); if (e.origins && e.origins.length) v.origin = e.origins[0]; } catch { /* no trace */ }
+      }
+    }
+  }
+  if (side) explain.releaseTexts();
+  return { results: r.results, locs, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build } };
 });
 
 /** May a process with one context do something to an object with another: type rules, then constraints. */
@@ -3879,6 +4058,17 @@ connection.onRequest('selinux/contextCheck', async ({ against, source, target, t
       }
     }
     explain.releaseTexts();
+  }
+  // Level names (setrans.conf) for what the answer shows.
+  const st = setransFor(lp.pol);
+  if (st && r.levels) {
+    const tr = (s) => levelsLib.translate(s, st.st);
+    for (const side of ['source', 'target']) {
+      const x = r.levels[side];
+      if (x) x.name = tr(x.low === x.high ? x.low : `${x.low}-${x.high}`);
+    }
+    if (r.levels.user) r.levels.userName = tr(r.levels.user.replace(/ - /, '-'));
+    r.levels.setrans = st.path;
   }
   return { ...r, perms: ps, policies: lp.policies, policy, booleans: lp.pol.active ? 'running' : 'defaults' };
 });
