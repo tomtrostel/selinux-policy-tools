@@ -67,5 +67,13 @@ In the **Compiled Policy** view:
 * **Roles** → the domains they may run, the roles they may switch to, role
   transitions, and the users that have them.
 
+**Levels:** the user editor shows the level and range the user will
+really have, with their `setrans.conf` names and any problem (a category
+the policy doesn't have, a default level outside the range), and offers
+*No categories*, *All categories* and *Some categories…*. In an MCS tree,
+`gen_user` ignores its level and range arguments; only the categories
+count, and the editor says so.
+
 Turn the important facts into checks:
-`only sysadm_r may run sysadm_t`, `never staff_u may use sysadm_r`.
+`only sysadm_r may run sysadm_t`, `never staff_u may use sysadm_r`,
+`never login __default__ reaches sysadm_t`.

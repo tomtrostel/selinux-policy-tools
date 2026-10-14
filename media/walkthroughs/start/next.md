@@ -8,8 +8,10 @@ Three more walkthroughs build on this one:
 * **Fix a denial the right way.** From an AVC message to a minimal, reviewed
   fix: find the type, pick the interface, check what you actually granted.
 * **Review and lock down a policy.** What changed since the last release,
-  what turning a module off would break, who can reach which domain, and
-  security properties that are checked after every build.
+  what turning a module off would break, who can reach which domain, who
+  logs in as what, levels and categories (MLS/MCS), programs users may run
+  only through wrappers, and security properties that are checked after
+  every build.
 
 **SELinux: Open Tutorials** brings these pages back at any time. The
 book icon in the Policy Explorer title bar does the same.

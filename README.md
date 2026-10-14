@@ -15,16 +15,33 @@ It works at two levels:
   (m4, `checkmodule`, the policy's own Makefile), reports compiler and link
   errors on the source lines that caused them, shows what each line compiles
   to, and presents the linked kernel policy as a navigable tree.
-* **Lockdown workflows.** On top of the compiled policy: what an edit
-  changed compared with `HEAD`, what turning a module off or on would do,
-  a domain transition graph, security property checks re-run after every
-  build, and validation of users, roles and MLS levels, all traced back to
-  the source lines responsible. A logins report shows which SELinux user
-  each Linux login gets and what its sessions can reach.
-* **Writing and fixing policy.** A service editor that writes and edits a
-  daemon's module from a form, and a denial assistant that reads AVC
-  denials and tells a wrong label or a boolean that is off from a rule
-  that is really missing.
+* **Lockdown workflows.** On top of the compiled policy, all traced back
+  to the source lines responsible:
+  * what an edit changed compared with `HEAD`, and what turning a module
+    off or on would do;
+  * a domain transition graph, range transitions included;
+  * security property checks re-run after every build, covering access,
+    transitions, information flow, roles, logins and levels;
+  * validation of users, roles and MLS levels.
+
+  It also answers questions about a policy: *Logins and Users* (which
+  SELinux user each Linux login gets and what its sessions can reach),
+  *Look Up File Label* (the label any file gets, the line that sets it,
+  who may access it) and *Levels and Categories* (MLS/MCS: may one
+  context access another, which domains ignore levels, what categories
+  don't keep apart).
+* **Writing and fixing policy.**
+  * A service editor that writes and edits a daemon's module from a form,
+    and a user editor for SELinux users, their logins and ways in.
+  * Wrapped programs: chroot users run chosen programs only through your
+    wrappers.
+  * A denial assistant that reads AVC denials and tells a wrong label, a
+    boolean that is off or a constraint from a rule that is really missing.
+  * Standalone modules and users can be packaged as RPMs.
+
+**SELinux: All Features…** (the **SELinux** status bar item) lists
+everything by purpose. RHEL 9 and 10 source trees, upstream refpolicy, and
+CLIP for RHEL 8 and RHEL 9 have been tested.
 
 ## Requirements
 
@@ -50,6 +67,8 @@ dnf install make m4 checkpolicy policycoreutils policycoreutils-devel selinux-po
 | Changes since HEAD | also `git-core`, `tar` |
 | Compare with installed policy | also `policycoreutils` (`semodule`) |
 | Property checks and Compiled Policy view for standalone modules | `policycoreutils` (`semodule`, `semodule_package`), `checkpolicy`, `python3-setools`, an installed policy |
+| Denial assistant, Logins and Users, Look Up File Label, Levels and Categories | `python3-setools`; for an installed policy also `libselinux-utils` (`matchpathcon`); for a build, a build first |
+| RPMs of standalone services, users and wrapped programs | `rpm-build` |
 
 `policycoreutils`, `gawk`, `python3` and `tar` are present on any normal
 RHEL system with SELinux. From Windows or macOS, use VS Code **Remote-SSH**
@@ -101,25 +120,30 @@ The extension comes with four step-by-step walkthroughs on VS Code's
 in the Policy Explorer title bar), or from *Help → Welcome → Walkthroughs*:
 
 * **Get started with SELinux Policy Tools**: setting up the Linux host,
-  navigating policy, fixing problems with quick fixes, building and the
-  "Compiles to" hover, full trees and spec settings, the Compiled Policy
-  view.
+  navigating policy (the All Features menu, looking up a file's label),
+  fixing problems with quick fixes, building and the "Compiles to" hover,
+  full trees and spec settings (RHEL/Fedora and CLIP specs), the Compiled
+  Policy view.
 * **Write and maintain a service policy**: the service editor from planning
   to a confined, tested daemon (files, ports and port types, system access,
   capabilities, booleans, helper programs, web applications), and editing
   it safely later.
 * **Fix a denial the right way**: reading an AVC message, telling a missing
-  rule from a wrong label, granting with the owning module's interface
-  instead of `audit2allow` rules, and checking what was actually granted.
+  rule from a wrong label (or a constraint such as categories), granting
+  with the owning module's interface instead of `audit2allow` rules, and
+  checking what was actually granted.
 * **Review and lock down a policy**: compiled change review against HEAD,
-  tags or two refs, module previews, the transition graph, property checks,
-  comparing with the installed policy, users, roles and who can log in as
-  what, and a lockdown routine.
+  tags or two refs, module previews, the transition graph, property checks
+  (including logins and levels), comparing with the installed policy,
+  users, roles and who can log in as what (and the user editor), levels
+  and categories, programs users may run only through wrappers, and a
+  lockdown routine.
 
 **SELinux: Create Practice Module…** copies a small daemon policy
 (`notesd`) with four deliberate mistakes and a `selinux.checks` file into a
 folder of your choice and opens it beside the walkthrough; its
-`TUTORIAL.md` lists the hands-on tasks with solutions. Each step offers
+`TUTORIAL.md` lists the hands-on tasks with solutions, from fixing the
+mistakes to labels, logins and levels. Each step offers
 buttons for the commands it describes and is ticked off when you use them.
 The first time the extension starts, it offers the tutorials once.
 

@@ -64,6 +64,22 @@ build)**. Each needs a different fix:
   program should be `notesd_exec_t` and run as `notesd_t`; more rules for
   `unconfined_service_t` would be the wrong fix.
 
+## 7. Labels, logins and levels
+
+* Right-click `notesd.fc` → **SELinux → Look Up File Label**, and type
+  `/var/lib/notesd/notes.db`: the label each policy gives it, the `.fc`
+  line that sets it (once you have built), and who may access
+  `notesd_var_lib_t`.
+* **SELinux: Logins and Users…**: which SELinux user your own login gets,
+  and whether any of its domains may touch notesd's files.
+* **SELinux: Levels and Categories…**, *Rules from* "This host's policy +
+  notesd (last build)" → *Who ignores levels*: find `notesd_t`. On RHEL's
+  targeted policy it passes the category constraints whatever the levels,
+  like every service that isn't a container.
+* Add `never notesd_t may ignore levels` to `selinux.checks` and save: it
+  fails and says why ("not in mcs_constrained_type"). Delete the line again;
+  a service like notesd has no categories to keep apart.
+
 ## Solutions
 
 <details>

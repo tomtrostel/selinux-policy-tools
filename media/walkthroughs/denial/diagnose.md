@@ -32,7 +32,10 @@ Denials…**, each group gets a verdict: *wrong label* (the policy's file
 contexts give the path another type; fix: `restorecon`), *boolean* (the
 policy allows it once a boolean is on; fix: `setsebool -P`), *generic
 label* (the file has a catch-all type such as `var_lib_t`), *already
-allowed*, or *missing rule*. Choose **Check against** the policy running on
+allowed*, *constraint* (the rules allow it but a constraint refuses it,
+often categories: two containers, or a file at `s0:c5`; **Check in Levels
+and Categories** shows each comparison), or *missing rule*. Choose
+**Check against** the policy running on
 the host that logged the denials (normally the installed one), or your last
 build.
 

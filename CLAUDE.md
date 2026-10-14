@@ -561,7 +561,7 @@ so far covered by the e2e tests only.
    them into the vsix … how to use the add-on and how it can help them
    making and maintaining SELinux policies"). package.json
    `contributes.walkthroughs`: getStarted (8 steps), services (10; webapps added in 0.11.0), denials
-   (4), lockdown (7); pages in media/walkthroughs/<wt>/<step>.md; step
+   (4), lockdown (9: levels + wrappers added 2026-10-13); pages in media/walkthroughs/<wt>/<step>.md; step
    buttons are `command:` links (openTutorials takes a walkthrough id as
    URL-encoded JSON arg). Client `registerTutorials()`: selinux.openTutorials
    (quick pick or id → workbench.action.openWalkthrough

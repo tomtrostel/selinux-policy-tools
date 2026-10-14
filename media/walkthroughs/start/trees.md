@@ -13,9 +13,14 @@ Run **SELinux: Configure Build from Spec File…**, pick `selinux-policy.spec`
 and your tree is never modified: config files are put into the scratch copy
 only.
 
-**CLIP-style and other trees**: put the spec's make variables in
-`selinux.build.tree.makeArgs`, for example
-`["NAME=clip", "TYPE=mcs", "APPS_MODS=…"]`.
+**CLIP** (the RHEL 8 and RHEL 9 branches): run the same command and pick
+CLIP's spec, `packages/selinux-policy/selinux-policy.spec` (RHEL 9) or
+`selinux-policy-cil.spec` (RHEL 8). Its make variables come from the spec,
+and `APPS_MODS` from `SEPARATE_PKGS` in the Makefile next to it; the tree's
+own `modules.conf` is used.
+
+**Other trees**: put the make variables in `selinux.build.tree.makeArgs`,
+for example `["NAME=clip", "TYPE=mcs", "APPS_MODS=…"]`.
 
 **Several trees in one workspace** (RHEL 9, RHEL 10 and your own fork, say):
 the extension works on one at a time. Opening a file of another tree

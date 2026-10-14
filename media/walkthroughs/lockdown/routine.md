@@ -9,7 +9,8 @@ Putting it together, a repeatable way to shrink and harden a policy:
 3. **Save** `modules.conf`. The tree builds, and the *link-missing*
    diagnostics show any module left without a dependency.
 4. **Checks** run automatically. Anything the change broke (logging,
-   administration paths) shows as ✗ with its cause.
+   administration paths, which logins reach what, who ignores levels)
+   shows as ✗ with its cause.
 5. **Compare with the last release tag** and read the compiled differences,
    not the text diff.
 6. **Compare with the installed policy** on a representative host, to catch

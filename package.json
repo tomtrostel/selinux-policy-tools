@@ -924,7 +924,7 @@
       {
         "id": "lockdown",
         "title": "Review and lock down a policy",
-        "description": "Review compiled changes, turn modules off safely, follow domain transitions and keep security properties checked after every build.",
+        "description": "Review compiled changes, turn modules off safely, follow domain transitions, review users, levels and categories, wrap programs for restricted users, and keep security properties checked after every build.",
         "steps": [
           {
             "id": "changes",
@@ -992,6 +992,29 @@
             "completionEvents": [
               "onCommand:selinux.showLogins",
               "onView:selinuxCompiledPolicy"
+            ]
+          },
+          {
+            "id": "levels",
+            "title": "Levels and categories (MLS / MCS)",
+            "description": "Can this context access that one, which domains ignore levels, and what levels don't keep apart (two containers).\n[Levels and Categories…](command:selinux.showLevels)\n[Open Property Checks](command:selinux.openChecks)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/levels.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.showLevels"
+            ]
+          },
+          {
+            "id": "wrappers",
+            "title": "Programs only through wrappers",
+            "description": "Chroot users run chosen programs only through your wrappers; the copies keep the originals' privileges, and a check proves there is no way around.\n[New Wrapped Programs…](command:selinux.newWrapper)\n[Edit Wrapped Programs…](command:selinux.editWrapper)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/wrappers.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.newWrapper",
+              "onCommand:selinux.editWrapper"
             ]
           },
           {

@@ -23,6 +23,9 @@ never staff_u may use sysadm_r
 never unconfined_u may log in
 never login __default__ reaches sysadm_t
 never login * may read shadow_t:file
+# levels (MLS / MCS)
+never container_t may ignore levels
+require container_t isolated by levels
 ```
 
 * `only` / `never` / `require` … `may` *permissions* *types*: who may access what.
@@ -38,6 +41,10 @@ never login * may read shadow_t:file
   `%group`, `__default__`, `*` = all) to its user, where its ways in land
   and what its sessions can reach (`reaches`) or do (`may`), as **Logins and
   Users** shows it.
+* Levels: `only|never <domains> may ignore levels [on <classes>]` checks
+  which domains pass the MLS/MCS constraints whatever the levels;
+  `require <domains> isolated by levels` checks that what two processes of a
+  domain can share is level-checked, as **Levels and Categories** shows it.
 
 Each line shows **✓ holds** or **✗** with the reason. A failure appears in
 the Problems panel, with links to the source statements that grant each
