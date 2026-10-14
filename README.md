@@ -1505,8 +1505,9 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 * On a Rocky 8.10 host, with RHEL 8's own tools (checkpolicy 2.9,
   setools 4.3, Python 3.6, libselinux 2.9): the unit tests and every e2e
   suite on CLIP for RHEL 8. VS Code runs the extension with its own
-  Node.js; running the tests needs Node.js 18 or later, newer than RHEL 8's
-  default `nodejs` (10). Testing it found two differences from RHEL 9, both
+  Node.js; running the tests needs Node.js 18 or later with its npm, newer
+  than RHEL 8's default `nodejs` 10 and npm 6 (see
+  [Development](#development)). Testing it found two differences from RHEL 9, both
   handled now:
   * RHEL 8's `semodule` sorts equally specific file-context lines the
     other way round: the one limited to a file kind (`--`, `-d`, …) comes
@@ -2037,6 +2038,22 @@ npm test               # every unit test (any OS, no SELinux toolchain), listed 
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```
+
+The tests need Node.js 18 or later and the npm that comes with it. On RHEL
+8 (and Rocky or Alma 8) the default `nodejs` module stream is Node.js 10
+with npm 6, which is too old: the language-server library uses newer
+JavaScript, and `npm test` stops with `SyntaxError: Unexpected token .`.
+Install a later stream first:
+
+```
+sudo dnf module reset nodejs
+sudo dnf module install nodejs:20
+```
+
+Without root, you can unpack an official Node.js binary (nodejs.org) under
+your home directory and put its `bin` first in `PATH`. This only concerns
+running the tests. The extension itself runs on the Node.js that VS Code
+Server brings.
 
 **`npm test`** runs on any OS. Each test prints `ok` / `FAIL` per check
 and exits non-zero on a failure.
