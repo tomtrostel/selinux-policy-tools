@@ -4,3 +4,4 @@ test/**
 CLAUDE.md
 .gitattributes
 .gitignore
+**/__pycache__/**

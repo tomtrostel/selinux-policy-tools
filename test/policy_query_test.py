@@ -9,6 +9,8 @@ import sys
 import tempfile
 import types
 
+sys.dont_write_bytecode = True  # no server/__pycache__ next to the shipped helper
+
 failures = 0
 
 
