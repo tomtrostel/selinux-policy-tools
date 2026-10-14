@@ -362,10 +362,7 @@ function activate(context) {
       if (!picked || !picked.length) return;
       const r = await client.sendRequest('selinux/specBuildConfig', { specPath: picked[0].fsPath });
       if (r.error || !r.configs || !r.configs.length) { vscode.window.showErrorMessage(r.error || 'No policy variants found in that spec (neither %makeCmds lines nor CLIP\'s %installCmds).'); return; }
-      const pick = await vscode.window.showQuickPick(r.configs.map(c => ({
-        label: c.variant, description: c.makeArgs.filter(a => /^(NAME|TYPE|UNK_PERMS)=/.test(a)).join(' '),
-        detail: `${c.clip ? `CLIP: the tree's own modules.conf, plus ${count(((c.makeArgs.find(a => a.startsWith('APPS_MODS=')) || '').slice(10).match(/\S+/g) || []).length, 'separately packaged module')} (APPS_MODS)` : Object.keys(c.files).join(', ')}${c.missing.length ? `   ⚠ missing: ${c.missing.map(m => path.basename(m)).join(', ')}` : ''}${(c.notes || []).length ? `   ⚠ ${c.notes.join('; ')}` : ''}`, c,
-      })), { placeHolder: 'Policy variant to build' });
+      const pick = await vscode.window.showQuickPick(r.configs.map(specPickItem), { placeHolder: 'Policy variant to build' });
       if (!pick) return;
       const conf = vscode.workspace.getConfiguration('selinux');
       const active = policyTrees.find(t => t.active);
@@ -1947,6 +1944,15 @@ const FEATURES = [
   ]],
 ];
 
+/** A Configure Build from Spec File… pick item for one variant of the spec. */
+function specPickItem(c) {
+  const apps = ((c.makeArgs.find(a => a.startsWith('APPS_MODS=')) || '').slice(10).match(/\S+/g) || []).length;
+  return {
+    label: c.variant, description: c.makeArgs.filter(a => /^(NAME|TYPE|UNK_PERMS)=/.test(a)).join(' '),
+    detail: `${c.clip ? `CLIP: the tree's own modules.conf, plus ${count(apps, 'separately packaged module')} (APPS_MODS)` : Object.keys(c.files).join(', ')}${c.missing.length ? `   ⚠ missing: ${c.missing.map(m => path.basename(m)).join(', ')}` : ''}${(c.notes || []).length ? `   ⚠ ${c.notes.join('; ')}` : ''}`, c,
+  };
+}
+
 /** One menu with every SELinux feature (status bar, Policy Explorer, context menus). */
 async function showFeatures() {
   const items = [];
@@ -2181,4 +2187,4 @@ async function applyDenialFix(plan) {
 
 function deactivate() { return client ? client.stop() : undefined; }
 
-module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView, saveLicense };
+module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView, saveLicense, FEATURES, showFeatures, addCheckLine, specPickItem, _setClient: (c) => { client = c; } };

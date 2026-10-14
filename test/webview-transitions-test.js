@@ -50,11 +50,14 @@ check(last('rooted') && last('rooted').root === 'init_t' && last('expand') && la
 check(byId.domains.children.length === 4 && byId.title.textContent === 'Transitions from init_t', 'root picker filled, title set');
 const tr = (s, t, o = {}) => ({ source: s, target: t, entrypoints: [`${t.replace(/_t$/, '')}_exec_t`], auto: [`${t.replace(/_t$/, '')}_exec_t`], setexec: true, dynamic: false, conditional: [], ...o });
 send({ cmd: 'transitions', name: 'init_t', dir: 'out', locs: { sshd_t: { p: '/x/ssh.te', l: 5, c: 5 } }, transitions: [
-  tr('init_t', 'sshd_t'), tr('init_t', 'crond_t', { auto: [] }), tr('init_t', 'getty_t', { conditional: ['some_bool:true'] })] });
+  tr('init_t', 'sshd_t', { ranges: [{ entry: 'sshd_exec_t', range: 's0-s0:c0.c1023' }] }), tr('init_t', 'crond_t', { auto: [] }), tr('init_t', 'getty_t', { conditional: ['some_bool:true'] })] });
 check(nodes().length === 4 && edges().length === 3, `init_t expanded: ${nodes().length} nodes, ${edges().length} arrows`);
 const [eSsh, eCron, eGetty] = edges();
 check(!eSsh.attrs['stroke-dasharray'] && eCron.attrs['stroke-dasharray'] === '6 4' && /cond/.test(eGetty.attrs.class),
   'arrow styles: automatic solid, explicit (setexec) dashed, boolean-controlled marked');
+const sshTip = eSsh.children.find(c => c.tag === 'title').textContent;
+check(/\branged\b/.test(eSsh.attrs.class) && !/\branged\b/.test(eCron.attrs.class) && /runs at s0-s0:c0\.c1023 when started from sshd_exec_t \(range_transition\)/.test(sshTip),
+  'a range transition is marked and its range is in the tooltip', { cls: eSsh.attrs.class, sshTip });
 const tip = eCron.children.find(c => c.tag === 'title').textContent;
 check(/entrypoints: crond_exec_t/.test(tip) && /explicit/.test(tip), 'arrow tooltip lists entrypoints and how the transition happens');
 check(byId.status.textContent === '3 domains shown', `status: ${byId.status.textContent}`);

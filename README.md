@@ -1966,29 +1966,57 @@ Plain JavaScript, no build step.
 
 ```
 npm install
-npm test               # LSP features against a policy tree with a seeded test module, plus the ifelse unit test
-npm run test:build     # standalone-module builds (Linux; skips elsewhere)
-npm run test:tree      # full-tree builds and the Compiled Policy view (Linux; defaults to a CLIP RHEL 9 checkout)
-npm run test:rhel      # RHEL selinux-policy tree with settings from its spec (Linux; args: tree, spec, variant)
-npm run test:diff      # compiled-policy diff vs HEAD and its source tracing (Linux; defaults to CLIP RHEL 9)
-npm run test:preview   # module on/off preview (Linux; defaults to CLIP RHEL 9)
-npm run test:webview   # transition graph webview script against a fake DOM (any OS)
-npm run test:checks    # property checks (Linux; defaults to CLIP RHEL 9)
-npm run test:modchecks # property checks for a standalone module linked with the installed policy (Linux)
-npm run test:mono      # monolithic build of upstream refpolicy (Linux; ~/sepol-test/refpolicy)
-npm run test:ifelse    # ifelse decisions in template expansion (any OS; also part of npm test)
-npm run test:multi     # several trees in one workspace: CLIP + RHEL 10 (Linux)
-npm run test:scratch   # per-server scratch areas: two windows, exit, crash cleanup (Linux)
-npm run test:service   # service editor: model, edits, webview (any OS; part of npm test; add a policy dir for every daemon module in it)
-npm run test:service-e2e  # service editor with real builds (Linux; CLIP by default; args: tree [spec [variant]])
+npm test               # every unit test (any OS, no SELinux toolchain), listed below
 npm run survey -- <policy-dir>   # every diagnostic over a tree, to catch false positives
 npm run package        # build the .vsix
 ```
 
-`npm test` expects a workspace at `<tmpdir>/selinux-e2e-ws` (a copy of a
-tree's `policy/` plus the seeded module under `policy/modules/local/`); pass
-another path as the first argument. `test:tree` takes a tree path and a JSON
-file of make arguments as optional arguments.
+**`npm test`** runs on any OS. Each test prints `ok` / `FAIL` per check
+and exits non-zero on a failure.
+
+| Test | Covers |
+| --- | --- |
+| `lsp-e2e.js` | The language server over stdio: diagnostics on a seeded module with deliberate mistakes, hover, definition, references, completion, signature help, quick fixes, outline, symbols. It makes its workspace from a Fedora `selinux-policy` checkout (`../selinux-policy` or `$SELINUX_POLICY_SRC`) and skips without one. |
+| `diagnostics-test.js` | Every source diagnostic on a synthetic tree (unknown names, gen_require, `.te` requires and their scopes, link failures, port checks, `gen_user` roles and levels), each with a "stays quiet" case |
+| `ifelse-test.js`, `ifdef-names-test.js` | `ifelse` and `ifdef` decisions |
+| `checks-test.js` | The whole `selinux.checks` language and its error messages |
+| `build-test.js` | Tool output parsing, the m4 `#line` map and expanded view, `corenetwork.te` alignment, `modules.conf` overlays, tree discovery, the scratch-copy sync |
+| `specconfig-test.js` | Build settings from RHEL 9, RHEL 10 and CLIP specs |
+| `explain-test.js` | Tracing compiled rules back to source statements |
+| `policy-query-test.js` | `policy_query.py` against a fake setools: levels, level checks, isolation, range transitions, the context check (needs any Python 3; skips without) |
+| `service-test.js`, `user-test.js`, `wrapper-test.js`, `denials-test.js`, `logins-test.js`, `filelabel-test.js`, `levels-test.js`, `webview-transitions-test.js` | Each feature's model and its webview against a fake DOM |
+| `client-test.js` | The All Features menu, *Add check*, the Configure from Spec items (stand-in `vscode`) |
+| `walkthrough-test.js` | The tutorials: pages, buttons, every contributed command registered |
+
+**End-to-end tests** need Linux with the SELinux toolchain and real trees
+(see CLAUDE.md for the test host's layout). They skip elsewhere. Most take
+`[tree [spec [variant]]]` and default to a CLIP RHEL 9 checkout. Their
+CLIP build settings come from the tree's own spec (`test/clip-args.js`),
+so CLIP's RHEL 8 branch works too.
+
+```
+npm run test:build        # standalone-module builds
+npm run test:tree         # full-tree builds and the Compiled Policy view
+npm run test:rhel         # a RHEL tree with settings from its spec (args: tree, spec, variant)
+npm run test:diff         # compiled diff vs HEAD and its source tracing
+npm run test:preview      # module on/off preview
+npm run test:checks       # property checks on a tree
+npm run test:modchecks    # property checks for a standalone module
+npm run test:mono         # monolithic upstream refpolicy
+npm run test:multi        # several trees in one workspace
+npm run test:scratch      # per-window scratch areas and cleanup
+npm run test:confdefaults # module kinds without modules.conf
+npm run test:service-e2e  # service editor with real builds
+npm run test:user-e2e     # user editor with real builds
+npm run test:wrapper-e2e  # wrapped programs: tree and standalone RPM
+npm run test:package      # standalone modules packaged as RPMs
+npm run test:denials-e2e  # denial assistant on the running policy and a build
+npm run test:logins-e2e   # Logins and Users
+npm run test:filelabel-e2e  # File Labels vs matchpathcon
+npm run test:levels-e2e   # Levels and Categories, level and isolation checks
+npm run test:tutorial     # the practice module
+npm run test:denials-bench  # interface suggestion ranking benchmark
+```
 
 Layout: `server/parser.js` (tokenizer and structural parser),
 `server/indexer.js` (workspace index and template expansion),

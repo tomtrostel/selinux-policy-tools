@@ -1297,8 +1297,27 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   policy documents. `CompiledPolicyView` takes an injectable request
   function; build-tree-e2e drives it with a stub `vscode` module.
 - `syntaxes/`: TextMate grammars (`source.selinux`, `source.selinux-fc`).
-- `test/lsp-e2e.js`: drives the server over stdio LSP against a workspace
-  with a seeded test module (`policy/modules/local/myapp.*`).
+- `test/lsp-e2e.js` (in `npm test`): drives the server over stdio LSP against
+  a workspace with a seeded test module (`policy/modules/local/myapp.*`,
+  rewritten each run); 23 assertions (was print-only until 2026-10-14);
+  makes the workspace from ../selinux-policy or $SELINUX_POLICY_SRC, skips
+  without one.
+- Unit tests added 2026-10-14 (all in `npm test`, any OS): test/diagnostics-test.js
+  (synthetic tree: unknown-*, missing-require, missing-te-require scopes /
+  unsure / tunable / ifdef / base, link-missing, net-port*, gen_user;
+  diagnostics carry `msg`, not `message`), test/checks-test.js (whole checks
+  language), test/build-test.js (parseBuildOutput, parseExpansion/rulesAt/
+  renderExpanded — m4 -s repeats `#line N` before every line of a multi-line
+  expansion —, alignGenerated/mapGeneratedDiagnostics, disableModules/
+  overlaySource, findTrees/treeRootOf/treeOption, syncTree/treeSources/
+  forgetStaleModuleSet, now exported), test/explain-test.js,
+  test/policy_query_test.py via test/policy-query-test.js (fake setools
+  module in sys.modules; Index built from a fake SELinuxPolicy; Python 3.9
+  compatible; tries python3/python/py -3, skips without),
+  test/client-test.js (stand-in vscode; extension.js exports FEATURES,
+  showFeatures, addCheckLine, specPickItem, _setClient). specconfig-test also
+  covers RHEL 9/10 specs; webview-transitions-test joined npm test (ranged
+  edges).
 - `test/build-e2e.js` (`npm run test:build`): real-build checks over LSP;
   asserts, exits non-zero on failure, skips without the Linux toolchain.
   Run it on melody: `~/sepol-test/tools`.
@@ -1313,7 +1332,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `linked`, edit + build relinks.
 - `test/scratch-e2e.js` (`npm run test:scratch`): two servers on one
   workspace build in separate areas; exit/kill/sweep behaviour.
-- `test/webview-transitions-test.js` (`npm run test:webview`, any OS):
+- `test/webview-transitions-test.js` (in `npm test`; `npm run test:webview`):
   runs media/transitions.js against a fake DOM through a whole session.
 - `test/preview-e2e.js` (`npm run test:preview`): module preview on a CLIP
   copy: cron off / mta off (link error placement) / nscd on / ntp off
