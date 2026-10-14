@@ -544,6 +544,30 @@ function forgetStaleModuleSet(work, makeArgs) {
   fs.writeFileSync(stamp, key);
 }
 
+/**
+ * tmp/generated_definitions.conf (every module's m4 input) is made from
+ * booleans.conf (the `NAME_conf` overrides gen_tunable reads), the flask
+ * class/permission files and the base modules, but refpolicy's rule lists no
+ * prerequisites: once made it is never remade, so a booleans.conf edit had no
+ * effect until a clean build. When those inputs change, remove it; make then
+ * remakes it and everything that depends on it.
+ */
+function forgetStaleDefinitions(work, makeArgs) {
+  const read = (rel) => { try { return fs.readFileSync(path.join(work, rel)); } catch { return Buffer.alloc(0); } };
+  const h = crypto.createHash('sha1');
+  for (const rel of ['policy/booleans.conf', 'policy/flask/access_vectors', 'policy/flask/security_classes', 'policy/modules.conf']) h.update(rel).update(read(rel));
+  h.update(JSON.stringify(makeArgs.filter(a => /^(APPS_MODS|NAME|TYPE|MONOLITHIC)=/.test(a))));
+  const key = h.digest('hex');
+  const stamp = path.join(work, 'tmp', '.definitions');
+  let prev = null;
+  try { prev = fs.readFileSync(stamp, 'utf8'); } catch { /* first build */ }
+  if (prev === key) return false;
+  if (prev !== null) fs.rmSync(path.join(work, 'tmp', 'generated_definitions.conf'), { force: true });
+  fs.mkdirSync(path.join(work, 'tmp'), { recursive: true });
+  fs.writeFileSync(stamp, key);
+  return prev !== null;
+}
+
 function treeOption(root, makeArgs, name) {
   for (const a of makeArgs) { const m = new RegExp(`^${name}=(.*)$`).exec(a); if (m) return m[1].trim(); }
   try {
@@ -714,7 +738,7 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
       resolveFile: () => null, monolithic: false, policyBin: null, packages: 0 };
   }
   const synced = sync ? syncTree(root, work, readText, overlays) : 0;
-  if (sync) forgetStaleModuleSet(work, makeArgs);
+  if (sync) { forgetStaleModuleSet(work, makeArgs); forgetStaleDefinitions(work, makeArgs); }
   const monolithic = (treeOption(root, makeArgs, 'MONOLITHIC') || 'n').toLowerCase() === 'y';
   if (!targets || !targets.length) targets = monolithic ? ['policy'] : ['base.pp', 'modules', 'validate'];
   // A tree without modules.conf (upstream refpolicy) needs `make conf` first:
@@ -926,4 +950,4 @@ function rulesAt(expansion, realPath, line0) {
   return rules;
 }
 
-module.exports = { syncTree, treeSources, forgetStaleModuleSet, treeOption, CONF_OUTPUTS, detectToolchain, expandCalls, findTrees, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };
+module.exports = { syncTree, treeSources, forgetStaleModuleSet, forgetStaleDefinitions, treeOption, CONF_OUTPUTS, detectToolchain, expandCalls, findTrees, alignGenerated, mapGeneratedDiagnostics, overlaySource, disableModules, linkWithInstalled, installedKernelPolicy, scratchDir, sweepStaleScratch, cleanupScratch, SCRATCH, m4Defines, gitInfo, gitChangedFiles, gitRefs, exportHead, treeOutputs, cilBuild, installedPolicies, buildModule, buildTree, exportTreeOutputs, treeRootOf, treeBuiltText, treeOutputFor, treeExpansion, parseBuildOutput, parseExpansion, renderExpanded, rulesAt };

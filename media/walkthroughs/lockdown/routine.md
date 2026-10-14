@@ -13,8 +13,9 @@ Putting it together, a repeatable way to shrink and harden a policy:
    shows as ✗ with its cause.
 5. **Compare with the last release tag** and read the compiled differences,
    not the text diff.
-6. **Compare with the installed policy** on a representative host, to catch
-   local customizations.
+6. **Compare with the installed policy** on a representative host, and with
+   **its local changes** (*Compare Host's Local Changes…*): write the ones
+   that belong into the policy, so hosts stop depending on them.
 7. **Build** with `selinux.build.tree.outputDir` set to keep the packages,
    `policy.bin` and a `build-info.json` record of exactly what was built.
 

@@ -282,6 +282,7 @@ function activate(context) {
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (levelsPanel) levelsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      if (hostPanel) hostPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
 
@@ -440,6 +441,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.newWrapper', () => showWrapperEditor(context)),
     vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
+    vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
       // From the explorer or an editor (a Uri), a path given by a link, the selected text, or asked for.
       let p = arg instanceof vscode.Uri ? arg.fsPath : typeof arg === 'string' ? arg : null;
@@ -1934,6 +1936,7 @@ const FEATURES = [
     ['selinux.compareHead', 'git-compare', 'Compare with HEAD', 'What your uncommitted changes grant or take away'],
     ['selinux.compareWith', 'git-branch', 'Compare with…', 'Another branch, tag, commit or saved build'],
     ['selinux.compareInstalled', 'server', 'Compare Build with Installed Policy', 'The build against a policy installed on this host'],
+    ['selinux.compareHostChanges', 'diff', 'Compare Host\'s Local Changes…', 'What semanage and semodule changed on a host (file contexts, ports, booleans, logins, modules), against your policy; write them into its source'],
     ['selinux.previewModule', 'eye', 'Preview Turning a Module Off/On…', 'What a lockdown change would remove or add, before you make it'],
   ]],
   ['Learn', [
@@ -2056,6 +2059,112 @@ function showFileLabel(context, p) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { filePanel = null; }, undefined, context.subscriptions);
+}
+
+let hostPanel = null;
+/** Host Changes: a host's local SELinux changes (semanage export) compared with a policy. */
+function showHostChanges(context) {
+  if (hostPanel) { hostPanel.reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxHostChanges', 'Host Changes', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  hostPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'hostmods.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  select, textarea { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  textarea { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); margin: 6px 0; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; }
+  button.link:hover { text-decoration: underline; }
+  #main { padding: 10px 14px 40px; }
+  .intro { opacity: .85; margin: 0 0 8px; max-width: 75em; }
+  .card { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-left-color: var(--vscode-focusBorder); border-radius: 4px; margin: 0 0 10px; }
+  .card > summary { cursor: pointer; padding: 7px 10px; }
+  .fname { font-weight: 600; }
+  .body { padding: 6px 14px 10px; }
+  .row { margin: 4px 0; }
+  .summary { margin: 8px 0; }
+  .item { padding: 5px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+  .item:last-child { border-bottom: none; }
+  .badge { font-size: .8em; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--vscode-panel-border); white-space: nowrap; }
+  .badge.local { border-color: var(--vscode-charts-blue, #3794ff); }
+  .badge.override { border-color: var(--vscode-editorWarning-foreground); color: var(--vscode-editorWarning-foreground); }
+  .badge.broken { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+  .badge.present, .badge.redundant { opacity: .7; }
+  .note { margin: 2px 0; }
+  .note.warn, .warn > .note { color: var(--vscode-editorWarning-foreground); }
+  .note.bad { color: var(--vscode-errorForeground); }
+  .note.ok { color: var(--vscode-testing-iconPassed, #3fb950); }
+  .muted { opacity: .7; }
+  code, pre { font-family: var(--vscode-editor-font-family); }
+  pre { margin: 4px 0; padding: 4px 8px; background: var(--vscode-textCodeBlock-background); white-space: pre-wrap; }
+  .plan { margin: 4px 0 4px 12px; }
+</style></head><body>
+<div id="bar">
+  <span id="title">Host Changes</span>
+  <label>Compare with <select id="against"></select></label>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  let watcher = null;
+  const stopWatch = () => { if (watcher) { fs.unwatchFile(watcher); watcher = null; } };
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        const r = await client.sendRequest('selinux/denialPolicies');
+        panel.webview.postMessage({ cmd: 'policies', policies: r.policies });
+      } else if (m.cmd === 'compare') {
+        panel.webview.postMessage({ cmd: 'result', result: await client.sendRequest('selinux/hostChanges', { text: m.text, against: m.against }) });
+      } else if (m.cmd === 'local') {
+        const r = await client.sendRequest('selinux/hostChangesLocal');
+        if (r.error) panel.webview.postMessage({ cmd: 'status', text: r.error });
+        else panel.webview.postMessage({ cmd: 'export', text: r.text, partial: true });
+      } else if (m.cmd === 'sudo') {
+        // The module store needs root: run semanage and semodule with sudo in a terminal (the
+        // password is asked there); the shell writes the file and renames it when done.
+        stopWatch();
+        const out = path.join(require('os').tmpdir(), `selinux-host-changes-${process.pid}-${Date.now()}.txt`);
+        const t = vscode.window.terminals.find(x => x.name === 'SELinux Host Changes') || vscode.window.createTerminal('SELinux Host Changes');
+        t.show();
+        t.sendText(`sudo sh -c 'semanage export; echo "#### modules"; semodule --list-modules=full' > '${out}.part'; mv -f '${out}.part' '${out}'`);
+        panel.webview.postMessage({ cmd: 'status', text: 'Waiting for semanage in the terminal (enter your sudo password there)…' });
+        watcher = out;
+        fs.watchFile(out, { interval: 700 }, (cur) => {
+          if (!cur.isFile()) return;
+          stopWatch();
+          let text = '';
+          try { text = fs.readFileSync(out, 'utf8'); fs.rmSync(out, { force: true }); } catch { /* gone */ }
+          panel.webview.postMessage({ cmd: 'status', text: text.trim() ? '' : 'semanage printed nothing (wrong password, or not installed: policycoreutils-python-utils).', done: true });
+          if (text.trim()) panel.webview.postMessage({ cmd: 'export', text });
+        });
+      } else if (m.cmd === 'openFile') {
+        const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Compare', title: 'semanage export output from a host', defaultUri: vscode.Uri.file(require('os').homedir()) });
+        if (!pick || !pick.length) return;
+        panel.webview.postMessage({ cmd: 'export', text: Buffer.from(await vscode.workspace.fs.readFile(pick[0])).toString('utf8') });
+      } else if (m.cmd === 'plan') {
+        const plan = await client.sendRequest('selinux/hostChangeFix', { item: m.item, against: m.against });
+        panel.webview.postMessage({ cmd: 'plan', key: m.key, plan });
+      } else if (m.cmd === 'apply') {
+        try { await applyDenialFix(m.plan); panel.webview.postMessage({ cmd: 'applied', key: m.key, path: m.plan.path }); } catch (e) { panel.webview.postMessage({ cmd: 'applied', key: m.key, error: e.message }); }
+      } else if (m.cmd === 'copy') {
+        await vscode.env.clipboard.writeText(m.text);
+        vscode.window.setStatusBarMessage('Copied', 2000);
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { stopWatch(); hostPanel = null; }, undefined, context.subscriptions);
 }
 
 let levelsPanel = null;

@@ -254,6 +254,11 @@
         "icon": "$(person)"
       },
       {
+        "command": "selinux.compareHostChanges",
+        "title": "SELinux: Compare Host's Local Changes…",
+        "icon": "$(diff)"
+      },
+      {
         "command": "selinux.showLevels",
         "title": "SELinux: Levels and Categories…",
         "icon": "$(layers)"
@@ -995,6 +1000,17 @@
             ]
           },
           {
+            "id": "hostchanges",
+            "title": "Compare with a host's local changes",
+            "description": "What semanage and semodule changed on a host, against your policy; write the changes that belong into its source.\n[Compare Host's Local Changes…](command:selinux.compareHostChanges)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/hostchanges.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.compareHostChanges"
+            ]
+          },
+          {
             "id": "levels",
             "title": "Levels and categories (MLS / MCS)",
             "description": "Can this context access that one, which domains ignore levels, and what levels don't keep apart (two containers).\n[Levels and Categories…](command:selinux.showLevels)\n[Open Property Checks](command:selinux.openChecks)",
@@ -1030,7 +1046,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/localmods-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",
@@ -1060,7 +1076,8 @@
     "test:denials-e2e": "node test/denials-e2e.js",
     "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80",
     "test:package": "node test/package-e2e.js",
-    "test:clip-all": "node test/clip-all.js"
+    "test:clip-all": "node test/clip-all.js",
+    "test:hostmods-e2e": "node test/hostmods-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

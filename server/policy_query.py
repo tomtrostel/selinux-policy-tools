@@ -941,6 +941,37 @@ class Index:
         return {"ok": not bad, "count": sum(len(g["domains"]) for g in bad),
                 "levels": [{"domains": g["domains"][:60], "count": len(g["domains"]), "via": g["via"], "classes": g["classes"]} for g in bad[:20]]}
 
+    def hostfacts(self):
+        """What comparing a host's local changes needs: types and attributes, boolean defaults,
+        users (roles, range), roles, and the port / interface / node labels."""
+        p = self.policy
+        out = {"types": sorted(set(self.attrs) | set(self.members)), "bools": dict(self.bool_defaults),
+               "users": {}, "roles": sorted(self.role_types), "ports": [], "netifs": {}, "nodes": []}
+        for u in p.users():
+            rng = None
+            try:
+                rng = str(u.mls_range).replace(" - ", "-") if p.mls else None
+            except Exception:
+                pass
+            out["users"][str(u)] = {"roles": sorted(self.user_roles[str(u)]), "range": rng}
+        try:
+            for pc in p.portcons():
+                out["ports"].append({"proto": str(pc.protocol).lower(), "low": int(pc.ports.low), "high": int(pc.ports.high), "type": str(pc.context.type_)})
+        except Exception:
+            pass
+        try:
+            for n in p.netifcons():
+                out["netifs"][str(n.netif)] = str(n.context.type_)
+        except Exception:
+            pass
+        try:
+            for n in p.nodecons():
+                net = n.network
+                out["nodes"].append({"addr": str(net.network_address), "mask": str(net.netmask), "proto": "ipv6" if net.version == 6 else "ipv4", "type": str(n.context.type_)})
+        except Exception:
+            pass
+        return out
+
     def entrypoint_domains(self, types):
         """For each file type: the domains it is an entrypoint of (a program with that label starts them),
         from rules written for the type itself (attribute rules make e.g. container domains enter anything)."""
@@ -1063,6 +1094,8 @@ def main():
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
             elif req.get("op") == "constraints":
                 resp.update(failing=idx.constraints(req["s"], req["t"], req["c"], set(req.get("perms") or [])))
+            elif req.get("op") == "hostfacts":
+                resp.update(idx.hostfacts())
             elif req.get("op") == "levels":
                 resp.update(idx.levels(set(req.get("classes") or []) or None))
             elif req.get("op") == "isolation":

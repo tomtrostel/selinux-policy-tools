@@ -29,7 +29,9 @@ It works at two levels:
   *Look Up File Label* (the label any file gets, the line that sets it,
   who may access it) and *Levels and Categories* (MLS/MCS: may one
   context access another, which domains ignore levels, what categories
-  don't keep apart).
+  don't keep apart). *Compare Host's Local Changes* shows what `semanage`
+  changed on a host against your policy, and writes the changes that
+  belong into its source.
 * **Writing and fixing policy.**
   * A service editor that writes and edits a daemon's module from a form,
     and a user editor for SELinux users, their logins and ways in.
@@ -1147,6 +1149,56 @@ customizations, or things your build removes). The `semodule` build takes
 ~8 s for CLIP and ~25 s for RHEL targeted; it is redone only when the
 build's packages change, and the comparison runs on request.
 
+**Compare with a host's local changes** (*SELinux: Compare Host's Local
+Changes…*; Linux)
+
+This shows what administrators changed on a host and how it compares with
+your policy. The changes come from `semanage` (file contexts and
+equivalences, ports, booleans, logins, SELinux users, interfaces, nodes,
+modules turned off, permissive domains) and from `semodule -i` (modules
+added). Ways to read them:
+
+* **Read this host (sudo):** runs `semanage export` and `semodule
+  --list-modules=full` with sudo in a terminal; enter the password there.
+  The module store is root-only.
+* **Read without sudo:** what anyone can see (`file_contexts.local`, local
+  equivalences, booleans whose running value differs from the default).
+* **Open file… or paste:** the export of another host, made with the
+  command the panel shows.
+
+Compare with your last build (the default) or an installed policy. Each
+change gets a verdict:
+
+* *only on the host*;
+* *overrides your policy*: a port your policy gives another type, a path it
+  labels otherwise, a boolean it defaults the other way, a login it maps to
+  another user, a user with other roles, a module it ships;
+* *already in your policy* or *same as the default*: redundant there;
+* *not in your policy*: a type, user, role or boolean it doesn't have, so
+  the change would fail on a host running your policy.
+
+Permissive domains, modules installed by hand (priority 400), logins
+mapped to `unconfined_u` and users given admin roles are flagged.
+
+For a tree, **write into the policy** shows the edit and then writes it,
+saved so the tree builds:
+
+* a file context goes into the `.fc` of the module that declares its type.
+  An override changes the policy's own line for that path, since a second
+  line for the same path would conflict;
+* a port is added to its type's `network_port` line in
+  `corenetwork.te.in`. An override moves the number from the other type,
+  since checkpolicy refuses two labels for one port;
+* a boolean goes into `booleans.conf` (the spec's copy for RHEL trees), a
+  login into the tree's `seusers`, an equivalence into
+  `file_contexts.subs_dist`, and a module turned off into `modules.conf`.
+
+After the build those changes show as *already in your policy*. Users,
+permissive domains, interfaces and nodes get a line to copy instead.
+Tested on melody (`test/hostmods-e2e.js`): against the running targeted
+policy, and on a CLIP copy where each fixable change was written, the tree
+rebuilt, and every change then showed as already in the policy.
+
 **Property checks** (full trees and standalone modules)
 
 Write down security properties once, in a `selinux.checks` file at the tree
@@ -1986,6 +2038,7 @@ and exits non-zero on a failure.
 | `policy-query-test.js` | `policy_query.py` against a fake setools: levels, level checks, isolation, range transitions, the context check (needs any Python 3; skips without) |
 | `service-test.js`, `user-test.js`, `wrapper-test.js`, `denials-test.js`, `logins-test.js`, `filelabel-test.js`, `levels-test.js`, `webview-transitions-test.js` | Each feature's model and its webview against a fake DOM |
 | `client-test.js` | The All Features menu, *Add check*, the Configure from Spec items (stand-in `vscode`) |
+| `localmods-test.js` | Host Changes: the `semanage export` parser, the comparison, every fix, the panel |
 | `walkthrough-test.js` | The tutorials: pages, buttons, every contributed command registered |
 
 **End-to-end tests** need Linux with the SELinux toolchain and real trees
@@ -2014,6 +2067,7 @@ npm run test:denials-e2e  # denial assistant on the running policy and a build
 npm run test:logins-e2e   # Logins and Users
 npm run test:filelabel-e2e  # File Labels vs matchpathcon
 npm run test:levels-e2e   # Levels and Categories, level and isolation checks
+npm run test:hostmods-e2e # a host's local changes: compare, write into a tree, rebuild
 npm run test:tutorial     # the practice module
 npm run test:denials-bench  # interface suggestion ranking benchmark
 npm run test:clip-all     # all tree tests on CLIP RHEL 8 and RHEL 9, plus a diagnostics survey of each

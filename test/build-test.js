@@ -185,6 +185,19 @@ write(path.join(w2, 'policy/modules.conf'), 'foo = off\n');
 B.forgetStaleModuleSet(w2, ['APPS_MODS=a b']);
 check(!fs.existsSync(path.join(w2, 'foo.pp')), 'modules.conf changed: packages removed too');
 
+/* ---------- generated_definitions.conf (booleans.conf, flask, base modules) ---------- */
+const w3 = path.join(tmp, 'w3');
+write(path.join(w3, 'policy/booleans.conf'), 'httpd_can_network_connect = false\n');
+write(path.join(w3, 'policy/modules.conf'), 'kernel = base\n');
+check(B.forgetStaleDefinitions(w3, []) === false, 'first build: nothing to forget, inputs stamped');
+write(path.join(w3, 'tmp/generated_definitions.conf'), "define(`httpd_can_network_connect_conf',`false')\n");
+check(B.forgetStaleDefinitions(w3, ['UBAC=y']) === false && fs.existsSync(path.join(w3, 'tmp/generated_definitions.conf')), 'unchanged inputs: kept');
+write(path.join(w3, 'policy/booleans.conf'), 'httpd_can_network_connect = true\n');
+check(B.forgetStaleDefinitions(w3, []) === true && !fs.existsSync(path.join(w3, 'tmp/generated_definitions.conf')), 'booleans.conf changed: removed, so make remakes it (its rule has no prerequisites)');
+write(path.join(w3, 'tmp/generated_definitions.conf'), 'x');
+write(path.join(w3, 'policy/flask/access_vectors'), 'class file { read }\n');
+check(B.forgetStaleDefinitions(w3, []) === true && !fs.existsSync(path.join(w3, 'tmp/generated_definitions.conf')), 'flask files changed: removed too');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\n${failures} check(s) failed` : '\nall build checks passed');
 process.exit(failures ? 1 : 0);

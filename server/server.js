@@ -3914,6 +3914,126 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
   return { ...r, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build }, locs, traceable: !!lp.pol.build };
 });
 
+/* ---------------- a host's local changes (semanage, semodule -i) ---------------- */
+
+const localmods = require('./localmods');
+
+/** The policy to compare local changes with: the one asked for, else the workspace build, else the running one. */
+async function hostPolicy(against) {
+  const policies = denialPolicies();
+  const pol = policies.find(p => p.id === against) || policies.find(p => p.build) || policies.find(p => p.active) || policies[0] || null;
+  if (!pol) return { policies, error: process.platform === 'win32' ? 'Comparing local changes needs a Linux host (use Remote-SSH).' : 'No policy to compare with: no installed policy under /etc/selinux, and no workspace build.' };
+  return loginPolicy(pol.id);
+}
+
+/** What localmods.compare needs to know about a policy. */
+async function hostFacts(lp) {
+  const r = await policyQuery.request({ op: 'hostfacts', bin: lp.bin });
+  if (r.error) throw new Error(`Policy query failed: ${r.error}`);
+  const fl = fcLists(lp.pol);
+  const fc = new Map();
+  for (const s of (fl ? fl.order : [])) if (!s.local) fc.set(`${s.spec}\t${s.flag || ''}`, s.type);
+  const subs = {};
+  for (const [from, to] of (fl ? fl.subs.dist : [])) subs[from] = to;
+  const cfg = loginConfig(lp.pol);
+  const seusers = cfg ? logins.parseSeusers(cfg.read(cfg.seusers) || '').map(x => ({ login: x.group ? `%${x.login}` : x.login, user: x.user, range: x.range || '' })) : [];
+  let modules = null, builtModules = null;
+  if (lp.pol.build && !usingDevel && treeRoot) {
+    modules = idx.moduleKinds ? new Map(idx.moduleKinds) : null;
+    const res = lastBuild.get(treeRoot);
+    try { builtModules = new Set(fs.readdirSync(res.workDir).filter(n => n.endsWith('.pp')).map(n => n.slice(0, -3))); } catch { /* not built */ }
+  }
+  return {
+    types: new Set(r.types), bools: r.bools, users: r.users, roles: new Set(r.roles), ports: r.ports, netifs: r.netifs, nodes: r.nodes,
+    fc: (spec, flag) => fc.get(`${spec}\t${flag || ''}`) || null, subs, seusers, modules, builtModules,
+    // The installed policy of this host already contains its own local changes.
+    containsLocal: !lp.pol.build,
+  };
+}
+
+/** Compare a host's local changes (semanage export [+ #### modules + semodule --list-modules=full]) with a policy. */
+connection.onRequest('selinux/hostChanges', async ({ text, against } = {}) => {
+  await indexing;
+  const lp = await hostPolicy(against);
+  if (lp.error) return { policies: lp.policies, error: lp.error };
+  const policy = { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active };
+  const parsed = localmods.parseExport(text || '');
+  const items = [...parsed.items, ...localmods.localModules(parsed.modules)];
+  if (!items.length && !parsed.unknown.length) return { policies: lp.policies, policy, items: [], unknown: [], modulesListed: parsed.modules.length > 0, note: (text || '').trim() ? 'No local changes in this export: the host runs the policy as installed.' : null };
+  let facts;
+  try { facts = await hostFacts(lp); } catch (e) { return { policies: lp.policies, policy, error: e.message }; }
+  const out = localmods.compare(items, facts).map(it => ({ ...it, fixable: !!fixTarget(it, lp.pol), snippet: localmods.snippet(it) }));
+  return { policies: lp.policies, policy, items: out, unknown: parsed.unknown, modulesListed: parsed.modules.length > 0, containsLocal: facts.containsLocal };
+});
+
+/** Without root: what this host shows anyone (file_contexts.local, .subs, booleans whose value differs from the policy's default) as export lines. */
+connection.onRequest('selinux/hostChangesLocal', async () => {
+  const run = build.installedPolicies().find(p => p.active);
+  if (!run) return { error: 'This host runs no SELinux policy (or it can\'t be read).' };
+  const dir = path.join('/etc/selinux', run.name, 'contexts', 'files');
+  const out = ['# Read without root from this host: file_contexts.local, file_contexts.subs and the running booleans.',
+    '# Ports, logins, users, disabled and added modules need sudo semanage export.'];
+  const FLAG_TO_FTYPE = { '': 'a', '--': 'f', '-d': 'd', '-c': 'c', '-b': 'b', '-s': 's', '-l': 'l', '-p': 'p' };
+  for (const s of filelabel.parseSpecs(readIf(path.join(dir, 'file_contexts.local')), 'file_contexts.local')) {
+    if (s.type) out.push(`fcontext -a -f ${FLAG_TO_FTYPE[s.flag || ''] || 'a'} -t ${s.type} '${s.spec}'`);
+  }
+  for (const [target, source] of filelabel.parseSubs(readIf(path.join(dir, 'file_contexts.subs')))) out.push(`fcontext -a -e ${source} ${target}`);
+  const cur = runningBooleans();
+  const r = await policyQuery.request({ op: 'hostfacts', bin: run.policy });
+  if (!r.error) for (const [n, v] of Object.entries(cur).sort()) if (r.bools[n] !== undefined && r.bools[n] !== v) out.push(`boolean -m -${v ? 1 : 0} ${n}`);
+  return { text: out.join('\n') + '\n', partial: true };
+});
+
+/** Where a change goes in the workspace sources: { kind, path } or null (no file the editor can change for it). */
+function fixTarget(it, pol) {
+  if (!pol || !pol.build || usingDevel || !treeRoot) return null;
+  const file = (rel) => { const o = treeCfg().files && treeCfg().files[rel]; const src = o ? [].concat(o).map(s => resolveOverlay(treeRoot, s)).pop() : null; return typeof src === 'string' ? src : src ? null : path.join(treeRoot, rel); };
+  switch (it.kind) {
+    case 'fcontext': {
+      // An override changes the policy's own line for the path (a second line would conflict).
+      if (it.state === 'override' && it.was) {
+        const s = fcSourceOf({ spec: it.spec, type: it.was });
+        return s && s.p.startsWith(treeRoot + path.sep) ? { path: s.p, line: s.l } : null;
+      }
+      const mods = idx.declaringModules(it.type);
+      const m = mods && [...mods].map(n => idx.modules().find(x => x.module === n)).find(x => x && x.files.fc && x.files.fc.startsWith(treeRoot));
+      return m ? { path: m.files.fc } : null;
+    }
+    case 'equivalence': return { path: path.join(treeRoot, 'config', 'file_contexts.subs_dist') };
+    case 'boolean': { const p = file('policy/booleans.conf'); return p ? { path: p } : null; }
+    case 'login': return { path: path.join(appconfigDir(treeRoot), 'seusers') };
+    case 'port': {
+      const p = path.join(treeRoot, 'policy/modules/kernel/corenetwork.te.in');
+      return fs.existsSync(p) && localmods.portFix(readSource(p) || '', it) ? { path: p } : null;
+    }
+    case 'module-disabled': {
+      const conf = effectiveModulesConf(treeRoot);
+      const part = conf && conf.parts.find(x => localmods.moduleOffFix(readSource(x.path) || '', it.name));
+      return part ? { path: part.path } : null;
+    }
+    default: return null;
+  }
+}
+
+/** The edit that writes one local change into the workspace sources (applied like a denial fix). */
+connection.onRequest('selinux/hostChangeFix', async ({ item, against } = {}) => {
+  await indexing;
+  const lp = await hostPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const t = item && fixTarget(item, lp.pol);
+  if (!t) return { error: 'There is no file in this workspace to write this change into; copy the line shown instead.' };
+  const text = readSource(t.path) || '';
+  let r = null;
+  if (item.kind === 'fcontext') r = t.line !== undefined ? localmods.fcontextReplace(text, item, t.line) : localmods.fcontextFix(text, item);
+  else if (item.kind === 'equivalence') r = localmods.subsFix(text, item);
+  else if (item.kind === 'boolean') r = localmods.booleanFix(text, item);
+  else if (item.kind === 'login') r = localmods.loginFix(text, item);
+  else if (item.kind === 'port') r = localmods.portFix(text, item);
+  else if (item.kind === 'module-disabled') r = localmods.moduleOffFix(text, item.name);
+  if (!r) return { already: true, path: t.path };
+  return { path: t.path, text: r.text, line: r.line, inserted: r.inserted };
+});
+
 /* ---------------- levels (MLS / MCS) ---------------- */
 
 const levelsLib = require('./levels');

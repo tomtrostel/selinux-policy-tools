@@ -1095,6 +1095,47 @@ so far covered by the e2e tests only.
    isolated, CLIP 9 staff_t 144 unchecked; RHEL init_t → setrans_t at
    s0-s0:c0.c1023; CLIP 8 init_t starts 9 domains at fixed levels.
 
+13. **A host's local changes** (done, unreleased; user 2026-10-14: "lets
+   do the host semanage compare next … run full regression tests after
+   adding all unit tests"). server/localmods.js (pure): parseExport (the
+   `semanage export` format from seobject.py customized(): boolean -m -1/-0,
+   login -a -s [-r], user -a [-L -r] -R, port -a -t [-r] -p, interface,
+   node -M -p -t, fcontext -a -f FTYPE -t [-r] SPEC / -a -e SOURCE TARGET,
+   module -d, permissive -a, ibpkey, ibendport; "X -D" reset lines skipped;
+   after "#### modules" `semodule --list-modules=full` lines PRIO NAME LANG
+   [disabled]; unknown lines kept), localModules (priority ≠ 100, not
+   permissive_*), compare(items, facts) → state local|override|present|
+   redundant|broken|info + note + severity warn (permissive, priority 400,
+   unconfined_u logins, admin roles) + `was` (override: the policy's type),
+   describe, snippets, fixes: fcontextFix (append to owner .fc),
+   fcontextReplace (override: type on the policy's own line — a second line
+   for a path conflicts), portFix (number onto NAME_port_t's network_port
+   line; override moves it from `was`'s line — duplicate portcon fails),
+   subsFix, booleanFix, loginFix (before __default__), moduleOffFix (base
+   untouched). policy_query op `hostfacts` (types+attrs, bool defaults,
+   users roles/range, roles, portcons, netifcons, nodecons). Server
+   hostPolicy (default: build, else running), hostFacts (fc map from
+   fcLists minus `.local` specs; subs dist; loginConfig seusers; tree
+   moduleKinds + built .pp set; containsLocal for installed policies),
+   requests selinux/hostChanges {text, against}, selinux/hostChangesLocal
+   (no root: file_contexts.local, .subs, running booleans ≠ default as
+   export lines), selinux/hostChangeFix {item, against} (fixTarget: owner
+   .fc / fcSourceOf line for overrides, subs_dist, booleans.conf overlay or
+   tree, appconfig seusers, corenetwork.te.in, effectiveModulesConf part;
+   plan {path, text, line, inserted} applied with applyDenialFix). Client
+   showHostChanges (media/hostmods.js; sudo via terminal "SELinux Host
+   Changes": `sudo sh -c 'semanage export; echo "#### modules"; semodule
+   --list-modules=full' > f.part; mv`, fs.watchFile), command
+   selinux.compareHostChanges, FEATURES, lockdown walkthrough step
+   hostchanges. Found + fixed: refpolicy's tmp/generated_definitions.conf
+   (booleans.conf → NAME_conf defines, flask, base modules) has no make
+   prerequisites, so booleans.conf edits never applied incrementally;
+   build.forgetStaleDefinitions() removes it when those inputs change.
+   Tests: test/localmods-test.js (npm test), policy_query_test.py
+   hostfacts, build-test forgetStaleDefinitions, test/hostmods-e2e.js
+   (melody; running targeted + CLIP copy: write every fixable change,
+   rebuild, all present after), in test:clip-all.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1263,6 +1304,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
+- `server/localmods.js`: a host's local changes (semanage export parsing,
+  comparison, fixes); `media/hostmods.js` the Host Changes webview.
 - `media/levels.js`: Levels and Categories webview (context check, who
   ignores levels); the analysis is in policy_query.py (`levels`, `context`).
 - `server/wrapper.js`: wrapped-programs module (model, render, read back,
@@ -1372,6 +1415,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/localmods-test.js` (in `npm test`) and `test/hostmods-e2e.js`
+  (`npm run test:hostmods-e2e`, melody; optional tree arg, default CLIP).
 - `test/levels-test.js` (in `npm test`) and `test/levels-e2e.js`
   (`npm run test:levels-e2e`, melody; optional tree arg, default CLIP).
 - `test/wrapper-test.js` (in `npm test`) and `test/wrapper-e2e.js`

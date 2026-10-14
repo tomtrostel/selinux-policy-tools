@@ -268,6 +268,18 @@ class SELinuxPolicy(object):
     def lookup_range(self, text):
         return Range(text)
 
+    def portcons(self):
+        ctx = types.SimpleNamespace(type_=Named("http_port_t"))
+        return [types.SimpleNamespace(protocol=Named("tcp"), ports=types.SimpleNamespace(low=80, high=80), context=ctx),
+                types.SimpleNamespace(protocol=Named("tcp"), ports=types.SimpleNamespace(low=8000, high=8010), context=ctx)]
+
+    def netifcons(self):
+        return [types.SimpleNamespace(netif=Named("lo"), context=types.SimpleNamespace(type_=Named("lo_netif_t")))]
+
+    def nodecons(self):
+        import ipaddress
+        return [types.SimpleNamespace(network=ipaddress.ip_network("127.0.0.0/8"), context=types.SimpleNamespace(type_=Named("lo_node_t")))]
+
 
 class Perm(object):
     def __init__(self, perm, direction, weight):
@@ -380,6 +392,13 @@ check("is not a permission of file" in idx.context_check("a:b:staff_t:s0", "a:b:
       and "is not a type" in idx.context_check("a:b:nosuch_t:s0", "a:b:etc_t:s0", "file", ["read"], {})["error"]
       and "user:role:type" in idx.context_check("a:b", "a:b:etc_t:s0", "file", ["read"], {})["error"]
       and "Not a valid level" in idx.context_check("a:b:staff_t:s9", "a:b:etc_t:s0", "file", ["read"], {})["error"], "errors: permission, class, type, malformed, level")
+
+# ---------- facts for comparing a host's local changes ----------
+hf = idx.hostfacts()
+check("container_t" in hf["types"] and "mcs_constrained_type" in hf["types"] and hf["bools"] == {"some_bool": False}, "hostfacts: types and attributes, boolean defaults")
+check(hf["users"]["user_u"] == {"roles": ["staff_r"], "range": "s0"} and hf["users"]["system_u"]["range"] == "s0-s0:c0.c1023" and "object_r" in hf["roles"], "hostfacts: users with roles and range (no spaces), roles")
+check(hf["ports"] == [{"proto": "tcp", "low": 80, "high": 80, "type": "http_port_t"}, {"proto": "tcp", "low": 8000, "high": 8010, "type": "http_port_t"}], "hostfacts: port labels with ranges", hf["ports"])
+check(hf["netifs"] == {"lo": "lo_netif_t"} and hf["nodes"] == [{"addr": "127.0.0.0", "mask": "255.0.0.0", "proto": "ipv4", "type": "lo_node_t"}], "hostfacts: interface and node labels", (hf["netifs"], hf["nodes"]))
 
 os.remove(path)
 print("\n%d check(s) failed" % failures if failures else "\nall policy_query checks passed")

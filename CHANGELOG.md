@@ -4,6 +4,19 @@
 
 **Added**
 
+* **Compare Host's Local Changes** (*SELinux: Compare Host's Local
+  Changes…*): what `semanage` and `semodule -i` changed on a host, read
+  with sudo in a terminal, without sudo (partly), or from another host's
+  export.
+  * Each change is compared with your build or an installed policy: only
+    on the host, overrides your policy, already in it, same as the
+    default, or not in your policy. Risky changes are flagged.
+  * For a tree, a change can be written into the source: file contexts
+    (an override edits the policy's own line), ports (an override moves the
+    number), booleans, logins, equivalences, modules turned off.
+* **Tutorial:** a "Compare with a host's local changes" step in the
+  lockdown walkthrough.
+
 * **Levels and Categories** (*SELinux: Levels and Categories…*), for
   MLS/MCS policies:
   * *Can it access?* takes two full contexts (or a file's label), a class
@@ -34,6 +47,10 @@
 
 * `never X reaches Y except through Z` ignored the `except through` part
   (0.15.0; `never login … reaches … except through` was right).
+* Tree builds: an edit to `booleans.conf`, or to the flask files, had no
+  effect until a clean build. refpolicy's `tmp/generated_definitions.conf`
+  rule has no prerequisites, so it was never remade; the build now removes
+  it when those files change.
 
 ## 0.15.0 (2026-10-13)
 
