@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-13: **v0.14.0 released** (GitHub release `v0.14.0`;
+Status as of 2026-10-13: **v0.15.0 released** (GitHub release `v0.15.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -43,6 +43,9 @@ work").
 release: "that all seems to work").
 0.14.0: file labels lookup and the all-features menu (step 10; released
 at the user's request before they tried it interactively).
+0.15.0: wrapped programs (step 11), `except through` in reach checks, CLIP
+for RHEL 8 (Configure from CLIP specs); the user tried the wrapper form
+(reported the stale path, fixed) before the release.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -937,7 +940,7 @@ so far covered by the e2e tests only.
    traced to rpm.te). Answer to the user's question: CLIP labels
    /usr/bin/rpm system_u:object_r:rpm_exec_t:s0 (admin/rpm.fc:16).
 
-11. **Wrapped programs** (done, unreleased; user 2026-10-13: chroot'ed
+11. **Wrapped programs** (done, 0.15.0; user 2026-10-13: chroot'ed
    read-only users run wrapper programs that execve protected copies of
    programs, which keep the originals' privileges; "a real chroot", "you
    don't need to know how the wrapper works … it runs something like
