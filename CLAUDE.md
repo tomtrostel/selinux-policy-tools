@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-13: **v0.15.0 released** (GitHub release `v0.15.0`;
+Status as of 2026-10-14: **v0.16.0 released** (GitHub release `v0.16.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -46,6 +46,11 @@ at the user's request before they tried it interactively).
 0.15.0: wrapped programs (step 11), `except through` in reach checks, CLIP
 for RHEL 8 (Configure from CLIP specs); the user tried the wrapper form
 (reported the stale path, fixed) before the release.
+0.16.0: levels and categories (step 12, all six items), a host's local
+changes (step 13), the booleans.conf incremental-build fix, the
+`except through` fix, unit tests for the core pieces and test:clip-all;
+the user tried the new panels before the release ("it looks like things
+work").
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1012,7 +1017,7 @@ so far covered by the e2e tests only.
    roles built are admin ones (staff_r picked); the login reach check
    reports staff logins landing in sysadm_t, which runs setfiles_t (true).
 
-12. **Levels and categories (MLS/MCS)** (done, all six items, unreleased; user 2026-10-13
+12. **Levels and categories (MLS/MCS)** (done, all six items, 0.16.0; user 2026-10-13
    asked about s0 levels and container categories; agreed order: 1 bypass
    report + checks, 2 context compare, then 3 levels shown elsewhere with
    setrans names, 4 range_transition in graph/File Labels, 5 container
@@ -1095,7 +1100,7 @@ so far covered by the e2e tests only.
    isolated, CLIP 9 staff_t 144 unchecked; RHEL init_t → setrans_t at
    s0-s0:c0.c1023; CLIP 8 init_t starts 9 domains at fixed levels.
 
-13. **A host's local changes** (done, unreleased; user 2026-10-14: "lets
+13. **A host's local changes** (done, 0.16.0; user 2026-10-14: "lets
    do the host semanage compare next … run full regression tests after
    adding all unit tests"). server/localmods.js (pure): parseExport (the
    `semanage export` format from seobject.py customized(): boolean -m -1/-0,

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 (2026-10-14)
 
 **Added**
 
@@ -16,7 +16,6 @@
     number), booleans, logins, equivalences, modules turned off.
 * **Tutorial:** a "Compare with a host's local changes" step in the
   lockdown walkthrough.
-
 * **Levels and Categories** (*SELinux: Levels and Categories…*), for
   MLS/MCS policies:
   * *Can it access?* takes two full contexts (or a file's label), a class
@@ -51,6 +50,21 @@
   effect until a clean build. refpolicy's `tmp/generated_definitions.conf`
   rule has no prerequisites, so it was never remade; the build now removes
   it when those files change.
+
+**Docs and tests**
+
+* README and tutorials cover the newer features (file labels, the
+  features menu, the user editor, wrapped programs, levels, CLIP specs),
+  with new lockdown steps for levels and categories and for wrapped
+  programs, and a labels/logins/levels section in the practice module.
+* A **Findings** section in the README: MCS in CLIP RHEL 8 vs RHEL 9 (RHEL 8
+  binds every domain to its categories; RHEL 9 binds none), what restoring
+  it would take, and the gaps in `container_t`'s isolation on RHEL 9.
+* Unit tests for the diagnostics, the checks language, build output
+  parsing, rule tracing, the Python policy helper (against a fake setools)
+  and client pieces; the LSP test now asserts. `npm run test:clip-all` runs
+  every tree test on CLIP RHEL 8 and RHEL 9 plus a diagnostics survey
+  against reviewed findings.
 
 ## 0.15.0 (2026-10-13)
 
