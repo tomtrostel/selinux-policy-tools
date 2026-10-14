@@ -1502,6 +1502,21 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   missing `gen_require` entries, four calls to interfaces the tree doesn't
   have (three in the disabled cockpit module), and two undefined permission
   sets in `userdomain.if`.
+* On a Rocky 8.10 host, with RHEL 8's own tools (checkpolicy 2.9,
+  setools 4.3, Python 3.6, libselinux 2.9): the unit tests and every e2e
+  suite on CLIP for RHEL 8. VS Code runs the extension with its own
+  Node.js; running the tests needs Node.js 18 or later, newer than RHEL 8's
+  default `nodejs` (10). Testing it found two differences from RHEL 9, both
+  handled now:
+  * RHEL 8's `semodule` sorts equally specific file-context lines the
+    other way round: the one limited to a file kind (`--`, `-d`, …) comes
+    first. The last match wins, so this can change a label. File labels
+    for a build or a standalone module follow the host's order.
+  * RHEL 8's `matchpathcon -f` refuses a file-contexts file whose types
+    the running policy lacks, and CLIP's (`systemd_unit_t`, `tpm2_exec_t`,
+    …) aren't in RHEL 8 targeted. Labels for the denial assistant, finding
+    interfaces by path and "can it …?" in Logins and Users no longer use
+    it for anything but the running policy.
 * Link failures and `corenetwork.te.in`: the static link check and the port
   checks report nothing on the Fedora, RHEL 9, RHEL 10 and CLIP trees with
   their module configurations (all of which link). Turning `mta` off in

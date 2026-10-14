@@ -3019,6 +3019,21 @@ function installedFc(name) {
   };
 }
 
+/**
+ * Whether this host's semodule sorts equally specific file-context lines
+ * with a file kind first (libsemanage 2.9, RHEL 8), read from the running
+ * policy's file_contexts; false (fc_sort.py's order) when it doesn't tell.
+ */
+let typedFirstCache = null;
+function hostTypedFirst() {
+  const active = build.installedPolicies().find(p => p.active);
+  if (!active) return false;
+  const f = path.join('/etc/selinux', active.name, 'contexts', 'files', 'file_contexts');
+  const key = `${f}:${mtimeOf(f)}`;
+  if (!typedFirstCache || typedFirstCache.key !== key) typedFirstCache = { key, v: !!filelabel.typedFirstIn(filelabel.parseSpecs(readIf(f))) };
+  return typedFirstCache.v;
+}
+
 /** The .fc outputs of a tree build: base.fc + tmp/<mod>.mod.fc of each packaged module (or a monolithic file_contexts). */
 function treeFcFiles(res) {
   const work = res.workDir;
@@ -3048,7 +3063,8 @@ function fcLists(pol) {
       const specs = files.flatMap(x => filelabel.parseSpecs(readIf(x.p), null, x.module));
       const [tpl, rest] = filelabel.splitHomeTemplates(specs);
       const subsDist = readSource(path.join(res.root || treeRoot, 'config', 'file_contexts.subs_dist'));
-      return { order: filelabel.lookupOrder(filelabel.sortSpecs(rest), filelabel.sortSpecs(tpl)), subs: { local: [], dist: filelabel.parseSubs(subsDist) }, newest, tree: true };
+      const tf = hostTypedFirst();
+      return { order: filelabel.lookupOrder(filelabel.sortSpecs(rest, tf), filelabel.sortSpecs(tpl, tf)), subs: { local: [], dist: filelabel.parseSubs(subsDist) }, newest, tree: true };
     };
   } else if (pol.build) {
     const res = lastModule && lastBuild.get(lastModule);
@@ -3061,7 +3077,8 @@ function fcLists(pol) {
     make = () => {
       const i = installedFc(active.name);
       const [tpl, rest] = filelabel.splitHomeTemplates(filelabel.parseSpecs(readIf(own), null, res.module));
-      return { order: filelabel.lookupOrder(filelabel.sortSpecs([...i.main, ...rest]), filelabel.sortSpecs([...i.homedirs, ...tpl]), i.local), subs: i.subs, newest };
+      const tf = hostTypedFirst();
+      return { order: filelabel.lookupOrder(filelabel.sortSpecs([...i.main, ...rest], tf), filelabel.sortSpecs([...i.homedirs, ...tpl], tf), i.local), subs: i.subs, newest };
     };
   } else {
     const name = pol.name;
@@ -3117,17 +3134,46 @@ function runningBooleans() {
 }
 
 /**
- * Expected (file contexts) and current labels of the groups' paths:
- * Map path → { expected, current } (types). matchpathcon per file kind, with
- * the policy's file_contexts unless it is the running one; stat for the
- * current label (missing files have none).
+ * What a policy's file contexts label paths of one kind (modeOf names: file,
+ * dir, fifo_file, …): Map path → context. The running policy asks
+ * matchpathcon; any other policy is looked up here (fcLists), because
+ * matchpathcon -f before libselinux 3 refuses a file whose types the running
+ * policy lacks ("line N has invalid context", RHEL 8). Paths with no label
+ * are left out.
  */
-async function denialLabels(groups, fc) {
+async function expectedContexts(pol, paths, mode) {
+  const out = new Map();
+  if (!pol || !paths.length || process.platform === 'win32') return out;
+  if (!pol.build && pol.active) {
+    // matchpathcon calls a fifo a pipe.
+    const r = await execFileP('matchpathcon', ['-m', mode === 'fifo_file' ? 'pipe' : mode, ...paths]);
+    for (const line of r.stdout.split('\n')) { const m = /^(.*)\t(\S+)$/.exec(line); if (m && m[2] !== '<<none>>') out.set(m[1], m[2]); }
+    return out;
+  }
+  const fl = fcLists(pol);
+  if (!fl) return out;
+  for (const p of paths) {
+    // Directories resolved as matchpathcon and restorecon do (/bin/rpm → /usr/bin/rpm), then the equivalences.
+    let looked = p;
+    try { if (p !== '/') looked = path.posix.join(fs.realpathSync(path.posix.dirname(p)), path.posix.basename(p)); } catch { /* no such directory */ }
+    const ms = filelabel.matches(fl.order, filelabel.applySubs(looked, fl.subs.local, fl.subs.dist), mode, 1);
+    if (ms.length && ms[0].context !== '<<none>>') out.set(p, ms[0].context);
+  }
+  return out;
+}
+
+/**
+ * Expected (file contexts) and current labels of the groups' paths:
+ * Map path → { expected, current } (types). The policy's file contexts per
+ * file kind (expectedContexts); stat for the current label (missing files
+ * have none).
+ */
+async function denialLabels(groups, pol) {
   const out = new Map();
   if (process.platform === 'win32') return out;
   const byMode = new Map();
   for (const g of groups) {
-    const mode = denials.FILE_MODES[g.tclass];
+    const mode = denials.FILE_MODES[g.tclass] && g.tclass;
     if (!mode || g.kind !== 'deny') continue;
     for (const p of g.paths) { if (!byMode.has(mode)) byMode.set(mode, new Set()); byMode.get(mode).add(p); }
   }
@@ -3135,12 +3181,9 @@ async function denialLabels(groups, fc) {
   for (const [mode, set] of byMode) {
     const paths = [...set];
     paths.forEach(p => all.add(p));
-    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', mode, ...paths]);
-    for (const line of r.stdout.split('\n')) {
-      const m = /^(.*)\t(\S+)$/.exec(line);
-      if (!m) continue;
-      const ctx = denials.parseContext(m[2]);
-      out.set(m[1], { expected: ctx ? ctx.type : null, current: null });
+    for (const [p, c] of await expectedContexts(pol, paths, mode)) {
+      const ctx = denials.parseContext(c);
+      out.set(p, { expected: ctx ? ctx.type : null, current: null });
     }
   }
   if (all.size) {
@@ -3319,13 +3362,12 @@ connection.onRequest('selinux/findInterfaces', async ({ domain, target, path: p,
   if (!target && p) {
     if (!p.startsWith('/')) return { error: 'A path must be absolute.' };
     if (process.platform === 'win32') return { error: 'Looking up a path needs a Linux host (use Remote-SSH); give the type instead.' };
-    const fc = !usingDevel && treeRoot ? treeFileContexts(lastBuild.get(treeRoot)) : null;
-    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', denials.FILE_MODES[tclass] || 'file', p]);
-    const m = /\t(\S+)\s*$/.exec(r.stdout);
-    const ctx = m && denials.parseContext(m[1]);
-    if (!ctx) return { error: `No file context gives ${p} a label${(r.stderr || '').trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''}.` };
+    const pols = denialPolicies();
+    const pol = (!usingDevel && pols.find(x => x.build)) || pols.find(x => x.active);
+    const ctx = pol && denials.parseContext((await expectedContexts(pol, [p], denials.FILE_MODES[tclass] ? tclass : 'file')).get(p) || '');
+    if (!ctx) return { error: `No file context gives ${p} a label.` };
     target = ctx.type;
-    resolved = { path: p, type: target, from: fc ? 'the tree\'s file contexts' : 'this host\'s file contexts' };
+    resolved = { path: p, type: target, from: pol.build ? 'the tree\'s file contexts' : 'this host\'s file contexts' };
   }
   if (!/^[A-Za-z_]\w*$/.test(target || '')) return { error: 'Give a type (e.g. etc_t) or an absolute path.' };
   const bin = await policyForRanking();
@@ -3525,14 +3567,13 @@ connection.onRequest('selinux/denialFix', async ({ domain, call, calls, rule, ne
  */
 const UNCONFINED_SOURCES = new Set(['unconfined_service_t', 'init_t', 'initrc_t', 'unconfined_t', 'kernel_t']);
 const GENERIC_ENTRY = new Set(['unconfined_service_t', 'initrc_t', 'unconfined_t']);
-async function denialTransitions(groups, fc, bin) {
+async function denialTransitions(groups, pol, bin) {
   const out = new Map();
   const want = groups.filter(g => g.kind === 'deny' && UNCONFINED_SOURCES.has(g.source) && (g.exes || []).some(e => e.startsWith('/')));
   if (!want.length || process.platform === 'win32') return out;
   const exes = [...new Set(want.map(g => g.exes.find(e => e.startsWith('/'))))];
   const labels = new Map();
-  const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', 'file', ...exes]);
-  for (const line of r.stdout.split('\n')) { const m = /^(.*)\t(\S+)$/.exec(line); if (m) labels.set(m[1], { expected: (denials.parseContext(m[2]) || {}).type || null, current: null }); }
+  for (const [p, c] of await expectedContexts(pol, exes, 'file')) labels.set(p, { expected: (denials.parseContext(c) || {}).type || null, current: null });
   const st = await execFileP('stat', ['-c', '%n\t%C', '--', ...exes]);
   for (const line of st.stdout.split('\n')) { const m = /^(.*)\t(\S+)$/.exec(line); if (m) { const e = labels.get(m[1]) || { expected: null }; e.current = (denials.parseContext(m[2]) || {}).type || null; labels.set(m[1], e); } }
   const types = [...new Set([...labels.values()].flatMap(e => [e.expected, e.current]).filter(Boolean))];
@@ -3609,7 +3650,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
         if (r.error) notes.push(`Policy query failed: ${r.error}`);
         else for (const x of r.results) te.set(x.id, x);
       }
-      labels = await denialLabels(groups, fcFile);
+      labels = await denialLabels(groups, pol);
       // Accesses type enforcement allows: a constraint (MCS/MLS, UBAC) may be what denied them.
       for (const g of groups) {
         const x = te.get(g.key);
@@ -3617,7 +3658,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
         const r = await policyQuery.request({ op: 'constraints', bin, s: g.scontext, t: g.tcontext, c: g.tclass, perms: g.perms });
         if (!r.error && r.failing && r.failing.length) x.constraints = r.failing;
       }
-      transitions = await denialTransitions(groups, fcFile, bin);
+      transitions = await denialTransitions(groups, pol, bin);
     }
   }
   const out = groups.map(g => {
@@ -3801,11 +3842,8 @@ connection.onRequest('selinux/loginCan', async ({ against, user, starts, target,
   let resolved = null;
   if (!target && p) {
     if (!p.startsWith('/')) return { error: 'A path must be absolute.' };
-    const fc = lp.pol.build ? (usingDevel ? moduleFileContexts() : treeFileContexts(lastBuild.get(treeRoot))) : lp.pol.fc;
-    const r = await execFileP('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', denials.FILE_MODES[tclass] || 'file', p]);
-    const m = /\t(\S+)\s*$/.exec(r.stdout);
-    const ctx = m && denials.parseContext(m[1]);
-    if (!ctx) return { error: `No file context gives ${p} a label${(r.stderr || '').trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''}.` };
+    const ctx = denials.parseContext((await expectedContexts(lp.pol, [p], denials.FILE_MODES[tclass] ? tclass : 'file')).get(p) || '');
+    if (!ctx) return { error: `No file context gives ${p} a label.` };
     target = ctx.type;
     resolved = { path: p, type: target };
   }

@@ -40,6 +40,9 @@ check(sorted.indexOf('/usr/.*') < sorted.indexOf('/usr/bin(/.*)?') && sorted.ind
   'sorted from general to specific: /usr/.* before /usr/bin(/.*)?, exact paths last', sorted);
 const same = F.parseSpecs('/a(/.*)?\tsystem_u:object_r:x_t:s0\n/a(/.*)?\t--\tsystem_u:object_r:y_t:s0\n/a(/.*)?\tsystem_u:object_r:z_t:s0\n');
 check(F.sortSpecs(same).map(s => s.type).join() === 'x_t,z_t,y_t', 'equally specific lines keep their order; one with a file kind sorts after');
+check(F.sortSpecs(same, true).map(s => s.type).join() === 'y_t,x_t,z_t', 'libsemanage 2.9 (RHEL 8): one with a file kind sorts first');
+check(F.typedFirstIn(F.sortSpecs(specs.concat(same))) === false && F.typedFirstIn(F.sortSpecs(specs.concat(same), true)) === true && F.typedFirstIn(specs.slice(0, 1)) === null,
+  'which way a file_contexts sorts equally specific lines: last, first, can\'t tell');
 
 /* ---------- lookup ---------- */
 

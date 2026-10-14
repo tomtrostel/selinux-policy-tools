@@ -36,8 +36,36 @@ function resolved(p) {
   return p;
 }
 
+/**
+ * A file matchpathcon -f will read. Before libselinux 3 it refuses lines
+ * whose types the running policy lacks (RHEL 8 with a CLIP build), so each
+ * type of the file is renamed to a distinct type of the running policy, in a
+ * copy (with its .subs_dist); back maps the answers' types to the real ones.
+ */
+function readableFc(fc) {
+  // libselinux 3 (RHEL 9 on) doesn't check, and the answers there are the real test.
+  const v = /libselinux-(\d+)/.exec(cp.spawnSync('rpm', ['-q', 'libselinux'], { encoding: 'utf8' }).stdout || '');
+  if (!v || Number(v[1]) >= 3) return { fc, back: null };
+  const host = cp.spawnSync('seinfo', ['-t'], { encoding: 'utf8', maxBuffer: 64 << 20 }).stdout.split('\n').map(l => l.trim()).filter(l => /^\w+$/.test(l));
+  const hostSet = new Set(host);
+  const specs = F.parseSpecs(readIf(fc));
+  const used = new Set(specs.map(s => s.type).filter(Boolean));
+  if ([...used].every(t => hostSet.has(t))) return { fc, back: null };
+  const spare = host.filter(t => !used.has(t));
+  const to = new Map(); const back = new Map();
+  for (const t of used) {
+    const h = hostSet.has(t) ? t : spare.shift();
+    to.set(t, h); back.set(h, t);
+  }
+  const out = `${fc}.hosttypes`;
+  fs.writeFileSync(out, F.renderSpecs(specs.map(s => (s.type ? { ...s, context: s.context.replace(/^([^:]*:[^:]*:)[^:]*/, `$1${to.get(s.type)}`) } : s))));
+  for (const n of ['subs', 'subs_dist']) { const t = readIf(`${fc}.${n}`); if (t != null) fs.writeFileSync(`${out}.${n}`, t); }
+  return { fc: out, back };
+}
+
 /** matchpathcon's answers for the resolved paths: path → context (null when it has none), per kind. */
-function matchpathcon(items, fc) {
+function matchpathcon(items, fcGiven) {
+  const { fc, back } = fcGiven ? readableFc(fcGiven) : { fc: null, back: null };
   const out = new Map();
   const byMode = new Map();
   for (const it of items) { if (!byMode.has(it.mode)) byMode.set(it.mode, []); byMode.get(it.mode).push(it.p); }
@@ -46,11 +74,16 @@ function matchpathcon(items, fc) {
       const chunk = ps.slice(i, i + 400);
       const real = new Map();
       for (const p of chunk) { const k = resolved(p); if (!real.has(k)) real.set(k, []); real.get(k).push(p); }
-      const r = cp.spawnSync('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', mode, ...real.keys()], { encoding: 'utf8', maxBuffer: 64 << 20 });
+      // matchpathcon calls a fifo a pipe; it silently ignores names it doesn't know.
+      const r = cp.spawnSync('matchpathcon', [...(fc ? ['-f', fc] : []), '-m', mode === 'fifo_file' ? 'pipe' : mode, ...real.keys()],{ encoding: 'utf8', maxBuffer: 64 << 20 });
+      // (RHEL 8 says symlink_realpath … failed for missing links; that's fine.)
+      const errs = r.stderr.split('\n').filter(l => l.trim() && !/symlink_realpath/.test(l));
+      if (errs.length) console.log(`     matchpathcon -m ${mode}: ${errs.slice(0, 3).join(' | ')}`);
       for (const p of chunk) out.set(`${mode}\t${p}`, null);
       for (const line of r.stdout.split('\n')) {
         const m = /^(.*)\t(\S+)$/.exec(line);
-        if (m) for (const p of real.get(m[1]) || []) out.set(`${mode}\t${p}`, m[2]);
+        const c = m && back ? m[2].replace(/^([^:]*:[^:]*:)([^:]*)/, (x, a, t) => a + (back.get(t) || t)) : m && m[2];
+        if (m) for (const p of real.get(m[1]) || []) out.set(`${mode}\t${p}`, c);
       }
     }
   }
@@ -119,9 +152,11 @@ function start(ws, initOptions = {}) {
   check(order.length > 5000, `running policy: ${order.length} file-context lines`);
   const items = samplePaths();
   compare(items, order, subs, null, 'running targeted policy');
-  // Its file_contexts is already sorted the way fc_sort.py sorts.
+  // Its file_contexts is already sorted the way fc_sort.py sorts, except that
+  // libsemanage 2.9 (RHEL 8) puts equally specific lines with a file kind first.
   const main = P('file_contexts');
-  check(F.sortSpecs(main).every((s, i) => s === main[i]), 'the installed file_contexts is in fc_sort order already');
+  const typedFirst = !!F.typedFirstIn(main);
+  check(F.sortSpecs(main, typedFirst).every((s, i) => s === main[i]), `the installed file_contexts is in fc_sort order already (lines with a file kind ${typedFirst ? 'first, as libsemanage 2.9 sorts' : 'last'} among equals)`);
 
   // 2. Over LSP, running policy.
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-filelabel-e2e-'));
@@ -195,7 +230,7 @@ function start(ws, initOptions = {}) {
     check(py.status === 0 && mine.length === theirs.length && firstDiff === -1, `sorted exactly as fc_sort.py (${mine.length} lines)`, { status: py.status, stderr: py.stderr, at: firstDiff, mine: mine[firstDiff], theirs: theirs[firstDiff] });
     // The file written for matchpathcon (denials, "can it …?") agrees with this module.
     const zz = path.join(work, 'tmp', 'zz_file_contexts');
-    const tl = F.lookupOrder(F.sortSpecs(rest), F.sortSpecs(F.splitHomeTemplates(specs)[0]));
+    const tl = F.lookupOrder(F.sortSpecs(rest, typedFirst), F.sortSpecs(F.splitHomeTemplates(specs)[0], typedFirst));
     check(fs.existsSync(zz), 'sorted file contexts written for matchpathcon');
     compare(items.filter((x, i) => i % 3 === 0), tl, { local: [], dist: F.parseSubs(readIf(path.join(treeDir, 'config', 'file_contexts.subs_dist'))) }, zz, 'CLIP build');
     const can = await b.conn.sendRequest('selinux/loginCan', { against: 'build', user: 'staff_u', starts: [{ role: 'staff_r', type: 'staff_t' }], path: '/usr/bin/rpmbuild', tclass: 'file', perms: ['execute'] });

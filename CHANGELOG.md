@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+**Fixed** (found by testing on Rocky 8.10 with RHEL 8's own tools)
+
+* On RHEL 8, file labels from a build or a standalone module could be
+  wrong. RHEL 8's `semodule` (libsemanage 2.9) puts the one of two equally
+  specific file-context lines limited to a file kind first; RHEL 9 and
+  refpolicy's `fc_sort.py` put it last. File Labels and the denial
+  assistant now follow the host's order.
+* On RHEL 8, the denial assistant, finding interfaces by path and "can it
+  …?" in Logins and Users found no label for files whose type the running
+  policy lacks (e.g. CLIP's `systemd_unit_t`): RHEL 8's `matchpathcon -f`
+  refuses such files. They now look labels up the way File Labels does.
+
 ## 0.16.0 (2026-10-14)
 
 **Added**

@@ -60,6 +60,8 @@ const edit = async (f, text) => {
   await sleep(400);
 };
 const save = (f) => { const b = nextBuild(); conn.sendNotification('textDocument/didSave', { textDocument: { uri: uri(f) } }); return b; };
+// Diagnostics come after the server's debounce and a reindex; on a busy host that is more than edit's 400 ms.
+const until = async (cond, ms = 5000) => { for (const end = Date.now() + ms; !cond() && Date.now() < end;) await sleep(100); };
 const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(needle));
 const hover = async (f, text, needle) => {
   const line = lineOf(text, needle);
@@ -104,6 +106,7 @@ const hover = async (f, text, needle) => {
   // semodule_link error on the same line is folded into it.
   t = ORIG[LOGGING] + "gen_require(`\n\ttype squid_t;\n')\nallow syslogd_t squid_t:process signal;\n";
   await edit(LOGGING, t);
+  await until(() => (diags[uri(LOGGING)] || []).some(x => x.code === 'link-missing'));
   const lm = (diags[uri(LOGGING)] || []).filter(x => x.code === 'link-missing');
   check(lm.length === 1 && lm[0].range.start.line === lineOf(t, 'type squid_t') && /only the squid module, which is off in modules\.conf, declares it/.test(lm[0].message),
     `static link check before building: ${lm.map(x => `${x.range.start.line + 1}: ${x.message.slice(0, 90)}`).join(' | ')}`, fmt(LOGGING));

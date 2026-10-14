@@ -1158,6 +1158,22 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   e2e tests' first argument; test/clip-args.js reads either CLIP's make
   arguments from its spec + Makefile),
   ~/sepol-test/mymodule (standalone module).
+- RHEL 8 test host: `ssh ricardo` (Rocky 8.10, key auth since 2026-10-14,
+  user ttrostel, sudo needs a password; checkpolicy 2.9, setools 4.3,
+  Python 3.6, libselinux/libsemanage 2.9). Extension copy at
+  ~/sepol-test/tools (same tar sync), CLIP RHEL8 clone at ~/sepol-test/clip8.
+  RHEL 8's nodejs is 10 (too old for vscode-jsonrpc's `?.`): tests run with
+  Node 20 from ~/opt/node, so prefix `export PATH=~/opt/node/bin:$PATH;`.
+  `node test/clip-all.js ~/sepol-test/clip8/packages/selinux-policy/selinux-policy`
+  passes there (multi-tree skips: no RHEL 10 tree).
+  RHEL 8 differences found (handled): libsemanage 2.9 sorts equally
+  specific fc lines with a file kind FIRST (filelabel `sortSpecs(specs,
+  typedFirst)`, `typedFirstIn()`; server `hostTypedFirst()` reads the
+  running file_contexts), and matchpathcon -f validates contexts against
+  the running policy ("line N has invalid context"; no option to stop it),
+  so the server's `expectedContexts(pol, paths, mode)` uses matchpathcon only
+  for the running policy and fcLists otherwise; matchpathcon -m wants
+  `pipe`, not `fifo_file` (unknown names are silently ignored).
 - Run on melody: `node test/build-e2e.js`, `test/build-tree-e2e.js`,
   `test/build-rhel-e2e.js`, `test/diff-e2e.js`, `test/preview-e2e.js`,
   `test/checks-e2e.js`, `test/module-checks-e2e.js`, `test/scratch-e2e.js`,

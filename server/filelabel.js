@@ -46,17 +46,37 @@ function specificity(spec) {
   return { meta, stem, len };
 }
 
-/** fc_sort.py / libsemanage order: less specific first. */
-function compareSpecs(a, b) {
+/**
+ * fc_sort.py / libsemanage order: less specific first. Of two equally
+ * specific lines, fc_sort.py and libsemanage 3 put the one with a file kind
+ * (--, -d, …) after the other; libsemanage 2.9 (RHEL 8) puts it first
+ * (typedFirst), and as the last match wins that can change a label.
+ */
+function compareSpecs(a, b, typedFirst = false) {
   if (a.meta !== b.meta) return a.meta ? -1 : 1;
   if (a.stem !== b.stem) return a.stem - b.stem;
   if (a.len !== b.len) return a.len - b.len;
-  if (!a.flag !== !b.flag) return a.flag ? 1 : -1;
+  if (!a.flag !== !b.flag) return (a.flag ? 1 : -1) * (typedFirst ? -1 : 1);
   return 0;
 }
 
 /** Sorted as semodule writes file_contexts (stable). */
-const sortSpecs = (specs) => specs.slice().sort(compareSpecs);
+const sortSpecs = (specs, typedFirst = false) => specs.slice().sort((a, b) => compareSpecs(a, b, typedFirst));
+
+/**
+ * Which way a semodule-written file_contexts sorts equally specific lines:
+ * true when the ones with a file kind come first (libsemanage 2.9), false
+ * when last, null when the file doesn't tell.
+ */
+function typedFirstIn(specs) {
+  let first = 0, last = 0;
+  for (let i = 1; i < specs.length; i++) {
+    const a = specs[i - 1], b = specs[i];
+    if (a.meta !== b.meta || a.stem !== b.stem || a.len !== b.len || !a.flag === !b.flag) continue;
+    if (a.flag) first++; else last++;
+  }
+  return first === last ? null : first > last;
+}
 
 /**
  * libselinux's lookup order for the files it loads (in this order: file_contexts,
@@ -177,6 +197,6 @@ function permLevels(perms) {
 const LEVEL_RANK = { relabel: 6, manage: 5, write: 4, enter: 3, execute: 2, read: 1, other: 0 };
 
 module.exports = {
-  FLAG_MODES, MODE_FLAGS, MODE_LABELS, parseSpecs, specificity, compareSpecs, sortSpecs, lookupOrder, renderSpecs,
+  FLAG_MODES, MODE_FLAGS, MODE_LABELS, parseSpecs, specificity, compareSpecs, sortSpecs, typedFirstIn, lookupOrder, renderSpecs,
   parseSubs, applySubs, specRegex, matches, splitHomeTemplates, modeOf, permLevels, LEVEL_RANK,
 };
