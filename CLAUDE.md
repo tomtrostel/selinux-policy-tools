@@ -1009,6 +1009,47 @@ so far covered by the e2e tests only.
    roles built are admin ones (staff_r picked); the login reach check
    reports staff logins landing in sysadm_t, which runs setfiles_t (true).
 
+12. **Levels and categories (MLS/MCS)** (done, unreleased; user 2026-10-13
+   asked about s0 levels and container categories; agreed order: 1 bypass
+   report + checks, 2 context compare, then 3 levels shown elsewhere with
+   setrans names, 4 range_transition in graph/File Labels, 5 container
+   isolation check, 6 setrans/category ranges in the user editor; 1 + 2
+   done). policy_query.py: `level_constraints()` (mlsconstrain with perms;
+   postfix expr), `eval_levels(expr, d)` three-valued (t1 vs a set known
+   from d + its attributes; levels, users, roles, t2 unknown → None; and/or
+   Kleene; `why` = the true t1 terms "in X" / "not in X"), op `levels`
+   {classes?} → kind mcs|mls (sensitivities > 1), counts, constraints,
+   groups {constraints (indexes), via, domains, classes: class → perms}
+   sorted most bypassed first, targetTerms (t2 set terms, e.g. RHEL packet
+   recv `not in mcs_constrained_type`); check kinds only-levels /
+   never-levels (`check_levels`: error without MLS, or when no level
+   constraint covers the classes). Op `context` (`context_check`): source
+   validity (user → role, role → type, level within the user's range;
+   missing level → s0 with a note), avc for the type rules, constraints
+   (now `everything=True` returns passing ones with ok). checks.js: `only|
+   never <domains> may ignore levels [on <class | {…}>]` (kinds
+   only-levels/never-levels; KEYWORDS + grammar + completion "ignore
+   levels"). Server: `selinux/levels` {against} (+ locs for via attributes
+   and domains of groups ≤ 80), `selinux/contextCheck` {against, source,
+   target, tclass, perms} (running booleans for the active installed
+   policy; build: first allowing rule per perm traced via explainRule);
+   checkMessage/lens/related info for x.levels (common classes first).
+   Fixed: plain `reaches … except through` never sent `through` to
+   policy_query (0.15.0 bug; login form was fine). Client showLevels
+   (media/levels.js: Can it access? form with examples and "Use its label"
+   via selinux/fileLabel, plain-word comparisons (OPERAND), Who ignores
+   levels groups with filter (keeps focus), Add check → addCheckLine()
+   appends to selinux.checks), `selinux.showLevels` (arg = prefill),
+   FEATURES entry, denial assistant "Check in Levels and Categories" on
+   constraint verdicts. Findings: RHEL 9 targeted 20 held (container,
+   svirt, sandbox), 879 pass 49 of 72; CLIP RHEL 9 build (upstream
+   `t1 != mcs_constrained_type` form, 110 constraints): no domain in
+   mcs_constrained_type (no container/virt modules), so MCS binds nothing;
+   CLIP RHEL 8 (policy/mcs written MLS-style, 228 constraints, exemptions
+   by mls* attributes): 200+ domains held, exempt ones grouped by
+   attribute. Told the user (possible protection loss RHEL 8 → 9). Tests: test/levels-test.js (npm test),
+   test/levels-e2e.js (melody; [tree]).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1176,6 +1217,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/packaging.js`: RPM spec and Makefile for standalone modules.
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
+- `media/levels.js`: Levels and Categories webview (context check, who
+  ignores levels); the analysis is in policy_query.py (`levels`, `context`).
 - `server/wrapper.js`: wrapped-programs module (model, render, read back,
   validate, checks, setup commands); `media/wrapper.js` its webview.
 - `server/filelabel.js`: file-context parsing, fc_sort order, libselinux
@@ -1264,6 +1307,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/levels-test.js` (in `npm test`) and `test/levels-e2e.js`
+  (`npm run test:levels-e2e`, melody; optional tree arg, default CLIP).
 - `test/wrapper-test.js` (in `npm test`) and `test/wrapper-e2e.js`
   (`npm run test:wrapper-e2e`, melody; `[tree [spec [variant]]]`).
 - `test/filelabel-test.js` (in `npm test`) and `test/filelabel-e2e.js`

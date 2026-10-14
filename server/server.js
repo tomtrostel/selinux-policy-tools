@@ -2388,7 +2388,7 @@ async function runChecks() {
   } else if (parsed.checks.length) {
     const isLogin = (c) => /^login-|-login$/.test(c.kind);
     const policyChecks = parsed.checks.filter(c => !isLogin(c));
-    const r = policyChecks.length ? await policyQuery.request({ op: 'check', bin: model.bin, checks: policyChecks.map(c => ({ id: c.id, kind: c.kind, sources: c.sources, targets: c.targets, classes: c.classes, perms: c.perms, except: c.except, weight: c.weight })) }) : { results: [] };
+    const r = policyChecks.length ? await policyQuery.request({ op: 'check', bin: model.bin, checks: policyChecks.map(c => ({ id: c.id, kind: c.kind, sources: c.sources, targets: c.targets, classes: c.classes, perms: c.perms, except: c.except, weight: c.weight, through: c.through })) }) : { results: [] };
     if (r.error) checksState.note = `checks failed: ${r.error}`;
     else {
       // Login checks need the seusers and contexts files that go with the policy: evaluated here.
@@ -2538,6 +2538,12 @@ function checksDiagnostics() {
         if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${v.holder} ${users ? 'has roles' : 'may run'} ${v.items.join(', ')}` });
       }
     }
+    for (const g of x.levels || []) {
+      for (const dom of g.domains.slice(0, 6)) {
+        const loc = sourceLocation(dom, ['type']);
+        if (loc) rel.push({ location: { uri: toUri(loc.p), range: range(loc.l, loc.c, loc.len) }, message: `${dom}: ${g.via.join('; ') || 'passes them'}` });
+      }
+    }
     for (const v of (x.login || []).slice(0, 4)) {
       rel.push({ location: { uri: toUri(v.p), range: range(v.l, 0, 1) }, message: `seusers: ${v.login === v.user ? v.login : `${v.via === 'default' && v.login !== '__default__' ? '__default__' : v.login} → ${v.user}`}` });
       for (const step of v.path || []) {
@@ -2592,6 +2598,16 @@ function checkMessage(c, x) {
     const route = (v) => (v.path && v.path.length ? `: ${[v.path[0].from, ...v.path.map(s => s.to)].join(' → ')}` : ' (where it logs in)');
     if (c.kind === 'login-reaches') return list.map(v => `${who(v)} reaches ${v.domain}${c.through ? ` without going through ${names(c.through)}` : ''}${route(v)}`).join('; ') + more;
     return list.map(v => `${who(v)} may ${c.perms === '*' ? 'access' : c.permsLabel} ${v.target} as ${v.domain}${route(v)}`).join('; ') + more;
+  }
+  if (x.levels) {
+    const ds = x.levels.flatMap(g => g.domains);
+    const via = [...new Set(x.levels.flatMap(g => g.via))];
+    // The common classes first: socket families sort before file alphabetically.
+    const COMMON = ['file', 'dir', 'process', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file', 'key', 'shm', 'sem', 'msgq', 'unix_stream_socket', 'tcp_socket', 'udp_socket'];
+    const rank = (k) => (COMMON.includes(k) ? COMMON.indexOf(k) : COMMON.length);
+    const classes = [...new Set(x.levels.flatMap(g => Object.keys(g.classes)))].sort((p, q) => rank(p) - rank(q) || p.localeCompare(q));
+    const who = c.kind === 'only-levels' ? `${x.count} other domain${x.count > 1 ? 's' : ''} (${ds.slice(0, 6).join(', ')}${x.count > 6 ? ', …' : ''})` : ds.slice(0, 8).join(', ') + (x.count > 8 ? ', …' : '');
+    return `${who} ${x.count > 1 ? 'pass' : 'passes'} level constraints whatever the levels${via.length ? ` (${via.join('; ')})` : ''}, on ${classes.slice(0, 8).join(', ')}${classes.length > 8 ? ` and ${classes.length - 8} more classes` : ''}.`;
   }
   if (x.rbac) {
     const run = c.kind.endsWith('-run');
@@ -2654,7 +2670,7 @@ function checksCompletion(lineText) {
     const cfg = loginConfig({ build: true });
     for (const x of cfg ? logins.parseSeusers(cfg.read(cfg.seusers)) : []) { const n = x.group ? `%${x.login}` : x.login; if (n.startsWith(prefix)) items.push({ label: n, kind: CompletionItemKind.User, detail: `seusers → ${x.user}` }); }
   }
-  if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any', 'run', 'use', 'log']) if (k.startsWith(prefix)) items.push({ label: k === 'log' ? 'log in' : k, insertText: k === 'log' ? 'log in' : k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : k === 'run' ? 'roles: may run <domains>' : k === 'use' ? 'users: may use <roles>' : k === 'log' ? 'users: only|never <users> may log in' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
+  if (/\bmay\s+[A-Za-z]*$/.test(lineText)) for (const k of ['read', 'write', 'execute', 'any', 'run', 'use', 'log', 'ignore']) if (k.startsWith(prefix)) items.push({ label: k === 'log' ? 'log in' : k === 'ignore' ? 'ignore levels' : k, insertText: k === 'log' ? 'log in' : k === 'ignore' ? 'ignore levels' : k, kind: CompletionItemKind.Keyword, detail: k === 'any' ? 'any permission' : k === 'run' ? 'roles: may run <domains>' : k === 'use' ? 'users: may use <roles>' : k === 'log' ? 'users: only|never <users> may log in' : k === 'ignore' ? 'MLS/MCS: domains that pass level constraints whatever the levels' : (checksLib.PERM_GROUPS[k] || []).join(' ') });
   if (/^\s*(only|never|require)\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText) && !/\b(may|reaches|flows|login)\b/.test(lineText)) for (const k of ['may', 'reaches', 'flows']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
   if (/\bflows\s+[A-Za-z]*$/.test(lineText) && 'to'.startsWith(prefix)) items.push({ label: 'to', kind: CompletionItemKind.Keyword });
   if (/\bflows\s+to\b[^#]*[A-Za-z0-9_,]\s+[A-Za-z]*$/.test(lineText)) {
@@ -2686,6 +2702,7 @@ connection.onCodeLens(({ textDocument }) => {
     else if (c.kind === 'reaches') title = `✗ reachable in ${x.path.length} step${x.path.length > 1 ? 's' : ''}`;
     else if (c.kind === 'require') title = `✗ ${x.count} missing`;
     else if (x.login) title = `✗ ${x.count} login${x.count > 1 ? 's violate' : ' violates'} it`;
+    else if (x.levels) title = `✗ ${x.count} domain${x.count > 1 ? 's ignore' : ' ignores'} levels`;
     else if (x.rbac) title = `✗ ${x.count} ${c.kind.endsWith('-run') ? 'role' : 'user'}${x.count > 1 ? 's violate' : ' violates'} it`;
     else title = `✗ violated by ${x.domains} domain${x.domains > 1 ? 's' : ''} (${x.count} rule${x.count > 1 ? 's' : ''})`;
     return { range: lineRange(c.line, ''), command: { title, command: '' } };
@@ -3813,6 +3830,57 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
   for (const n of new Set([r.type, ...r.attrs, ...r.entrypointOf.map(d => d.domain)])) { const l = sourceLocation(n, ['type', 'attribute']); if (l) locs[n] = l; }
   delete r.id;
   return { ...r, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build }, locs, traceable: !!lp.pol.build };
+});
+
+/* ---------------- levels (MLS / MCS) ---------------- */
+
+/** Who ignores levels: domains grouped by the level constraints they pass whatever the levels. */
+connection.onRequest('selinux/levels', async ({ against } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  if (lp.error) return { policies: lp.policies, error: lp.error };
+  const policy = { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build };
+  const r = await policyQuery.request({ op: 'levels', bin: lp.bin });
+  if (r.error) return { policies: lp.policies, policy, error: `Policy query failed: ${r.error}` };
+  delete r.id;
+  // Source locations: attributes named in the terms, and the domains of small groups.
+  const locs = {};
+  const names = new Set();
+  for (const g of r.groups) {
+    for (const v of g.via) for (const n of v.match(/[A-Za-z_]\w*/g) || []) if (n !== 'in' && n !== 'not') names.add(n);
+    if (g.domains.length <= 80) g.domains.forEach(d => names.add(d));
+  }
+  for (const t of r.targetTerms) for (const n of t.term.match(/[A-Za-z_]\w*/g) || []) if (n !== 'in' && n !== 'not') names.add(n);
+  for (const n of names) { const l = sourceLocation(n, ['type', 'attribute']); if (l) locs[n] = l; }
+  return { ...r, policies: lp.policies, policy, locs, traceable: !!lp.pol.build };
+});
+
+/** May a process with one context do something to an object with another: type rules, then constraints. */
+connection.onRequest('selinux/contextCheck', async ({ against, source, target, tclass, perms } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  if (lp.error) return { policies: lp.policies, error: lp.error };
+  const policy = { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build };
+  const ok = (s) => typeof s === 'string' && /^[\w.]+:[\w.]+:[\w.]+(:[\w.:,\- ]+)?$/.test(s.trim());
+  if (!ok(source) || !ok(target)) return { policies: lp.policies, policy, error: 'Give both contexts as user:role:type:level, e.g. system_u:system_r:container_t:s0:c1,c2.' };
+  if (!/^\w+$/.test(tclass || '')) return { policies: lp.policies, policy, error: 'Pick an object class.' };
+  const ps = (Array.isArray(perms) ? perms : String(perms || '').split(/[\s,{}]+/)).filter(Boolean);
+  if (!ps.length || ps.some(x => !/^\w+$/.test(x))) return { policies: lp.policies, policy, error: 'Give one or more permissions, e.g. read open.' };
+  const bools = lp.pol.active ? runningBooleans() : {};
+  const r = await policyQuery.request({ op: 'context', bin: lp.bin, s: source.trim(), t: target.trim(), c: tclass, perms: ps, bools });
+  if (r.error) return { policies: lp.policies, policy, error: /^\w+Error: /.test(r.error) ? `Policy query failed: ${r.error}` : r.error };
+  delete r.id;
+  // Where the allowing rules come from (build only): the first rule per permission.
+  const side = lp.pol.build ? await currentSide() : null;
+  if (side) {
+    for (const x of Object.values(r.te || {})) {
+      for (const rule of (x.rules || []).slice(0, 1)) {
+        try { const e = explain.explainRule(rule, rule.perms, side, 1); if (e.origins && e.origins.length) rule.origin = e.origins[0]; } catch { /* no trace */ }
+      }
+    }
+    explain.releaseTexts();
+  }
+  return { ...r, perms: ps, policies: lp.policies, policy, booleans: lp.pol.active ? 'running' : 'defaults' };
 });
 
 /* ---------------- wrapped programs ---------------- */

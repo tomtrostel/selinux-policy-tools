@@ -145,6 +145,8 @@
       fixBox(g),
       h('div', { class: 'detail' }, v.detail),
       fixRows.length ? h('div', { class: 'sub' }, 'Fix') : null, fixRows,
+      v.verdict === 'constraint' && g.scontext && g.tcontext ? h('div', { class: 'cmd' }, h('button', { title: 'Open these two contexts in Levels and Categories: each constraint\'s comparisons, and what to change to pass them',
+        onclick: () => vscode.postMessage({ cmd: 'levels', state: { source: g.scontext, target: g.tcontext, tclass: g.tclass, perms: (g.perms || []).join(' ') } }) }, 'Check in Levels and Categories')) : null,
       v.rules && v.rules.length ? [h('div', { class: 'sub' }, 'Allowed by'), h('pre', { class: 'rules' }, v.rules.map(ruleText).join('\n'))] : null,
       suggestions(g),
       v.needed ? [h('div', { class: 'sub', title: 'What the denial asks for, written as one raw rule. Prefer an interface of the module that owns the target type' }, 'Access needed'), h('pre', { class: 'rules' }, v.needed)] : null,

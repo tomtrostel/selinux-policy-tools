@@ -21,6 +21,9 @@
  *   never login <logins> may <perms> <targets>[:<classes>]
  *                                                      … and what they may do there
  *   never login <logins> maps to <users>               the SELinux user seusers gives a login
+ *   only|never <domains> may ignore levels [on <classes>]
+ *                                                      domains that pass MLS/MCS constraints whatever
+ *                                                      the levels (MCS: not in mcs_constrained_type)
  *
  * logins: Linux login names (a name without a line of its own gets __default__'s), %group,
  * __default__, or '*' (every seusers line).
@@ -37,7 +40,7 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps', 'ignore', 'levels', 'on'];
 
 /** Tokens with columns: words (incl. '*' and %group), braces, ':' and ','. */
 function tokens(line) {
@@ -170,6 +173,24 @@ function parseChecks(text) {
     }
     if (verb !== 'may') { err(`Expected 'may', 'reaches' or 'flows to'`); return; }
     i++;
+    // Levels: `only|never <domains> may ignore levels [on <classes>]`: the domains that pass
+    // MLS/MCS constraints whatever the levels (e.g. not in mcs_constrained_type).
+    if (tok[i] && tok[i].v === 'ignore') {
+      if (kind === 'require') { err(`'may ignore levels' works with 'only' and 'never'`); return; }
+      i++;
+      if (!tok[i] || tok[i].v !== 'levels') { err(`Expected 'levels' (never container_t may ignore levels)`); return; }
+      i++;
+      let classes = [];
+      if (tok[i] && tok[i].v === 'on') {
+        i++;
+        const cl = set();
+        if (!cl || !cl.length) { err(`Expected a class or { class ... } after 'on'`); return; }
+        classes = cl;
+      }
+      if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+      checks.push({ id: checks.length, line: l, kind: `${kind}-levels`, sources, classes, text: raw.trim() });
+      return;
+    }
     // Users: `only|never <users> may log in` (the SELinux users seusers maps logins to).
     if (tok[i] && tok[i].v === 'log') {
       if (kind === 'require') { err(`'may log in' works with 'only' and 'never'`); return; }

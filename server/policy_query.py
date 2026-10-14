@@ -445,6 +445,8 @@ class Index:
             kind = c["kind"]
             if kind.endswith("-run") or kind.endswith("-use"):
                 return self.check_rbac(kind, c["sources"], c["targets"])
+            if kind in ("only-levels", "never-levels"):
+                return self.check_levels(kind, c["sources"], set(c.get("classes") or []))
             if kind == "reaches":
                 srcs, tgts = self.names(c["sources"]), self.names(c["targets"])
                 p = self.transition_path(srcs, tgts, avoid=frozenset(self.names(c.get("through") or [])) - srcs - tgts)
@@ -571,9 +573,64 @@ class Index:
 
     OPERANDS = {"u1", "u2", "u3", "r1", "r2", "r3", "t1", "t2", "t3", "l1", "l2", "h1", "h2"}
 
-    def constraints(self, scontext, tcontext, cls, perms):
+    def context_check(self, scontext, tcontext, cls, perms, states):
+        """May a process with scontext do perms on an object with tcontext? The source context's
+        validity (user → role → type, level within the user's range), the type rules (avc), and
+        every constraint on those permissions with its comparisons."""
+        p = self.policy
+        problems = []
+        s, t = scontext.strip().split(":"), tcontext.strip().split(":")
+        for parts, what in ((s, "source"), (t, "target")):
+            if len(parts) < 3:
+                return {"error": "The %s context needs at least user:role:type (and a level, e.g. :s0:c1,c2)." % what}
+        if p.mls:
+            if len(s) == 3:
+                s.append("s0")
+                problems.append({"kind": "level", "text": "No level given for the source; s0 assumed."})
+            if len(t) == 3:
+                t.append("s0")
+                problems.append({"kind": "level", "text": "No level given for the target; s0 assumed."})
+        if cls not in self.classperms:
+            return {"error": "%s is not a class in this policy." % cls}
+        bad = [x for x in perms if x not in self.classperms[cls]]
+        if bad:
+            return {"error": "%s %s not a permission of %s." % (" ".join(bad), "is" if len(bad) == 1 else "are", cls)}
+        st, tt = self.aliases.get(s[2], s[2]), self.aliases.get(t[2], t[2])
+        s[2], t[2] = st, tt
+        for n, what in ((st, "source"), (tt, "target")):
+            if n not in self.attrs:
+                return {"error": "%s (the %s type) is not a type in this policy." % (n, what)}
+        u, r = s[0], s[1]
+        if u not in self.user_roles:
+            problems.append({"kind": "user", "text": "There is no SELinux user %s." % u})
+        elif r not in self.user_roles[u]:
+            problems.append({"kind": "role", "text": "%s may not use %s (its roles: %s)." % (u, r, " ".join(sorted(self.user_roles[u])))})
+        if r not in self.role_types:
+            problems.append({"kind": "role", "text": "There is no role %s." % r})
+        elif r != "object_r" and st not in self.role_types[r]:
+            problems.append({"kind": "role", "text": "%s isn't authorized for %s, so no process can run with that context." % (r, st)})
+        levels = {}
+        if p.mls:
+            try:
+                sr = p.lookup_range(":".join(s[3:]))
+                tr = p.lookup_range(":".join(t[3:]))
+                levels = {"source": {"low": str(sr.low), "high": str(sr.high)}, "target": {"low": str(tr.low), "high": str(tr.high)}}
+                if u in self.user_roles:
+                    ur = p.lookup_user(u).mls_range
+                    levels["user"] = str(ur)
+                    if not (sr.low >= ur.low and ur.high >= sr.high):
+                        problems.append({"kind": "range", "text": "%s is outside %s's range %s, so no process of %s gets it." % (":".join(s[3:]), u, ur, u)})
+            except Exception as e:
+                return {"error": "Not a valid level or range for this policy: %s" % e}
+        te = self.avc([{"s": st, "t": tt, "c": cls, "perms": list(perms)}], states)[0]
+        cons = self.constraints(":".join(s), ":".join(t), cls, set(perms), everything=True)
+        return {"problems": problems, "te": te.get("perms", {}), "permissiveDomain": te.get("permissiveDomain", False),
+                "constraints": cons, "levels": levels, "mls": bool(p.mls)}
+
+    def constraints(self, scontext, tcontext, cls, perms, everything=False):
         """The constraints for cls on any of perms that the two contexts fail, each with the
-        comparisons it is made of (operands' values and whether each held)."""
+        comparisons it is made of (operands' values and whether each held). everything: the
+        ones they pass too, each with ok."""
         p = self.policy
         def ctx(raw):
             parts = raw.split(":")
@@ -596,8 +653,8 @@ class Index:
                 continue
             leaves = []
             ok = self.eval_constraint(c.expression, vals, leaves)
-            if not ok:
-                failing.append({"kind": str(c.ruletype), "perms": hit, "text": str(c.expression), "leaves": leaves})
+            if not ok or everything:
+                failing.append({"kind": str(c.ruletype), "perms": hit, "text": str(c.expression), "leaves": leaves, "ok": bool(ok)})
         return failing
 
     def eval_constraint(self, expr, vals, leaves):
@@ -647,6 +704,127 @@ class Index:
                     leaves.append({"text": "%s %s %s" % (a[1], s, b[1]), "ok": res, "a": str(av), "b": str(bv)})
                 stack.append(("bool", res))
         return stack[-1][1] if stack else True
+
+    # ----- levels (MLS / MCS): which domains pass level constraints whatever the levels -----
+
+    def level_constraints(self):
+        """The policy's mlsconstrain statements: class, permissions, text and postfix expression."""
+        if getattr(self, "_lc", None) is None:
+            out = []
+            if self.policy.mls:
+                for c in self.policy.constraints():
+                    if not c.ruletype.name.startswith("mls") or not hasattr(c, "perms"):
+                        continue
+                    out.append({"cls": str(c.tclass), "perms": sorted(str(x) for x in c.perms),
+                                "text": str(c.expression), "expr": list(c.expression)})
+            self._lc = out
+        return self._lc
+
+    @staticmethod
+    def _set_text(names):
+        names = sorted(names)
+        return names[0] if len(names) == 1 else "{ %s }" % " ".join(names[:6]) + (" …" if len(names) > 6 else "")
+
+    def eval_levels(self, expr, d):
+        """Three-valued evaluation of a constraint for source domain d: the source type is known,
+        everything else (levels, users, roles, the target) is not. Returns (True | False | None,
+        the source-type terms that make it true)."""
+        dn = set([d] + self.attrs.get(d, []))
+        stack = []
+        for tok in expr:
+            if isinstance(tok, (set, frozenset)):
+                stack.append(("set", {str(x) for x in tok}))
+                continue
+            s = str(tok)
+            if s in self.OPERANDS:
+                stack.append(("op", s))
+            elif s in ("and", "or"):
+                (bv, bw), (av, aw) = stack.pop()[1], stack.pop()[1]
+                if s == "and":
+                    v = False if av is False or bv is False else (True if av and bv else None)
+                    w = aw + bw if v else []
+                else:
+                    v = True if av is True or bv is True else (False if av is False and bv is False else None)
+                    w = (aw if av is True else []) + (bw if bv is True else []) if v else []
+                stack.append(("bool", (v, w)))
+            elif s == "not":
+                av, aw = stack.pop()[1]
+                stack.append(("bool", (None if av is None else not av, [])))
+            else:
+                b, a = stack.pop(), stack.pop()
+                if a[1] == "t1" and b[0] == "set":
+                    member = bool(dn & b[1])
+                    v = member if s == "==" else not member
+                    w = ["%s %s" % ("in" if s == "==" else "not in", self._set_text(b[1]))] if v else []
+                    stack.append(("bool", (v, w)))
+                else:
+                    stack.append(("bool", (None, [])))
+        return stack[-1][1] if stack else (True, [])
+
+    def levels(self, classes=None, domains=None):
+        """Domains grouped by the level constraints they pass whatever the levels (and why)."""
+        p = self.policy
+        lcs = [c for c in self.level_constraints() if not classes or c["cls"] in classes]
+        groups = {}
+        for d in sorted(self.domains if domains is None else domains):
+            sig, why = [], set()
+            for i, c in enumerate(lcs):
+                v, w = self.eval_levels(c["expr"], d)
+                if v is True:
+                    sig.append(i)
+                    why.update(w)
+            groups.setdefault((tuple(sig), tuple(sorted(why))), []).append(d)
+        # Terms on the target type: objects any domain may use whatever their level (MLS mlstrustedobject).
+        target_terms = {}
+        for c in lcs:
+            stack = []
+            for tok in c["expr"]:
+                if isinstance(tok, (set, frozenset)):
+                    stack.append({str(x) for x in tok})
+                elif str(tok) in self.OPERANDS:
+                    stack.append(str(tok))
+                elif str(tok) in ("==", "!=") and len(stack) >= 2 and stack[-2] == "t2" and isinstance(stack[-1], set):
+                    names = stack.pop()
+                    stack.pop()
+                    k = "%s %s" % ("in" if str(tok) == "==" else "not in", self._set_text(names))
+                    target_terms.setdefault(k, {"term": k, "constraints": 0, "types": len(set().union(*[set(self.expand(n)) for n in names]))})
+                    target_terms[k]["constraints"] += 1
+                    stack.append(None)
+                elif str(tok) == "not":
+                    pass
+                else:
+                    if len(stack) >= 2:
+                        stack.pop()
+                        stack.pop()
+                    stack.append(None)
+        out = []
+        for (sig, why), doms in groups.items():
+            per = {}
+            for i in sig:
+                per.setdefault(lcs[i]["cls"], set()).update(lcs[i]["perms"])
+            out.append({"constraints": list(sig), "via": list(why), "domains": doms,
+                        "classes": {k: sorted(v) for k, v in sorted(per.items())}})
+        out.sort(key=lambda g: (-len(g["constraints"]), -len(g["domains"])))
+        try:
+            sens, cats = len(list(p.sensitivities())), len(list(p.categories()))
+        except Exception:
+            sens, cats = 0, 0
+        return {"mls": bool(p.mls), "kind": ("mls" if sens > 1 else "mcs") if p.mls else None, "sensitivities": sens, "categories": cats,
+                "constraints": [{"cls": c["cls"], "perms": c["perms"], "text": c["text"]} for c in lcs],
+                "groups": out, "targetTerms": sorted(target_terms.values(), key=lambda x: -x["constraints"]),
+                "domains": sum(len(g["domains"]) for g in out)}
+
+    def check_levels(self, kind, sources, classes):
+        if not self.policy.mls:
+            return {"ok": False, "error": "this policy has no levels (built without MLS or MCS)"}
+        if classes and not any(c["cls"] in classes for c in self.level_constraints()):
+            return {"ok": False, "error": "no level constraint covers %s" % " ".join(sorted(classes))}
+        who = self.names(sources)
+        cand = (self.domains - who) if kind == "only-levels" else (who & self.domains)
+        res = self.levels(classes, cand)
+        bad = [g for g in res["groups"] if g["constraints"]]
+        return {"ok": not bad, "count": sum(len(g["domains"]) for g in bad),
+                "levels": [{"domains": g["domains"][:60], "count": len(g["domains"]), "via": g["via"], "classes": g["classes"]} for g in bad[:20]]}
 
     def entrypoint_domains(self, types):
         """For each file type: the domains it is an entrypoint of (a program with that label starts them),
@@ -769,6 +947,10 @@ def main():
                 resp.update(transitions=idx.transitions(req["name"], req.get("dir", "out")))
             elif req.get("op") == "constraints":
                 resp.update(failing=idx.constraints(req["s"], req["t"], req["c"], set(req.get("perms") or [])))
+            elif req.get("op") == "levels":
+                resp.update(idx.levels(set(req.get("classes") or []) or None))
+            elif req.get("op") == "context":
+                resp.update(idx.context_check(req["s"], req["t"], req["c"], req.get("perms") or [], req.get("bools") or {}))
             elif req.get("op") == "entrypoints":
                 resp.update(domains=idx.entrypoint_domains(req.get("types") or []))
             elif req.get("op") == "fileinfo":

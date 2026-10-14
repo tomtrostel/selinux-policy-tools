@@ -688,6 +688,54 @@ use the same order (earlier versions read the build's unsorted `.fc`
 output, where a general line could win: CLIP's `/usr/bin/rpmbuild` came out
 `usr_t` instead of `bin_t`).
 
+**Levels and Categories** (*SELinux: Levels and Categories…*; Linux)
+works on MLS and MCS policies. Every context ends in a level: `s0` plus
+optional categories (`s0:c1,c2`), or a range `low-high` for a process.
+With MCS, the RHEL default, there is only `s0`, and categories keep
+containers and virtual machines apart. Each one gets a random pair, and a
+process may use an object only if its clearance covers all of the object's
+categories. That rule binds only the domains in `mcs_constrained_type`.
+MLS adds ordered sensitivities (`s0`–`s15`), with no read up and no write
+down. "Rules from" picks the policy: an installed one or the last build.
+
+* **Can it access?** Give a process context, an object context (or a
+  file path, to use the label it gets), a class and permissions. The
+  answer:
+  * says whether the source context is valid: the user may have the role,
+    the role the type, and the level is within the user's range;
+  * gives the type rules for each permission, with the allowing rule
+    traced to its source for a build, or the boolean it needs;
+  * lists each constraint on those permissions and its comparisons in
+    plain words, e.g. "the process's clearance (s0:c1.c2) covers the
+    object's high level (s0:c1,c3)" ✗.
+
+  The examples show two containers with different categories, the same
+  container, and an administrator with all categories. For a denial
+  caused by a constraint, the denial assistant's *Check in Levels and
+  Categories* opens it here, filled in.
+* **Who ignores levels** works from the policy's compiled `mlsconstrain`
+  statements, without assuming attribute names. A domain passes a
+  constraint whatever the levels when the constraint holds once its own
+  type is known, with levels, roles and the target left open. The report:
+  * groups the domains that way, saying why (e.g. "not in
+    mcs_constrained_type", or "in mlsfileread" under MLS) and on which
+    classes and permissions;
+  * links each domain and the deciding attribute to their declarations;
+  * offers *Add check* to keep the domains held to every constraint that
+    way (`never … may ignore levels` in `selinux.checks`).
+
+  On RHEL 9's targeted policy, 20 domains (containers, sVirt and
+  sandboxes) are held to every level constraint. The other 879 pass 49 of
+  the 72 constraints whatever the levels, because MCS doesn't apply to
+  them. CLIP's two branches differ:
+  * **RHEL 8** writes its MCS constraints the MLS way. They bind every
+    domain, and only exemption attributes (`mlsfileread`, `mlsfilewrite`,
+    …) let a domain through. 200+ domains are held to all of them, and
+    the report lists the exempt ones by attribute.
+  * **RHEL 9** uses upstream refpolicy's `mcs_constrained_type` form, and
+    no domain in the build is in it. So categories restrict none of its
+    domains.
+
 **Logins and Users** (*SELinux: Logins and Users…*, or the person icon in
 the Policy Explorer; Linux)
 
@@ -1047,6 +1095,14 @@ require syslogd_t may { append create } var_log_t:file
 
 * `only|never <roles> may run <types>`: which roles may run a domain;
   `only|never <users> may use <roles>`: which SELinux users may have a role.
+* `only|never <domains> may ignore levels [on <classes>]` (MLS/MCS): the
+  domains that pass the policy's level constraints whatever the levels, as
+  in *Levels and Categories*. With MCS, `never container_t svirt_t may
+  ignore levels` fails if one of them drops out of `mcs_constrained_type`,
+  so categories would no longer keep containers apart. With MLS, `only
+  …` lists who holds an exemption attribute such as `mlsfileread`. A
+  failure names the domains and the term that exempts them, with their
+  declarations as related locations.
 * Logins (with the seusers and contexts files of the checked policy: the
   tree's `config/appconfig-<TYPE>`, or this host's for a standalone module):
   `only|never <users> may log in` (the SELinux users any seusers line maps
@@ -1193,6 +1249,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Levels and Categories (`npm run test:levels-e2e`, melody): on the
+  running targeted policy, a container with categories c1,c2 is refused a
+  file of another container (c1,c3) by `h1 dom h2` although the type rules
+  allow it, and allowed its own; invalid contexts (role, range) and bad
+  input are explained. On CLIP builds (RHEL 9 and RHEL 8), the
+  `may ignore levels` checks fail, hold and report errors as expected, a
+  rule is traced to its source, and `reaches … except through` takes the
+  other path. The form and report are tested with a fake DOM
+  (`test/levels-test.js`).
 * Wrapped programs (`npm run test:wrapper-e2e`, melody, on copies of the
   CLIP, RHEL 9 and RHEL 10 trees): a chroot on the host; a program with a
   domain of its own and one without (`bin_t`) looked up (label, domain,

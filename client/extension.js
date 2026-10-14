@@ -19,6 +19,9 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 #   require <names> may <perms> <targets>[:<classes>]   must stay allowed
 #   only|never <roles> may run <types>                  which roles may run a domain
 #   only|never <users> may use <roles>                  which SELinux users may have a role
+#   only|never <domains> may ignore levels [on <classes>]
+#                                                       MLS/MCS: domains that pass level constraints
+#                                                       whatever the levels (never container_t may ignore levels)
 #
 # names: types or attributes (attributes stand for all their member types).
 # perms: read | write | execute | any (groups), a permission, or { perm perm ... }
@@ -278,6 +281,7 @@ function activate(context) {
       if (denialPanel) denialPanel.webview.postMessage({ cmd: 'built', ok: p.ok, module: p.module });
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      if (levelsPanel) levelsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
 
@@ -438,6 +442,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.showFeatures', () => showFeatures()),
     vscode.commands.registerCommand('selinux.newWrapper', () => showWrapperEditor(context)),
     vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
+    vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
       // From the explorer or an editor (a Uri), a path given by a link, the selected text, or asked for.
       let p = arg instanceof vscode.Uri ? arg.fsPath : typeof arg === 'string' ? arg : null;
@@ -1781,6 +1786,8 @@ function showDenials(context, text, against = null) {
       } else if (m.cmd === 'copy') {
         await vscode.env.clipboard.writeText(m.text);
         vscode.window.setStatusBarMessage('Copied', 2000);
+      } else if (m.cmd === 'levels') {
+        showLevels(context, m.state);
       } else if (m.cmd === 'newService') {
         showServiceEditor(context, null, { exec: m.exec });
       } else if (m.cmd === 'fix') {
@@ -1901,6 +1908,7 @@ const FEATURES = [
     ['selinux.findInPolicy', 'search', 'Find in Compiled Policy', 'A type, attribute, role or user of the last build, with its rules'],
     ['selinux.transitionGraph', 'type-hierarchy', 'Domain Transition Graph', 'Which domains a domain starts, and which start it'],
     ['selinux.showLogins', 'person', 'Logins and Users…', 'Who logs in as which SELinux user, and what their sessions can reach'],
+    ['selinux.showLevels', 'layers', 'Levels and Categories…', 'MLS/MCS: may one context access another (type rules and constraints), and which domains ignore levels'],
     ['selinux.findModule', 'go-to-file', 'Open Module…', 'A module\'s .te, .if or .fc file'],
     ['selinux.showExpanded', 'unfold', 'Show Expanded Policy', 'What the module in the editor compiles to'],
   ]],
@@ -2040,6 +2048,105 @@ function showFileLabel(context, p) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { filePanel = null; }, undefined, context.subscriptions);
+}
+
+let levelsPanel = null;
+/** Levels and Categories: may one context access another (type rules + constraints), and who ignores levels. */
+function showLevels(context, prefill) {
+  if (levelsPanel) {
+    levelsPanel.reveal();
+    if (prefill) levelsPanel.webview.postMessage({ cmd: 'prefill', state: prefill });
+    return;
+  }
+  const panel = vscode.window.createWebviewPanel('selinuxLevels', 'Levels and Categories', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  levelsPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'levels.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  select, input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  input { font-family: var(--vscode-editor-font-family); }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; font-family: var(--vscode-editor-font-family); }
+  button.link:hover { text-decoration: underline; }
+  #main { padding: 10px 14px 40px; }
+  .intro { opacity: .85; margin: 0 0 10px; max-width: 75em; }
+  table { border-collapse: collapse; margin: 4px 0 8px; }
+  td, th { text-align: left; padding: 3px 14px 3px 0; vertical-align: top; }
+  th { font-weight: 600; opacity: .75; }
+  .card { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-left-color: var(--vscode-focusBorder); border-radius: 4px; margin: 0 0 10px; }
+  .card > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .fname { font-weight: 600; }
+  .body { padding: 2px 14px 10px; }
+  .sub { font-weight: 600; margin: 12px 0 4px; }
+  .row { margin: 6px 0; }
+  .note { margin: 3px 0; }
+  .note.warn, .warn { color: var(--vscode-editorWarning-foreground); }
+  .note.bad, .bad { color: var(--vscode-errorForeground); }
+  .ok { color: var(--vscode-testing-iconPassed, #3fb950); }
+  .verdict { font-weight: 600; font-size: 1.05em; margin: 10px 0 4px; }
+  .cons { margin: 4px 0 8px; }
+  .cons ul { margin: 2px 0 0 0; }
+  code { font-family: var(--vscode-editor-font-family); }
+  .muted { opacity: .7; }
+  .chips { margin: 6px 0; line-height: 1.7; }
+  .chips > * { margin-right: 10px; }
+</style></head><body>
+<div id="bar">
+  <span id="title">Levels and Categories</span>
+  <label>Rules from <select id="against"></select></label>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        if (prefill) panel.webview.postMessage({ cmd: 'prefill', state: prefill });
+      } else if (m.cmd === 'levels') {
+        panel.webview.postMessage({ cmd: 'levels', key: m.key, result: await client.sendRequest('selinux/levels', { against: m.against }) });
+      } else if (m.cmd === 'check') {
+        panel.webview.postMessage({ cmd: 'check', key: m.key, result: await client.sendRequest('selinux/contextCheck', { against: m.against, source: m.source, target: m.target, tclass: m.tclass, perms: m.perms }) });
+      } else if (m.cmd === 'label') {
+        panel.webview.postMessage({ cmd: 'label', key: m.key, result: await client.sendRequest('selinux/fileLabel', { path: m.path, mode: null }) });
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      } else if (m.cmd === 'addCheck') {
+        panel.webview.postMessage({ cmd: 'checkAdded', text: await addCheckLine(m.text) });
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { levelsPanel = null; }, undefined, context.subscriptions);
+}
+
+/** Append a line to the property checks file (created if missing), save it and show it. */
+async function addCheckLine(line) {
+  const r = await client.sendRequest('selinux/checksFile');
+  if (r.unavailable) { vscode.window.showWarningMessage(r.unavailable); return r.unavailable; }
+  if (!r.exists) fs.writeFileSync(r.path, CHECKS_TEMPLATE);
+  const doc = await vscode.workspace.openTextDocument(r.path);
+  const text = doc.getText();
+  if (text.split('\n').some(l => l.trim() === line.trim())) { await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside }); return `${path.basename(r.path)} already has that check.`; }
+  const edit = new vscode.WorkspaceEdit();
+  const end = doc.lineAt(doc.lineCount - 1).range.end;
+  edit.insert(doc.uri, end, `${text.length && !text.endsWith('\n') ? '\n' : ''}${line}\n`);
+  await vscode.workspace.applyEdit(edit);
+  await doc.save();
+  const ed = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+  const l = doc.lineCount - 2;
+  ed.selection = new vscode.Selection(l, 0, l, doc.lineAt(Math.max(0, l)).text.length);
+  return `Added to ${path.basename(r.path)}; it is checked now and after every build.`;
 }
 
 /** Write a planned fix (one undoable edit, with any other file it needs, e.g. a new interface), save it so it builds, and show the inserted lines. */

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Levels and Categories** (*SELinux: Levels and Categories…*), for
+  MLS/MCS policies:
+  * *Can it access?* takes two full contexts (or a file's label), a class
+    and permissions. It says whether the source context is valid, gives
+    the type rules, and lists every constraint with its comparisons in
+    plain words.
+  * *Who ignores levels* groups the domains by the level constraints they
+    pass whatever the levels, and why (e.g. not in
+    `mcs_constrained_type`), with *Add check*.
+  * The denial assistant opens constraint denials there.
+* **`only|never <domains> may ignore levels [on <classes>]`** in
+  `selinux.checks`.
+
+**Fixed**
+
+* `never X reaches Y except through Z` ignored the `except through` part
+  (0.15.0; `never login … reaches … except through` was right).
+
 ## 0.15.0 (2026-10-13)
 
 **Added**
