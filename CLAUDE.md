@@ -869,8 +869,11 @@ so far covered by the e2e tests only.
    Tests: logins-test (parser, resolveLogins), checks-e2e (CLIP: holds,
    __default__ → staff_u, alice reaches sysadm_t where it logs in, may read
    shadow_t as aide_t, errors, completion), module-checks-e2e (host seusers).
-   Open (the user's "later" list): MCS, Model Context Protocol, comparing
-   with the host's semanage changes. Plan agreed: kind of user from the tree's
+   Open (the user's "later" list): comparing with the host's semanage
+   changes (MCS: done, step 12). Model Context Protocol / any AI: dropped —
+   the user (2026-10-14): "We don't want to add AI to this plugin at this
+   time" (verified: no AI, LLM, network or chat/LM API use anywhere in the
+   extension). Plan agreed: kind of user from the tree's
    templates (Fedora 2-arg `X_role(R, D)` vs upstream/CLIP 4-arg role
    templates; userdom_unpriv/restricted/admin/base/confined_admin
    templates), roles it may switch to, ways in, sudo/su into a role
