@@ -10,6 +10,7 @@ const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain } = require('../server/build');
+const { clipArgs } = require('./clip-args');
 
 const tc = detectToolchain(null);
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
@@ -23,9 +24,8 @@ if (![CLIP_SRC, R10_SRC].every(t => fs.existsSync(path.join(t, 'Rules.modular'))
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-multi-e2e-'));
 const CLIP = path.join(ws, 'clip'), R10 = path.join(ws, 'rhel10');
 for (const [s, d] of [[CLIP_SRC, CLIP], [R10_SRC, R10]]) { cp.execFileSync('cp', ['-a', s, d]); fs.rmSync(path.join(d, 'tmp'), { recursive: true, force: true }); }
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
 const trees = {
-  clip: { makeArgs: ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny', 'MLS_CATS=1024', 'MCS_CATS=1024', `APPS_MODS=${CLIP_SEPARATE}`] },
+  clip: { makeArgs: clipArgs(CLIP_SRC) },
   rhel10: {
     makeArgs: ['DISTRO=redhat', 'UBAC=n', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'MLS_CATS=1024', 'MCS_CATS=1024', 'UNK_PERMS=allow', 'NAME=targeted', 'TYPE=mcs'],
     files: {

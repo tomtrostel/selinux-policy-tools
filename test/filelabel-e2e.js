@@ -16,13 +16,12 @@ const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { installedPolicies } = require('../server/build');
 const F = require('../server/filelabel');
+const { clipArgs } = require('./clip-args');
 
 const installed = installedPolicies().find(p => p.active);
 if (process.platform !== 'linux' || !installed || installed.name !== 'targeted') { console.log('SKIP: needs Linux running the targeted policy'); process.exit(0); }
 const treeDir = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
-const CLIP_ARGS = ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-  'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+const CLIP_ARGS = clipArgs(treeDir);
 
 let failures = 0;
 const check = (cond, what, extra) => {
@@ -174,7 +173,8 @@ function start(ws, initOptions = {}) {
     const B = (p, mode) => b.conn.sendRequest('selinux/fileLabel', { path: p, mode });
     r = await B('/usr/bin/rpm');
     const w = pol(r, 'build').winner || {};
-    check(pol(r, 'build').type === 'rpm_exec_t' && w.src && /admin\/rpm\.fc$/.test(w.src.p) && w.src.l === 15 && w.module === 'rpm',
+    const rpmLine = fs.readFileSync(path.join(treeDir, 'policy/modules/admin/rpm.fc'), 'utf8').split('\n').findIndex(l => /^\/usr\/bin\/rpm\s/.test(l));
+    check(pol(r, 'build').type === 'rpm_exec_t' && w.src && /admin\/rpm\.fc$/.test(w.src.p) && w.src.l === rpmLine && w.module === 'rpm',
       `build: /usr/bin/rpm → ${pol(r, 'build').type} from ${w.src && path.basename(w.src.p)}:${w.src && w.src.l + 1} (module ${w.module})`, w);
     r = await B('/usr/bin/rpmbuild', 'file');
     check(pol(r, 'build').type === 'bin_t' && pol(r, 'build').others.some(o => o.type === 'usr_t'), `build: /usr/bin/rpmbuild → ${pol(r, 'build').type} (usr_t loses; the old unsorted lookup said usr_t)`, pol(r, 'build'));

@@ -1002,7 +1002,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/walkthrough-test.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
     "test:ifdef": "node test/ifdef-names-test.js",

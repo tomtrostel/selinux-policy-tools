@@ -353,14 +353,14 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('selinux.configureFromSpec', async () => {
       const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Use this spec',
-        title: 'selinux-policy.spec (from an unpacked source RPM or a dist-git checkout, next to its modules-*.conf / modules-*.lst files)',
+        title: 'selinux-policy.spec (from an unpacked source RPM or a dist-git checkout, next to its modules-*.conf / modules-*.lst files; or CLIP\'s packages/selinux-policy/selinux-policy*.spec, next to its Makefile)',
         filters: { 'RPM spec': ['spec'] } });
       if (!picked || !picked.length) return;
       const r = await client.sendRequest('selinux/specBuildConfig', { specPath: picked[0].fsPath });
-      if (r.error || !r.configs || !r.configs.length) { vscode.window.showErrorMessage(r.error || 'No %makeCmds policy variants found in that spec.'); return; }
+      if (r.error || !r.configs || !r.configs.length) { vscode.window.showErrorMessage(r.error || 'No policy variants found in that spec (neither %makeCmds lines nor CLIP\'s %installCmds).'); return; }
       const pick = await vscode.window.showQuickPick(r.configs.map(c => ({
         label: c.variant, description: c.makeArgs.filter(a => /^(NAME|TYPE|UNK_PERMS)=/.test(a)).join(' '),
-        detail: `${Object.keys(c.files).join(', ')}${c.missing.length ? `   ⚠ missing: ${c.missing.map(m => path.basename(m)).join(', ')}` : ''}${(c.notes || []).length ? `   ⚠ ${c.notes.join('; ')}` : ''}`, c,
+        detail: `${c.clip ? `CLIP: the tree's own modules.conf, plus ${count(((c.makeArgs.find(a => a.startsWith('APPS_MODS=')) || '').slice(10).match(/\S+/g) || []).length, 'separately packaged module')} (APPS_MODS)` : Object.keys(c.files).join(', ')}${c.missing.length ? `   ⚠ missing: ${c.missing.map(m => path.basename(m)).join(', ')}` : ''}${(c.notes || []).length ? `   ⚠ ${c.notes.join('; ')}` : ''}`, c,
       })), { placeHolder: 'Policy variant to build' });
       if (!pick) return;
       const conf = vscode.workspace.getConfiguration('selinux');

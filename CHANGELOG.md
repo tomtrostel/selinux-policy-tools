@@ -20,6 +20,10 @@
 * **`… reaches <domains> except through <domains>`** in `selinux.checks`,
   for `never <names> reaches` and `never login <logins> reaches`: paths
   through the given domains don't count.
+* **CLIP for RHEL 8**: *Configure Build from Spec File…* now reads CLIP's
+  spec (`%installCmds`) and the Makefile next to it (`SEPARATE_PKGS` →
+  `APPS_MODS`), for both the RHEL 8 and RHEL 9 branches. All tools were
+  tested on CLIP's `RHEL8` branch (refpolicy 2.20200229).
 
 **Fixed**
 

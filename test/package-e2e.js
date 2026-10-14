@@ -15,6 +15,7 @@ const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain } = require('../server/build');
 const svc = require('../server/service');
+const { clipArgs } = require('./clip-args');
 
 const DEVEL = '/usr/share/selinux/devel/Makefile';
 const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
@@ -27,9 +28,7 @@ const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-package-e2e-'));
 const tree = path.join(ws, 'policy-tree');
 cp.execFileSync('cp', ['-a', src + '/.', tree]);
 fs.rmSync(path.join(tree, 'tmp'), { recursive: true, force: true });
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
-const makeArgs = ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-  'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+const makeArgs = clipArgs(src);
 const confBefore = fs.readFileSync(path.join(tree, 'policy/modules.conf'), 'utf8');
 const corenetBefore = fs.readFileSync(path.join(tree, 'policy/modules/kernel/corenetwork.te.in'), 'utf8');
 
@@ -72,8 +71,10 @@ async function write(plan) {
   check(info.standalone && info.mode === 'module' && !info.layers && info.folderSuffix === '-selinux', 'standalone: a folder, not a layer');
   const runtime = info.catalog.fileKinds.find(k => k.id === 'runtime');
   const treeRuntime = inTree.catalog.fileKinds.find(k => k.id === 'runtime');
-  check(runtime && runtime.suffix === '_var_run_t' && treeRuntime.suffix === '_runtime_t',
-    `runtime files: ${runtime && runtime.suffix} from RHEL's devel headers (files_pid_file; the CLIP tree: ${treeRuntime.suffix}, files_runtime_file)`, runtime);
+  // CLIP RHEL 9 (refpolicy 2.2024) has files_runtime_file; CLIP RHEL 8 (2.20200229) only files_pid_file.
+  const treeHasRuntime = /interface\(`files_runtime_file'/.test(fs.readFileSync(path.join(tree, 'policy/modules/kernel/files.if'), 'utf8'));
+  check(runtime && runtime.suffix === '_var_run_t' && treeRuntime.suffix === (treeHasRuntime ? '_runtime_t' : '_var_run_t'),
+    `runtime files: ${runtime && runtime.suffix} from RHEL's devel headers (files_pid_file; the CLIP tree: ${treeRuntime.suffix}, ${treeHasRuntime ? 'files_runtime_file' : 'files_pid_file'})`, runtime);
   check(info.interfaces.length > 1000 && info.interfaces.length < inTree.interfaces.length + 5000, `interfaces offered from the devel headers: ${info.interfaces.length} (tree: ${inTree.interfaces.length})`);
 
   const model = svc.newModel();

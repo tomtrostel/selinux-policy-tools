@@ -1019,6 +1019,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `tar czf - server test client package.json syntaxes | ssh melody 'cd ~/sepol-test/tools && tar xzf -'`),
   trees: ~/sepol-test/rhel9 (+ ~/sepol-test/srpm unpacked SRPM),
   ~/sepol-test/clip (git clone, tree in packages/selinux-policy/selinux-policy),
+  ~/sepol-test/clip8 (CLIP branch RHEL8, same layout; pass its tree as the
+  e2e tests' first argument; test/clip-args.js reads either CLIP's make
+  arguments from its spec + Makefile),
   ~/sepol-test/mymodule (standalone module).
 - Run on melody: `node test/build-e2e.js`, `test/build-tree-e2e.js`,
   `test/build-rhel-e2e.js`, `test/diff-e2e.js`, `test/preview-e2e.js`,
@@ -1262,6 +1265,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   (`npm run test:wrapper-e2e`, melody; `[tree [spec [variant]]]`).
 - `test/filelabel-test.js` (in `npm test`) and `test/filelabel-e2e.js`
   (`npm run test:filelabel-e2e`, melody; optional tree arg, default CLIP).
+- `test/specconfig-test.js` (in `npm test`): CLIP spec + Makefile reading.
+  `test/clip-args.js`: CLIP make arguments for a tree (from its spec).
 - `test/user-test.js` (in `npm test`) and `test/user-e2e.js`
   (`npm run test:user-e2e`, melody; `[tree [spec [variant]]]` like
   service-e2e).
@@ -1315,6 +1320,25 @@ Package: `npx @vscode/vsce package`.
   unknown-macro, all real latent bugs in uncalled interfaces. Builds
   90 packages, policy.33 with 1973 types. The tree has VS Code settings
   with CLIP's makeArgs in `.vscode/settings.json` (gitignored).
+- CLIP for RHEL 8 (branch `RHEL8`, refpolicy 2.20200229, MCS, ~/sepol-test/
+  clip8; user request 2026-10-13: "all of these tools to also work with the
+  RHEL 8 version of CLIP"). specconfig.js `clipBuildConfigs()`: specs
+  without %makeCmds but with `%installCmds A B C D E` → the installCmds
+  body's base.pp make line with %N / %{…} filled in; type from the repo's
+  CONFIG_BUILD, enable_modules/separatePkgs from `makeVars()` of the
+  Makefile next to the spec (+=, ?=, continuations, comments, ifeq/ifneq
+  on plain variables decided with what's set so far); files {} (the tree's
+  own modules.conf); result `clip: true`. RHEL 9 CLIP gives exactly the old
+  hand-written list; RHEL 8 adds denyhosts + consolekit; it has -cil and
+  -nocil specs (the Makefile uses -cil for OS_REL >= 7.3). All tree e2e
+  tests pass on it (build-tree, checks, diff, preview, filelabel, logins,
+  denials, service, user, wrapper, package); test adjustments only (no
+  shadow_history_t, files_pid_file instead of files_runtime_file, rpm.fc
+  line, cron.te's auth_use_pam already requiring shadow_t). Survey: 8
+  findings, all real (rpm_run lacks rpm_script_t, ssh_server_template lacks
+  ssh_server, 4 unknown interfaces (3 in cockpit, off), 2 undefined
+  *_inherited_file_perms in userdomain.if). 1905 types. Builds with RHEL 9's
+  checkpolicy (policy.33; OUTPUT_POLICY=31 for RHEL 8's version).
 - RHEL selinux-policy tree builds (verified: RHEL 9 targeted, ~30 s cold,
   435 packages; validate is ~22 s of it): the git tree ships a modules.conf
   and users that differ from the RPM's, and no booleans.conf (optional to

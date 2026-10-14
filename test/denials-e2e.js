@@ -14,6 +14,7 @@ const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain, installedPolicies } = require('../server/build');
+const { clipArgs } = require('./clip-args');
 
 const installed = installedPolicies().find(p => p.active);
 if (process.platform !== 'linux' || !installed || installed.name !== 'targeted') { console.log('SKIP: needs Linux running the targeted policy'); process.exit(0); }
@@ -208,9 +209,7 @@ const LOG = [
     const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-tree-'));
     cp.execFileSync('cp', ['-a', treeSrc + '/.', tree]);
     fs.rmSync(path.join(tree, 'tmp'), { recursive: true, force: true });
-    const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
-    const makeArgs = ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-      'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+    const makeArgs = clipArgs(treeSrc);
     const p2 = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
     const c2 = rpc.createMessageConnection(new rpc.StreamMessageReader(p2.stdout), new rpc.StreamMessageWriter(p2.stdin));
     let done2;

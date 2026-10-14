@@ -87,7 +87,9 @@ The extension isn't on the Marketplace; it ships as a `.vsix` file on the
    and trust the workspace when VS Code asks; builds are off in Restricted
    Mode. For CLIP- or RHEL-style trees, set the build arguments as described
    under [Settings](#settings) or run *SELinux: Configure Build from Spec
-   File…*.
+   File…* (a RHEL/Fedora `selinux-policy.spec`, or CLIP's
+   `packages/selinux-policy/selinux-policy*.spec` for the RHEL 8 and RHEL 9
+   branches).
 
 **Updating:** install the newer `.vsix` the same way; it replaces the old
 version. **Removing:** Extensions view → SELinux Policy Tools → *Uninstall*.
@@ -1169,6 +1171,14 @@ diagnostics still work, but builds are off and workspace values of the
 `selinux.build.*` settings above are ignored. Trust the workspace to enable
 them.
 
+For CLIP, *Configure Build from Spec File…* with CLIP's spec
+(`packages/selinux-policy/selinux-policy.spec` on the RHEL 9 branch,
+`selinux-policy-cil.spec` on RHEL 8) writes these for you. It takes the
+spec's `%installCmds` make line, and `APPS_MODS` from `SEPARATE_PKGS` in
+the Makefile next to the spec. The tree's own `modules.conf`, booleans and
+users are used. On a RHEL 9 build host the kernel policy comes out as
+`policy.33`; add `OUTPUT_POLICY=31` if you need RHEL 8's version.
+
 Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 `.vscode/settings.json`:
 
@@ -1288,6 +1298,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   hand and are real problems in those trees: on RHEL 9, mostly missing
   `gen_require` entries that later Fedora versions fixed; on CLIP, four
   latent bugs in interfaces nothing currently calls.
+* CLIP for RHEL 8 (sealingtech/CLIP, branch `RHEL8`, refpolicy 2.20200229):
+  configured from its spec, then the tree build and every e2e suite that
+  takes a tree. That covers checks, changes since HEAD, module preview,
+  file labels, logins, denials, services, users, wrapped programs and
+  standalone RPMs. The diagnostics survey finds 8 problems, all real: two
+  missing `gen_require` entries, four calls to interfaces the tree doesn't
+  have (three in the disabled cockpit module), and two undefined permission
+  sets in `userdomain.if`.
 * Link failures and `corenetwork.te.in`: the static link check and the port
   checks report nothing on the Fedora, RHEL 9, RHEL 10 and CLIP trees with
   their module configurations (all of which link). Turning `mta` off in

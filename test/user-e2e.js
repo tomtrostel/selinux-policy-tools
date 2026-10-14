@@ -12,6 +12,7 @@ const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain } = require('../server/build');
+const { clipArgs } = require('./clip-args');
 
 const tc = detectToolchain(null);
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
@@ -19,9 +20,7 @@ const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages
 if (!fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP: no refpolicy tree at ${src}`); process.exit(0); }
 const specArg = process.argv[3];
 const variant = process.argv[4] || 'targeted';
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
-const CLIP_ARGS = ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-  'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+const CLIP_ARGS = clipArgs(src);
 
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-user-e2e-'));
 cp.execFileSync('cp', ['-a', src + '/.', ws]);

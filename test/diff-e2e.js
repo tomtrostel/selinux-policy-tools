@@ -11,15 +11,14 @@ const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain } = require('../server/build');
+const { clipArgs } = require('./clip-args');
 
 const tc = detectToolchain(null);
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
 if (!fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP: no refpolicy tree at ${src}`); process.exit(0); }
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
 const makeArgs = process.argv[3] ? JSON.parse(fs.readFileSync(process.argv[3], 'utf8')) :
-  ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-    'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+  clipArgs(src);
 
 // The tree lives in a subdirectory of the repository, like CLIP's.
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-diff-e2e-'));
@@ -71,15 +70,18 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
   conn.sendNotification('textDocument/didOpen', { textDocument: { uri: uri(LOGGING), languageId: 'selinux', version: 1, text: EDITED } });
   await sleep(400);
   const b = await conn.sendRequest('selinux/build', { uri: uri(LOGGING) });
+  // auth_read_shadow also grants shadow_history_t where the tree has it (refpolicy 2.2024; not CLIP RHEL 8's 2.20200229).
+  const HISTORY = /\btype shadow_history_t\b/.test(fs.readFileSync(path.join(path.dirname(LOGGING), 'authlogin.te'), 'utf8'));
+  const NRULES = HISTORY ? 5 : 4;
   check(b.ok, 'edited tree builds');
   d = await conn.sendRequest('selinux/policyDiff');
   const R = (s, t, c) => d.rules.find(r => r.s === s && r.t === t && r.c === c && r.rt === 'allow');
-  check(!d.unavailable && d.ruleCount === 5, `5 rule changes (${d.ms && (d.ms.total / 1000).toFixed(1)} s with cached HEAD build)`, d.unavailable || d.rules && d.rules.map(r => `${r.kind} ${r.s} ${r.t}:${r.c} +${r.add} -${r.del}`));
+  check(!d.unavailable && d.ruleCount === NRULES, `${NRULES} rule changes (${d.ms && (d.ms.total / 1000).toFixed(1)} s with cached HEAD build)`, d.unavailable || d.rules && d.rules.map(r => `${r.kind} ${r.s} ${r.t}:${r.c} +${r.add} -${r.del}`));
   const shadow = R('syslogd_t', 'shadow_t', 'file');
   const auth = lineOf(EDITED, 'auth_read_shadow(syslogd_t)'), files = lineOf(EDITED, 'files_manage_etc_files(syslogd_t)');
   check(shadow && shadow.kind === 'added' && shadow.addFrom.origins[0].path === LOGGING && shadow.addFrom.origins[0].line === auth && /auth_read_shadow/.test(shadow.addFrom.origins[0].via),
     `+ shadow_t:file traced to logging.te:${auth + 1} via auth_read_shadow`, shadow && shadow.addFrom);
-  check(R('syslogd_t', 'shadow_history_t', 'file') && R('syslogd_t', 'shadow_history_t', 'file').addFrom.origins[0].line === auth, '+ shadow_history_t:file (a side effect of auth_read_shadow) traced to the same line');
+  if (HISTORY) check(R('syslogd_t', 'shadow_history_t', 'file') && R('syslogd_t', 'shadow_history_t', 'file').addFrom.origins[0].line === auth, '+ shadow_history_t:file (a side effect of auth_read_shadow) traced to the same line');
   const etc = R('syslogd_t', 'etc_t', 'dir');
   check(etc && etc.kind === 'modified' && etc.add.includes('write') && etc.addFrom.origins[0].line === files, `~ etc_t:dir +write traced to logging.te:${files + 1} via files_manage_etc_files`, etc && etc.addFrom);
   const pr = R('syslogd_t', 'syslogd_t', 'process');
@@ -113,7 +115,7 @@ const lineOf = (text, needle) => text.split('\n').findIndex(l => l.includes(need
   const ruleNodes = await view.getChildren(rulesBySrc);
   const shadowNode = ruleNodes.find(n => /shadow_t:file$/.test(n.item.label));
   const shadowOrigins = await view.getChildren(shadowNode);
-  check(ruleNodes.length === 5 && shadowNode.item.description.startsWith('+') && shadowOrigins[0].item.label === `policy/modules/system/logging.te:${auth + 1}` && /auth_read_shadow/.test(shadowOrigins[0].item.description) && shadowOrigins[0].item.command.arguments[0] === LOGGING,
+  check(ruleNodes.length === NRULES && shadowNode.item.description.startsWith('+') && shadowOrigins[0].item.label === `policy/modules/system/logging.te:${auth + 1}` && /auth_read_shadow/.test(shadowOrigins[0].item.description) && shadowOrigins[0].item.command.arguments[0] === LOGGING,
     `view: syslogd_t › allow syslogd_t shadow_t:file › ${shadowOrigins[0] && shadowOrigins[0].item.label} (${shadowOrigins[0] && shadowOrigins[0].item.description})`);
   const procNode = ruleNodes.find(n => /syslogd_t:process$/.test(n.item.label));
   const procOrigins = await view.getChildren(procNode);

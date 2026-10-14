@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 const { detectToolchain } = require('../server/build');
+const { clipArgs } = require('./clip-args');
 
 const tc = detectToolchain(null);
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
@@ -18,10 +19,8 @@ if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
 if (!fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP: no refpolicy tree at ${src}`); process.exit(0); }
 // CLIP's RPM build arguments (packages/selinux-policy/Makefile + selinux-policy.spec).
-const CLIP_SEPARATE = 'ssh rhsmcertd oddjob rtkit aide postfix usbguard fapolicyd rngd logadm auditadm secadm sasl rpcbind rpc gssproxy kerberos certmonger pcscd apcupsd nut postgresql mysql apache bind openvpn samba ntp xserver accountsd colord geoclue gnome wm telepathy bluetooth devicekit';
 const makeArgs = process.argv[3] ? JSON.parse(fs.readFileSync(process.argv[3], 'utf8')) :
-  ['NAME=mcs', 'TYPE=mcs', 'DISTRO=redhat', 'UBAC=y', 'DIRECT_INITRC=n', 'MONOLITHIC=n', 'POLY=y', 'UNK_PERMS=deny',
-    'MLS_CATS=1024', 'MCS_CATS=1024', 'SEMOD_EXP=/usr/bin/semodule_expand', `APPS_MODS=${CLIP_SEPARATE}`];
+  clipArgs(src);
 
 // Work on a copy so the test can edit files freely.
 const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-tree-e2e-'));
@@ -313,8 +312,8 @@ const hover = async (f, text, needle) => {
     const CRON = path.join(ws, 'policy/modules/services/cron.te');
     const KERNEL = path.join(ws, 'policy/modules/kernel/kernel.te');
     if (fs.existsSync(CRON) && fs.existsSync(KERNEL)) {
-      const line = '\nallow crond_t shadow_history_t:file read;\n';
-      const kline = '\nallow kernel_t shadow_history_t:file read;\n';
+      const line = '\nallow crond_t utempter_exec_t:file read;\n';
+      const kline = '\nallow kernel_t utempter_exec_t:file read;\n';
       open(CRON); open(KERNEL);
       const cronText = fs.readFileSync(CRON, 'utf8'), kernelText = fs.readFileSync(KERNEL, 'utf8');
       await edit(CRON, cronText + line);
@@ -322,7 +321,7 @@ const hover = async (f, text, needle) => {
       await sleep(800);
       const cronReq = (diags[uri(CRON)] || []).filter(d => d.code === 'missing-te-require');
       const kernelReq = (diags[uri(KERNEL)] || []).filter(d => d.code === 'missing-te-require');
-      check(cronReq.length === 1 && /'shadow_history_t' comes from the authlogin module/.test(cronReq[0].message) && kernelReq.length === 0,
+      check(cronReq.length === 1 && /'utempter_exec_t' comes from the authlogin module/.test(cronReq[0].message) && kernelReq.length === 0,
         `missing require in loadable cron.te (${cronReq.map(d => d.message.slice(0, 60)).join('; ')}), none in base kernel.te (${kernelReq.length})`, { cron: fmt(CRON), kernel: kernelReq });
       const none = (diags[uri(CRON)] || []).filter(d => d.code === 'missing-te-require' && d.range.start.line < cronText.split('\n').length - 1);
       check(none.length === 0, 'the unmodified cron.te has no missing-require warnings', none);
