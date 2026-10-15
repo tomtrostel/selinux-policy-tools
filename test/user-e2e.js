@@ -162,6 +162,42 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
   const st2 = (rep2.users || []).find(u => u.name === 'staff_u');
   check(st2 && !st2.entries.some(e => e.source === 'local_login_t' && e.contexts.some(c => c.type === 'staff_t')), 'the build\'s logins report: staff_u no longer lands in staff_t on the console', st2 && st2.entries);
 
+  // 5b. Changing an existing user's kind. A user written as a restricted desktop user where the
+  // X template can't link (CLIP: xserver off, so xdm_t is missing) is switched to the terminal kind.
+  const kx = info.catalog.kinds.find(k => k.id === 'restricted_x'), kr = info.catalog.kinds.find(k => k.id === 'restricted');
+  // xserver is built when modules.conf or the build's APPS_MODS (CLIP's make arguments) turn it on.
+  const confOn = /^xserver = (base|module)$/m.test(readSource0(path.join(ws, 'policy', 'modules.conf')));
+  const appsOn = (specArg ? [] : CLIP_ARGS).some(a => /^APPS_MODS=/.test(a) && a.split(/[=\s]+/).includes('xserver'));
+  const xOff = !confOn && !appsOn;
+  if (kx && kr) {
+    check(xOff ? /needs xdm_t, which only the xserver module/.test(kx.blocked) : !kx.blocked, `restricted desktop kind ${kx.blocked ? `blocked: ${kx.blocked}` : `available (xserver on${appsOn ? ' through APPS_MODS' : ''})`}`, kx);
+    const ni = await conn.sendRequest('selinux/userInfo');
+    const xm = { ...ni.model, name: 'rokind', summary: 'Read-only jail users', logins: [], ways: ['ssh'], user: { kind: 'restricted' } };
+    const xp = await conn.sendRequest('selinux/userPlan', { model: xm });
+    check(!blocking(xp).length, 'a new terminal user rokind', xp.problems);
+    // Written with the X template, as the editor did before kinds could be changed or were checked.
+    const xte = xp.files.find(f => f.kind === 'te');
+    xte.text = xte.text.replace(`${kr.template}(rokind)`, `${kx.template}(rokind)`);
+    await write(xp);
+    const xi = await conn.sendRequest('selinux/userInfo', { module: 'rokind' });
+    check(xi.model && xi.model.user.kind === 'restricted_x', `read back as ${xi.model && xi.model.user.kind}`, xi.unavailable);
+    if (xOff) {
+      const p0 = await conn.sendRequest('selinux/userPlan', { model: xi.model, module: 'rokind' });
+      check(p0.files.length === 0 && (p0.problems || []).some(x => /^Note: .*xdm_t.*won't link/.test(x)), 'as it is: a note that it won\'t link', p0.problems);
+    }
+    const sw = JSON.parse(JSON.stringify(xi.model));
+    sw.user.kind = 'restricted';
+    const p1 = await conn.sendRequest('selinux/userPlan', { model: sw, module: 'rokind' });
+    const t1 = p1.files.find(f => f.kind === 'te');
+    check(!blocking(p1).length && t1 && diffOf(t1).join('|') === `- ${kx.template}(rokind)|+ ${kr.template}(rokind)` && p1.files.length === 1,
+      `kind changed: ${t1 && diffOf(t1).join(' ; ')}`, { problems: p1.problems, files: p1.files.map(f => [f.path, diffOf(f)]) });
+    await write(p1);
+    const r3 = await conn.sendRequest('selinux/build', { uri: uri(t1.path) });
+    check(r3.ok && r3.validated, `tree with rokind as a terminal user builds and links (${(r3.ms / 1000).toFixed(1)} s)`, { log: r3.log && r3.log.slice(-2500), errors: errors() });
+    const ki = await conn.sendRequest('selinux/userInfo', { module: 'rokind' });
+    check(ki.model.user.kind === 'restricted', 'reads back as a restricted terminal user');
+  } else console.log('     (no restricted kinds in this tree: 5b skipped)');
+
   // 6. A standalone user (built against this host's devel headers, packaged as an RPM).
   const sai = await conn.sendRequest('selinux/userInfo', { standalone: true });
   if (!sai.standalone) console.log(`SKIP standalone part: ${sai.unavailable || 'no devel headers'}`);

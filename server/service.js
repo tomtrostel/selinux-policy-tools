@@ -641,11 +641,14 @@ function unitsOf(model, ctx) {
   function userUnits() {
     const { R } = names(model);
     const k = USER_KIND[model.user.kind] || USER_KIND.unpriv;
-    // An existing module keeps the template it was written with (declaredBy), a new one gets the kind's.
-    const tpl = (model.declaredBy && model.declaredBy.name) || pick(ctx, k.templates) || k.templates[0];
-    add('domain', { R, tpl, args: model.declaredBy ? model.declaredBy.args : [model.name] }, [
+    // An existing module keeps the template it was written with (declaredBy) while its kind stays;
+    // a new one, or one whose kind changed, gets the kind's.
+    const keep = model.declaredBy && k.templates.includes(model.declaredBy.name);
+    const tpl = keep ? model.declaredBy.name : pick(ctx, k.templates) || k.templates[0];
+    const args = model.declaredBy ? model.declaredBy.args : [model.name];
+    add('domain', { R, tpl, args }, [
       { key: `roledecl:${R}`, kind: 'roledecl', name: R, text: `role ${R};`, section: 'decl' },
-      call(tpl, model.declaredBy ? model.declaredBy.args : [model.name], 'decl')].map(s => (s.opt ? { ...s, opt: false } : s)));
+      call(tpl, args, 'decl')].map(s => (s.opt ? { ...s, opt: false } : s)));
     for (const n of model.roleCalls || []) {
       const args = roleCallArgs(n, model, ctx);
       if (args) add(`rc:${n}`, 1, [call(n, args, 'local', 'role')]);
@@ -1503,6 +1506,16 @@ function editTe(text, rec, model, ctx) {
     edits.push({ ins: [callSt.endL, u.stmts[0].text.split('\n')] });
     inPlace.add(k);
   }
+  // A user whose kind changed: its template call is replaced on its own line (the role stays).
+  if (model.user && old.has('domain') && cur.has('domain') && old.get('domain').sig !== cur.get('domain').sig) {
+    const was = old.get('domain').stmts.find(s => s.kind === 'call'), now = cur.get('domain').stmts.find(s => s.kind === 'call');
+    const at = was && (byKey.get(was.key) || []).find(s => s.top);
+    if (at && now && was.key !== now.key && !byKey.has(now.key) && cur.get('domain').stmts.every(s => s === now || byKey.has(s.key))) {
+      delStmts.add(at);
+      edits.push({ ins: [at.endL, [/^\s*/.exec(lines[at.l])[0] + now.text]] });
+      inPlace.add('domain');
+    }
+  }
   for (const [k, u] of old) {
     const n = cur.get(k);
     if (inPlace.has(k) || (n && n.sig === u.sig)) continue;
@@ -1908,13 +1921,32 @@ function validate(model, ctx, opts = {}) {
   return out;
 }
 
+/** "needs xdm_t, which only the xserver module (off in modules.conf) declares", or '' for none. */
+function blockedText(blockers) {
+  if (!blockers || !blockers.length) return '';
+  const b = blockers[0];
+  const mods = b.modules.length === 1 ? `only the ${b.modules[0]} module (off in modules.conf) declares` : `only the modules ${b.modules.join(', ')} (off in modules.conf) declare`;
+  return `needs ${b.name}, which ${mods}${blockers.length > 1 ? ` (and ${blockers.length - 1} more like it)` : ''}`;
+}
+
 /** Checks of a user model (names, kind, roles, logins). */
 function validateUser(model, ctx, opts) {
   const out = [];
   const { R, U } = names(model);
   const k = USER_KIND[model.user.kind];
+  const was = opts.baseline && opts.baseline.user ? opts.baseline.user.kind : null;
   if (!k) out.push('Choose what kind of user it is.');
-  else if (!model.declaredBy && !pick(ctx, k.templates)) out.push(`This policy has no ${k.templates.join(' or ')}, so it can't declare a user of this kind; choose another kind.`);
+  else if (!(model.declaredBy && k.templates.includes(model.declaredBy.name)) && !pick(ctx, k.templates)) out.push(`This policy has no ${k.templates.join(' or ')}, so it can't declare a user of this kind; choose another kind.`);
+  else {
+    // A template that needs a type only modules turned off declare can't link.
+    const tpl = model.declaredBy && k.templates.includes(model.declaredBy.name) ? model.declaredBy.name : pick(ctx, k.templates);
+    const why = blockedText(ctx.linkBlockers ? ctx.linkBlockers(tpl) : []);
+    if (why) out.push(model.user.kind === was ? `Note: ${tpl} ${why}, so the tree won't link; choose another kind.` : `${tpl} ${why}, so the tree wouldn't link; choose another kind.`);
+  }
+  if (was && k && model.user.kind !== was) {
+    const before = USER_KIND[was];
+    if (before && before.login && !k.login) out.push(`Note: a ${k.label.toLowerCase()} doesn't log in; its logins and ways in stop working.`);
+  }
   if (opts.isNew && ctx.roleExists && ctx.roleExists(R)) out.push(`A role named ${R} already exists.`);
   if (opts.isNew && ctx.typeExists && ctx.typeExists(`${model.name}_t`)) out.push(`Type ${model.name}_t is already declared elsewhere.`);
   for (const n of model.roleCalls || []) {
@@ -2018,7 +2050,9 @@ function userCatalog(ctx, ways) {
   const base = catalog(ctx);
   return {
     self: base.self, caps: base.caps, access: base.access, accessLabels: base.accessLabels,
-    kinds: USER_KINDS.filter(([, , t]) => t.some(n => ctx.has(n))).map(([id, label, t, login, help]) => ({ id, label, template: pick(ctx, t), login, help })),
+    // blocked: why the kind's template can't link in this tree (modules turned off), or ''.
+    kinds: USER_KINDS.filter(([, , t]) => t.some(n => ctx.has(n))).map(([id, label, t, login, help]) => ({ id, label, template: pick(ctx, t), login, help,
+      blocked: blockedText(ctx.linkBlockers ? ctx.linkBlockers(pick(ctx, t)) : []) })),
     ways: ways.map(([id, label, sources, help]) => ({ id, label, sources, help })),
     roleCalls: ctx.roleCalls || [],
     roles: Object.entries(ctx.roleIfaces || {}).map(([role, x]) => ({ role, change: x.change || null, changeTo: x.changeTo || null, module: x.module || '' })).sort((a, b) => a.role.localeCompare(b.role)),

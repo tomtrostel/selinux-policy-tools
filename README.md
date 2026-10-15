@@ -867,7 +867,12 @@ with a live preview of every file it writes:
   (sysadm_u), or a confined administrator role with no login of its own,
   entered from another role (like webadm_r: Fedora/RHEL's
   `userdom_confined_admin_template`, upstream's `userdom_base_user_template`).
-  Only kinds whose template the tree has are offered.
+  Only kinds whose template the tree has are offered. A kind whose template
+  can't link with the modules this build turns on is disabled, with the
+  reason. For example, the desktop kind needs `xdm_t` from `xserver`, which
+  CLIP builds only through its `APPS_MODS`. An existing user's kind can be
+  changed: its template call is replaced on its own line, and the role,
+  logins and everything else stay.
 * **Logins**: Linux logins, `%group`s or `__default__` with an optional
   range (seusers; a login mapped to another user is refused), and the **ways
   in** (ssh, console, graphical login, cron jobs, rlogin): its own

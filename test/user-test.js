@@ -37,6 +37,32 @@ check(/optional_policy\(`\n\tsudo_role_template/.test(p.te) && !/optional_policy
 check(/interface\(`ops_role_change',`[\s\S]*role ops_r;[\s\S]*allow \$1 ops_r;/.test(p.if) && p.fc === '', '.if: ops_role_change; no file contexts');
 p = S.plan(m, fed, null);
 check(/sudo_role_template\(ops, ops_r, ops_t\)/.test(p.te) && /mozilla_role\(ops_r, ops_t\)/.test(p.te) && /sysadm_role_change\(ops_r\)/.test(p.te), 'Fedora role calls: (prefix, role, domain), (role, domain)');
+/* ---------- an existing user's kind changed; kinds that can't link ---------- */
+
+// A tree where the X kind's template needs xdm_t and the xserver module is off (CLIP).
+const xctx = { ...up, has: (n) => has.has(n) || /^userdom_restricted/.test(n),
+  linkBlockers: (t) => (t === 'userdom_restricted_xwindows_user_template' ? [{ name: 'xdm_t', modules: ['xserver'] }] : []) };
+const xte = 'policy_module(ro, 1.0.0)\n\n########################################\n#\n# Declarations\n#\n\nrole ro_r;\nuserdom_restricted_xwindows_user_template(ro)\n\n########################################\n#\n# ro local policy\n#\n';
+const kinds = S.userCatalog(xctx, []).kinds;
+const kx = kinds.find(k => k.id === 'restricted_x'), kr = kinds.find(k => k.id === 'restricted');
+check(kx && /needs xdm_t, which only the xserver module \(off in modules\.conf\) declares/.test(kx.blocked) && kr && kr.blocked === '', 'catalog: the X kind is blocked here (xdm_t, xserver off), the terminal kind isn\'t', kinds);
+const xrec = S.recognize({ te: xte, if: '', fc: '' }, xctx, { user: true, module: 'ro' });
+check(xrec.model && xrec.model.user.kind === 'restricted_x', 'read back as a restricted desktop user', xrec.error || xrec.model && xrec.model.user);
+const xv = S.validate(xrec.model, xctx, { isNew: false, baseline: xrec.model });
+check(xv.some(x => /^Note: userdom_restricted_xwindows_user_template needs xdm_t/.test(x)) && !xv.some(x => /^userdom_restricted_xwindows/.test(x)), 'kept as it is: a note that it won\'t link, not an error', xv);
+const xm = JSON.parse(JSON.stringify(xrec.model));
+xm.user.kind = 'restricted';
+check(!S.validate(xm, xctx, { isNew: false, baseline: xrec.model }).some(x => /xdm_t|have no|has no/.test(x)), 'switched to the terminal kind: nothing in the way', S.validate(xm, xctx, { isNew: false, baseline: xrec.model }));
+const xp = S.plan(xm, xctx, { te: xte, if: '', fc: '' }, null);
+check(xp.te === xte.replace('userdom_restricted_xwindows_user_template(ro)', 'userdom_restricted_user_template(ro)'),
+  'the template call is replaced on its own line; nothing else changes', xp.te);
+check(S.plan(xm, xctx, { te: xp.te, if: '', fc: '' }, null).te === xp.te, 'planned again on the result: no further change');
+const xback = S.recognize({ te: xp.te, if: '', fc: '' }, xctx, { user: true, module: 'ro' }).model;
+const bm = JSON.parse(JSON.stringify(xback)); bm.user.kind = 'restricted_x';
+check(S.validate(bm, xctx, { isNew: false, baseline: xback }).some(x => /^userdom_restricted_xwindows_user_template needs xdm_t.*wouldn't link/.test(x)), 'switching to a kind that can\'t link is an error');
+const xnew = { ...S.newUserModel(), name: 'kiosk', user: { kind: 'restricted_x' }, logins: [] };
+check(S.validate(xnew, xctx, { isNew: true }).some(x => /^userdom_restricted_xwindows_user_template needs xdm_t/.test(x)), 'a new user of that kind: refused too');
+
 const conf = { ...m, user: { kind: 'confined' }, ways: [], logins: [] };
 check(/userdom_base_user_template\(ops\)/.test(S.plan(conf, up, null).te), 'confined admin: upstream base template (no confined_admin template)');
 const bad = S.validate({ ...m, name: 'staff', roleCalls: ['nope_role', 'sudo_role_template'], switchTo: ['dbadm_r'], logins: [{ login: 'bob smith', range: 'x' }, { login: 'root', range: '' }] }, { ...up, has: (n) => has.has(n) && n !== 'nope_role' }, { isNew: true, loginTaken: (n) => (n === 'root' ? 'unconfined_u' : null) });
@@ -175,12 +201,23 @@ const staff = { ...S.newUserModel(), name: 'staff', module: 'staff', declaredBy:
   logins: [{ login: '__default__', range: 's0' }], ways: ['ssh'], waysDefault: ['ssh'], waysFrom: 'default', userRoles: null };
 send({ cmd: 'init', info: { ...info, isNew: false, module: 'staff', model: staff, kept: [{ l: 41, endL: 41, text: 'ifdef(`foo\',`allow staff_t self:x y;\')' }], files: { te: '/t/staff.te' }, usersFile: '/t/policy/users' } });
 check(/User: staff_u \(staff\)/.test(byId.title.textContent) && byId.apply.textContent === 'Apply', `title for an existing user: ${byId.title.textContent}`);
-check(!find(e => e.tag === 'input' && e.attrs.type === 'radio').length && /userdom_unpriv_user_template\(staff\)/.test(byId.form.textContent), 'kind shown, not editable');
+const kindRadios = () => find(e => e.tag === 'input' && e.attrs.type === 'radio' && e.attrs.name === 'kind');
+check(kindRadios().length === info.catalog.kinds.length && kindRadios().find(r => r.attrs.value === 'unpriv').checked && /userdom_unpriv_user_template\(staff\) \(now\)/.test(byId.form.textContent),
+  'kind: the current one checked, with its template call as written');
 check(/written with ifdef\(\) or more than once/.test(byId.form.textContent) && /default_contexts/.test(byId.form.textContent), 'its gen_user line is left alone; ways from default_contexts marked');
 const kl = find(e => (e.attrs.class || '') === 'keptline')[0];
 kl.fire('click');
 check(kl && /42/.test(kl.textContent) && last('open').path === '/t/staff.te' && last('open').line === 41, 'kept lines listed; clicking opens the line');
 check(!posted.some(x => x.cmd === 'plan' && x.model && x.model.name === 'staff'), 'no plan until something changes');
+kindRadios().find(r => r.attrs.value === 'admin').fire('change');
+flush();
+check(last('plan') && last('plan').model.name === 'staff' && last('plan').model.user.kind === 'admin', 'an existing user\'s kind can be changed');
+// A kind whose template can't link here is disabled, unless it is the user's own.
+const blockedInfo = { ...info, isNew: false, module: 'staff', model: { ...staff, user: { kind: 'unpriv' } },
+  catalog: { ...info.catalog, kinds: info.catalog.kinds.map(k => (k.id === 'admin' || k.id === 'unpriv' ? { ...k, blocked: 'needs xdm_t, which only the xserver module (off in modules.conf) declares' } : k)) } };
+send({ cmd: 'init', info: blockedInfo });
+check('disabled' in kindRadios().find(r => r.attrs.value === 'admin').attrs && !('disabled' in kindRadios().find(r => r.attrs.value === 'unpriv').attrs) && /so the tree can't link it/.test(byId.form.textContent),
+  'a kind that can\'t link is disabled and says why; the user\'s own kind stays selectable');
 
 /* ---------- every user role module of a tree (optional argument) ---------- */
 

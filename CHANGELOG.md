@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+**Changed**
+
+* User editor: an existing user's kind can be changed (for example from
+  restricted desktop user to restricted terminal user). Only its template
+  call is replaced.
+* User editor: kinds whose template can't link in this build are disabled
+  and say why. A desktop user needs `xdm_t`, so on a tree whose build turns
+  `xserver` off, linking failed with "global requirements were not met:
+  type/attribute xdm_t".
+
 **Fixed** (found by testing on Rocky 8.10 with RHEL 8's own tools)
 
 * On RHEL 8, file labels from a build or a standalone module could be

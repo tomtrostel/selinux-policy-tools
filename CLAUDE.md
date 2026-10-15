@@ -857,6 +857,17 @@ so far covered by the e2e tests only.
    checkmodule "This block has no require section"; editTe now deletes a
    touched optional_policy whose remaining content is only nested
    optional_policy blocks or comments (service survey unchanged).
+   Kind changes (2026-10-15, user hit "ro's global requirements
+   were not met: xdm_t" on ricardo: their CLIP 8 workspace had no build
+   settings, so no APPS_MODS and xserver off): userUnits keeps declaredBy
+   only while its template belongs to the chosen kind, editTe replaces the
+   template call on its line (inPlace 'domain'); server userCtx
+   `linkBlockers(tpl)` (callRequires mandatory → types whose declaring
+   modules are all off per idx.moduleKinds, which includes APPS_MODS; trees
+   only) → catalog kinds[].blocked (service.blockedText), validateUser:
+   error for a new/changed kind, Note when unchanged; webview kindChoices()
+   for new and existing users (blocked disabled unless it is the user's
+   own; info.kindWas). Tests: user-test (unit + form), user-e2e 5b.
    Step 9 released as 0.12.0. Login checks (done, 0.13.0; "ok lets add
    the login checks in selinux.checks now"): checks.js kinds login-reaches,
    login-may, login-maps (`never login <logins> …`), only-login /

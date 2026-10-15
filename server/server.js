@@ -1958,7 +1958,19 @@ function userCtx(standalone = false) {
     userCtxCache.set(src.defs, { params: u.params, roleIfaces: u.roleIfaces, roleExists: u.roleExists, roleCalls: u.roleCalls });
   }
   const extra = userCtxCache.get(src.defs);
-  return { ...base, ...extra, standalone: sa || usingDevel, roleExists: (r) => extra.roleExists(r) || (idx.decls.get(r) || []).some(d => d.kind === 'role') };
+  // In a tree: what a template needs outside optional_policy that only modules turned off declare
+  // (userdom_restricted_xwindows_user_template needs xdm_t; CLIP turns xserver off). Standalone
+  // modules link with the host's policy instead.
+  const linkBlockers = (tpl) => {
+    if (sa || usingDevel || !idx.moduleKinds || !tpl) return [];
+    const out = [];
+    for (const n of callRequires(idx, tpl, ['zzprobe'], 0, true).names) {
+      const mods = idx.declaringModules(n);
+      if (mods && mods.size && ![...mods].some(m => idx.isEnabled(m))) out.push({ name: n, modules: [...mods].sort() });
+    }
+    return out;
+  };
+  return { ...base, ...extra, standalone: sa || usingDevel, linkBlockers, roleExists: (r) => extra.roleExists(r) || (idx.decls.get(r) || []).some(d => d.kind === 'role') };
 }
 
 /** The tree's login configuration files for a user: seusers and <user>_default_contexts in config/appconfig-<TYPE>. */

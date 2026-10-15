@@ -102,26 +102,40 @@
       'Preview what it can reach (right) to check it gets no more than that.');
   }
 
-  function userCard() {
-    const n = model.name || 'NAME';
-    if (!info.isNew) {
-      const k = info.catalog.kinds.find(x => x.id === model.user.kind);
-      return card('user', 'User', `${n}_u · role ${n}_r · domain ${n}_t`, [
-        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('code', {}, info.module), h('span', { class: 'muted small' }, model.genUser && model.genUser.exists ? ` user ${n}_u` : ` (no ${n}_u of its own: users get ${n}_r through their own gen_user lines)`)),
-        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Kind'), h('span', { title: k ? k.help : '' }, k ? k.label : model.user.kind), h('span', { class: 'code' }, model.declaredBy ? `${model.declaredBy.name}(${model.declaredBy.args.join(', ')})` : '')),
-        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Summary'), text(model.summary, (v) => { model.summary = v; changed(); }, { size: 48, title: 'The module\'s .if summary (only a new module gets it written)' })),
-      ]);
-    }
-    const kinds = info.catalog.kinds.map(k => {
-      const r = h('input', { type: 'radio', name: 'kind', value: k.id, checked: model.user.kind === k.id || null });
+  /**
+   * The kinds of user as radio buttons. A kind whose template can't link in this tree (it needs a
+   * module that is off) is disabled, unless the user already has it. An existing user keeps its
+   * template call while the kind stays; choosing another kind replaces that call.
+   */
+  function kindChoices() {
+    const was = info.isNew ? null : info.kindWas;
+    return info.catalog.kinds.map(k => {
+      const off = !!k.blocked && k.id !== was;
+      const r = h('input', { type: 'radio', name: 'kind', value: k.id, checked: model.user.kind === k.id || null, disabled: off || null });
       r.addEventListener('change', () => {
         model.user.kind = k.id;
         if (!k.login) model.ways = [];
         else if (!model.ways.length) model.ways = ['ssh', 'console'].filter(w => info.catalog.ways.some(x => x.id === w));
         render(); changed();
       });
-      return h('label', { class: 'check', title: k.help }, r, h('span', {}, h('b', {}, k.label), h('span', { class: 'code' }, k.template), h('div', { class: 'muted small' }, k.help)));
+      const tpl = !info.isNew && k.id === was && model.declaredBy ? `${model.declaredBy.name}(${model.declaredBy.args.join(', ')})` : k.template;
+      return h('label', { class: 'check', title: k.blocked ? `${k.help} Not available here: ${k.template} ${k.blocked}.` : k.help }, r, h('span', {}, h('b', {}, k.label), h('span', { class: 'code' }, tpl),
+        k.id === was ? h('span', { class: 'muted small' }, ' (now)') : null,
+        h('div', { class: 'muted small' }, k.help),
+        k.blocked ? h('div', { class: 'warn small' }, `${k.template} ${k.blocked}, so the tree can't link it.`) : null));
     });
+  }
+
+  function userCard() {
+    const n = model.name || 'NAME';
+    if (!info.isNew) {
+      return card('user', 'User', `${n}_u · role ${n}_r · domain ${n}_t`, [
+        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Module'), h('code', {}, info.module), h('span', { class: 'muted small' }, model.genUser && model.genUser.exists ? ` user ${n}_u` : ` (no ${n}_u of its own: users get ${n}_r through their own gen_user lines)`)),
+        h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Summary'), text(model.summary, (v) => { model.summary = v; changed(); }, { size: 48, title: 'The module\'s .if summary (only a new module gets it written)' })),
+        h('div', { class: 'sub' }, 'Kind'), h('div', { class: 'muted small' }, 'Choosing another kind replaces the template call in the .te; the role, logins and the rest stay.'), kindChoices(),
+      ]);
+    }
+    const kinds = kindChoices();
     return card('user', 'User', `${n}_u · role ${n}_r · domain ${n}_t`, [
       h('div', { class: 'row' }, h('span', { class: 'lbl' }, 'Name'), text(model.name, (v) => { model.name = v.trim(); $('title').textContent = model.name ? `New user: ${model.name}_u` : 'New User'; changed(); },
         { placeholder: 'e.g. ops', title: 'The name the user, role and domain are made from: NAME_u, NAME_r, NAME_t. Lowercase letters, digits and _.' })),
@@ -352,6 +366,8 @@
       // Switching between the tree and standalone keeps what was filled in (the prefix follows the place).
       if (m.keep && m.model) model = { ...m.model, prefix: m.info.model.prefix, cats: m.info.standalone ? '' : m.model.cats };
       else model = m.info.model;
+      // The kind as written (an existing user may switch to another).
+      info.kindWas = m.info.model && m.info.model.user ? m.info.model.user.kind : null;
       plan = null;
       reach = null;
       $('title').textContent = info.isNew ? 'New User' : `User: ${model.name}_${model.standalone || (model.genUser && model.genUser.exists) ? 'u' : 'r'} (${info.module})`;
