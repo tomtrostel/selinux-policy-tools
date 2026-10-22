@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-22: **v0.17.0 prepared** (package.json, CHANGELOG; release `v0.17.0` once the user says go; v0.16.0 is the latest GitHub release;
+Status as of 2026-10-22: **v0.17.0 released** (GitHub release `v0.17.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -53,7 +53,8 @@ the user tried the new panels before the release ("it looks like things
 work").
 0.17.0: contexts that won't load (step 14: login contexts, context files),
 RHEL 8 hosts (ricardo: fc order, matchpathcon -f), user editor kind
-changes, a lockdown tutorial step; not yet tried interactively.
+changes, a lockdown tutorial step; the user tried it before the release
+("It looks like it works").
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
