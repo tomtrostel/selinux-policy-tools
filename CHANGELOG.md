@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**Added**
+
+* **Check Login Contexts** (*SELinux: Check Login Contexts…*, and
+  diagnostics after every tree build): finds the logins that would fail
+  with "Unable to get valid context for <user>" although the policy
+  compiles.
+  * For every seusers line and every way in (ssh, console, graphical,
+    cron, systemd user sessions, …), it picks the context libselinux would
+    pick: 3.x (RHEL 9, 10) and 2.x (RHEL 8), which can differ.
+  * Each problem comes with its reason: a missing user, role or type, a
+    range outside the user's, no transition from the login program (rule,
+    boolean or constraint), or the failsafe as the only way in.
+  * For a tree build the problems land on the seusers and contexts file
+    lines, and update when those files change.
+  * Found in CLIP: users' crontabs can't run in CLIP RHEL 9, and in CLIP
+    RHEL 8 they would stop working after an upgrade to RHEL 9 (README,
+    Findings).
+
 **Changed**
 
 * User editor: an existing user's kind can be changed (for example from

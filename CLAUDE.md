@@ -1152,6 +1152,65 @@ so far covered by the e2e tests only.
    (melody; running targeted + CLIP copy: write every fixable change,
    rebuild, all present after), in test:clip-all.
 
+14. **Contexts that won't load** (user 2026-10-22: "scans compiled
+   policies to find problems which would prevent contexts from loading …
+   'unable to get valid context for <user>'"; agreed plan: phase 1 logins,
+   phase 2 every other context file — file_contexts (+ homedirs as
+   genhomedircon writes them, .local), failsafe/default_type/initrc/
+   removable/userhelper/virtual_*/lxc/x/dbus/sepgsql/systemd/openssh
+   contexts, media, securetty_types, customizable_types).
+   Phase 1, login contexts (done, unreleased): libselinux behaviour checked
+   in its source: 3.x get_ordered_context_list (get_context_user): the first
+   line of contexts/users/<seuser> whose first field has fromcon's
+   role:type, then default_contexts' first such line; entries seuser:entry
+   with fromcon's range (get_ordered_context_list_with_level replaces
+   fromcon's range by the seusers level); kept when security_check_context
+   passes (NO transition check); none → failsafe_context (seuser:<line>,
+   validity only) → else "unable to get valid context". 2.9 (RHEL 8):
+   security_compute_user(fromcon, user) = valid + process transition
+   (TE + constraints), range from mls_setup_user_range; file entries only
+   order them. getseuserbyname: own line > first %group > __default__ >
+   the login's own name (no level). policy_query op `logincontexts` {items:
+   info | resolve (m4 macros mls/mcs_systemhigh/low, mcs_allcats; sens/cats
+   sorted by the number in the name) | valid (context_valid) | transition
+   (avc process transition + constraints()) | userrange (mls_setup_user_range
+   with setools Levels)} → answers by id. server/loginctx.js (pure,
+   analyze(cfg, ask)): targets = seusers lines + users with an own contexts
+   file and no seusers line (hypothetical, at their default level; problems
+   collapsed into one info `unmapped`); per target the system_r sources of
+   its own file + default_contexts (fromcon system_u:system_r:S:<login
+   level or system_u's range>; skipped when fromcon itself isn't valid,
+   e.g. unconfined_u's stale `system_r:sysadm_su_t` line); a source is
+   "meant" when its own file has a line or a candidate's role is the
+   user's; works3 = first valid candidate (or failsafe) AND transition ok,
+   works2 = first candidate valid at the userrange and reachable (or
+   failsafe + transition). Problems: nodefault, duplicate, range, nouser,
+   noway, nocontext / nocontext3 (RHEL 9+ only) / nocontext2 (RHEL 8
+   only), failsafe (warning), skipped (info on the contexts line); errors
+   only for LOGIN_PROGRAMS (logins.ENTRY_LABELS + rshd_t), other callers
+   (initrc_t) info. Server: loginConfig() has `failsafe`;
+   loginContextReport(lp) (running policy → runningBooleans());
+   `selinux/loginContexts` {against}; publishLoginContexts() after each
+   good tree build (diagnostics source 'selinux-logins' on the seusers /
+   contexts lines, relatedInformation = candidate lines; loginCtxUris
+   cleared when gone) and on watched changes of LOGIN_FILES (client
+   watcher glob adds seusers, default_contexts, failsafe_context,
+   *_default_contexts). Client showLoginContexts (media/loginctx.js:
+   policy picker, verdict, problems with line links, per login the ways
+   with RHEL 9+ / RHEL 8 result and candidates with reasons), command
+   selinux.checkLoginContexts, FEATURES "Fix problems". Findings: RHEL 8/9
+   installed targeted: only info (initrc_t → unconfined_t); CLIP RHEL 9:
+   users' crontabs fail (no role authorized for cronjob_t — CLIP's roles
+   don't call cron_role; no crond_t → staff_t/sysadm_t rule); CLIP RHEL 8:
+   works on RHEL 8 (kernel picks staff_r:cronjob_t) but RHEL 9's libselinux
+   takes staff_r:staff_t, reachable only with cron_userdomain_transition
+   (off). README Findings "Login contexts in CLIP" (not yet confirmed on a
+   running CLIP host). Tests: test/loginctx-test.js (npm test: fake
+   policy, every problem kind, the webview), policy_query_test.py
+   (logincontexts), test/loginctx-e2e.js (melody CLIP 9 + ricardo CLIP 8;
+   in test:clip-all as `loginctx`), test/loginctx-survey.js (installed /
+   tree / build <tree>: prints every problem).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1336,6 +1395,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
+- `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
 - `media/levels.js`: Levels and Categories webview (context check, who
@@ -1447,6 +1507,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   `test/denials-bench.js` (`npm run test:denials-bench`, melody).
 - `test/logins-test.js` (in `npm test`) and `test/logins-e2e.js`
   (`npm run test:logins-e2e`, melody; optional tree arg, default CLIP).
+- `test/loginctx-test.js` (in `npm test`), `test/loginctx-e2e.js`
+  (`npm run test:loginctx-e2e`, melody/ricardo; optional tree arg, default
+  CLIP RHEL 9) and `test/loginctx-survey.js` (installed | tree | build).
 - `test/localmods-test.js` (in `npm test`) and `test/hostmods-e2e.js`
   (`npm run test:hostmods-e2e`, melody; optional tree arg, default CLIP).
 - `test/levels-test.js` (in `npm test`) and `test/levels-e2e.js`
@@ -1462,7 +1525,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   service-e2e).
 - `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
   tree-based e2e test (build-tree checks diff preview filelabel logins
-  denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  loginctx denials service user wrapper package levels multi-tree) on CLIP RHEL 8
   and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);

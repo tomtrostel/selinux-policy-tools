@@ -170,7 +170,7 @@ function activate(context) {
     documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }, { scheme: 'file', language: 'selinux-checks' }],
     synchronize: {
       configurationSection: 'selinux',
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst}'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst,seusers,default_contexts,failsafe_context,*_default_contexts}'),
     },
     initializationOptions: {
       extraIncludePaths: cfg().get('extraIncludePaths'),
@@ -282,6 +282,7 @@ function activate(context) {
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (levelsPanel) levelsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      if (loginCtxPanel) loginCtxPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (hostPanel) hostPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
@@ -440,6 +441,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.showFeatures', () => showFeatures()),
     vscode.commands.registerCommand('selinux.newWrapper', () => showWrapperEditor(context)),
     vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
+    vscode.commands.registerCommand('selinux.checkLoginContexts', () => showLoginContexts(context)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1924,6 +1926,7 @@ const FEATURES = [
   ]],
   ['Fix problems', [
     ['selinux.analyzeDenials', 'shield', 'Analyze Denials…', 'From AVC denials to the smallest correct fix'],
+    ['selinux.checkLoginContexts', 'key', 'Check Login Contexts…', 'Does every login get a valid context for ssh, console, cron, … ("Unable to get valid context"), on RHEL 8 and on RHEL 9 and later'],
   ]],
   ['Build and install', [
     ['selinux.buildModule', 'tools', 'Build', 'Compile the module or tree, with errors in the editor'],
@@ -2165,6 +2168,74 @@ function showHostChanges(context) {
     }
   }, undefined, context.subscriptions);
   panel.onDidDispose(() => { stopWatch(); hostPanel = null; }, undefined, context.subscriptions);
+}
+
+let loginCtxPanel = null;
+/** Login Contexts: does every login get a valid context for each way in (server/loginctx.js). */
+function showLoginContexts(context) {
+  if (loginCtxPanel) { loginCtxPanel.reveal(); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxLoginContexts', 'Login Contexts', vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  loginCtxPanel = panel;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'loginctx.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+  #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 14px;
+    background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #title { font-weight: 600; font-size: 1.1em; }
+  #status { opacity: .8; }
+  select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); padding: 2px 4px; }
+  button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, inherit); border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); padding: 3px 10px; cursor: pointer; border-radius: 2px; }
+  button.link { border: none; background: transparent; color: var(--vscode-textLink-foreground); padding: 0; font-family: var(--vscode-editor-font-family); }
+  button.link:hover { text-decoration: underline; }
+  #main { padding: 10px 14px 40px; }
+  .intro { opacity: .85; margin: 0 0 10px; max-width: 75em; }
+  table { border-collapse: collapse; margin: 4px 0 8px; }
+  td, th { text-align: left; padding: 3px 14px 3px 0; vertical-align: top; }
+  th { font-weight: 600; opacity: .75; }
+  .card { border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-left-color: var(--vscode-focusBorder); border-radius: 4px; margin: 0 0 10px; }
+  .card > summary { cursor: pointer; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .fname { font-weight: 600; }
+  .body { padding: 2px 14px 10px; }
+  .problem { margin: 8px 0; padding-left: 8px; border-left: 3px solid var(--vscode-panel-border); }
+  .problem.bad { border-left-color: var(--vscode-errorForeground); }
+  .problem.warn { border-left-color: var(--vscode-editorWarning-foreground); }
+  .sev { font-weight: 600; }
+  .where { margin: 2px 0; }
+  .note { margin: 3px 0; }
+  .warn { color: var(--vscode-editorWarning-foreground); }
+  .bad { color: var(--vscode-errorForeground); }
+  .ok { color: var(--vscode-testing-iconPassed, #3fb950); }
+  .problem .ptext { color: var(--vscode-foreground); }
+  .verdict { font-weight: 600; font-size: 1.05em; margin: 10px 0; }
+  code { font-family: var(--vscode-editor-font-family); }
+  .muted { opacity: .7; }
+  .small { font-size: .92em; }
+</style></head><body>
+<div id="bar">
+  <span id="title">Login Contexts</span>
+  <label>Policy <select id="against"></select></label>
+  <button id="refresh" title="Check again">Refresh</button>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'load') {
+        panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/loginContexts', { against: m.against }) });
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      }
+    } catch (e) {
+      panel.webview.postMessage({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { loginCtxPanel = null; }, undefined, context.subscriptions);
 }
 
 let levelsPanel = null;

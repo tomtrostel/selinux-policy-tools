@@ -126,6 +126,7 @@ class FUser(Named):
         Named.__init__(self, name)
         self.roles = [Named(r) for r in roles]
         self.mls_range = Range(rng)
+        self.mls_level = self.mls_range.low
 
 
 class FClass(Named):
@@ -392,6 +393,33 @@ check("is not a permission of file" in idx.context_check("a:b:staff_t:s0", "a:b:
       and "is not a type" in idx.context_check("a:b:nosuch_t:s0", "a:b:etc_t:s0", "file", ["read"], {})["error"]
       and "user:role:type" in idx.context_check("a:b", "a:b:etc_t:s0", "file", ["read"], {})["error"]
       and "Not a valid level" in idx.context_check("a:b:staff_t:s9", "a:b:etc_t:s0", "file", ["read"], {})["error"], "errors: permission, class, type, malformed, level")
+
+# ---------- login contexts ----------
+lc = idx.login_contexts([
+    {"id": 1, "kind": "info"},
+    {"id": 2, "kind": "resolve", "range": "s0 - mcs_systemhigh"},
+    {"id": 3, "kind": "resolve", "range": "s0:c2000"},
+    {"id": 4, "kind": "valid", "ctx": "staff_u:staff_r:staff_t:s0-s0:c0.c1023"},
+    {"id": 5, "kind": "valid", "ctx": "user_u:staff_r:staff_t:s0-s0:c0.c1023"},
+    {"id": 6, "kind": "valid", "ctx": "staff_u:system_r:nosuch_t:s0"},
+    {"id": 7, "kind": "valid", "ctx": "nobody_u:staff_r:init_t:s0"},
+    {"id": 8, "kind": "transition", "from": "system_u:system_r:init_t:s0-s0:c0.c1023", "to": "system_u:system_r:container_t:s0"},
+    {"id": 9, "kind": "transition", "from": "system_u:system_r:init_t:s0", "to": "staff_u:staff_r:staff_t:s0"},
+    {"id": 10, "kind": "transition", "from": "system_u:system_r:container_t:s0", "to": "system_u:system_r:container_t:s0-s0:c0.c1023"},
+    {"id": 11, "kind": "userrange", "user": "staff_u", "from": "s0-s0:c0.c1023"},
+    {"id": 12, "kind": "userrange", "user": "user_u", "from": "s0-mcs_systemhigh"},
+    {"id": 13, "kind": "nonsense"},
+], {})
+check(lc["1"]["mls"] and lc["1"]["users"]["user_u"] == {"roles": ["staff_r"], "range": "s0", "level": "s0"}, "login contexts: users with roles, range, default level", lc["1"])
+check(lc["2"]["range"] == "s0-s0:c0.c1023" and "isn't a valid range" in lc["3"]["error"], "ranges: m4 macros resolved; an invalid one is an error", (lc["2"], lc["3"]))
+check(lc["4"] == {"ok": True, "reasons": []}, "a valid login context")
+check(not lc["5"]["ok"] and [r["kind"] for r in lc["5"]["reasons"]] == ["userrange"] and "outside user_u's range s0" in lc["5"]["reasons"][0]["text"], "a range beyond the user's", lc["5"])
+check(sorted(r["kind"] for r in lc["6"]["reasons"]) == ["type", "userrole"] and sorted(r["kind"] for r in lc["7"]["reasons"]) == ["roletype", "user"], "no such type, role not the user's; no such user, role not authorized for the type", (lc["6"], lc["7"]))
+check(lc["8"]["ok"] and lc["8"]["te"] == "allowed", "init_t may transition to container_t")
+check(not lc["9"]["ok"] and lc["9"]["te"] == "missing", "no allow rule: no transition", lc["9"])
+check(not lc["10"]["ok"] and lc["10"]["te"] == "missing" and lc["10"]["constraints"] and lc["10"]["constraints"][0]["kind"] == "mlsconstrain", "a held domain going up in level: the MLS constraint (h1 dom h2) is reported with the missing rule", lc["10"])
+check(lc["11"]["range"] == "s0-s0:c0.c1023" and lc["12"]["range"] == "s0", "the kernel's session range: the user's range within the caller's", (lc["11"], lc["12"]))
+check("unknown question" in lc["13"]["error"], "an unknown question is an error")
 
 # ---------- facts for comparing a host's local changes ----------
 hf = idx.hostfacts()

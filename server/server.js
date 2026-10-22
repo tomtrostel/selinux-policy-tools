@@ -221,6 +221,12 @@ connection.onDidChangeWatchedFiles((ev) => {
     if (documents.get(ch.uri)) continue; // open editors are authoritative
     const p = toPath(ch.uri);
     if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
+    // The login configuration of the tree (seusers, contexts files): checked again without a rebuild.
+    if (LOGIN_FILES.test(path.basename(p))) {
+      clearTimeout(loginCtxTimer);
+      loginCtxTimer = setTimeout(() => publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`)), 500);
+      continue;
+    }
     // modules.conf (or a spec module list): which modules are built changed; re-read on the rebuild below.
     if (/(^|[\\/])modules[^\\/]*\.conf$|\.lst$/.test(p)) continue;
     if (inExcludedTree(p)) continue;
@@ -420,6 +426,7 @@ function runBuild(key, pkg = false, trigger = null) {
     if (res.tree && res.ok && res.policyBin && policyQuery.proc) policyQuery.request({ op: 'rules', bin: res.policyBin, name: '', dir: 'source', kinds: ['allow'] });
     if (!res.tree && res.ok) lastModule = key;
     if (res.ok && (res.tree || (usingDevel && checksPath() && fs.existsSync(checksPath())))) runChecks().catch(err => log(`checks failed: ${err.message}`));
+    if (res.tree && res.ok) publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`));
     connection.sendNotification('selinux/build', { state: 'done', ...summary });
     return summary;
   })();
@@ -3702,13 +3709,14 @@ function loginConfig(pol) {
   const read = (p) => { const t = readSource(p); return t == null ? null : t; };
   if (pol.build && !usingDevel && treeRoot) {
     const dir = appconfigDir(treeRoot);
-    return { dir, host: false, seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'default_contexts'), userFile: (u) => path.join(dir, `${u}_default_contexts`), read };
+    return { dir, host: false, seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'default_contexts'), userFile: (u) => path.join(dir, `${u}_default_contexts`),
+      failsafe: path.join(dir, 'failsafe_context'), read };
   }
   const name = pol.name || (build.installedPolicies().find(p => p.active) || {}).name;
   if (!name) return null;
   const dir = path.join('/etc/selinux', name);
   return { dir, host: !!(pol.active || pol.build), seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'contexts', 'default_contexts'),
-    userFile: (u) => path.join(dir, 'contexts', 'users', u), read };
+    userFile: (u) => path.join(dir, 'contexts', 'users', u), failsafe: path.join(dir, 'contexts', 'failsafe_context'), read };
 }
 
 /** The policy file for a login report: the entry's own, or the module linked with this host's policy. */
@@ -3829,6 +3837,76 @@ connection.onRequest('selinux/logins', async ({ against } = {}) => {
   }
   return { policy: { id: pol.id, label: pol.label, configDir: cfg.dir, host: cfg.host }, policies, users, mappings, seusersFile: seText == null ? null : cfg.seusers, accounts, notes };
 });
+
+/* ---------------- login contexts: "Unable to get valid context" before a host sees it ---------------- */
+
+const loginctx = require('./loginctx');
+
+/**
+ * Whether each login of a policy gets a valid context for each way in (server/loginctx.js), for a
+ * loginPolicy() result. The running policy is checked with its current booleans, others with their
+ * defaults. { report, cfg } or { error }.
+ */
+async function loginContextReport(lp) {
+  const cfg = loginConfig(lp.pol);
+  if (!cfg) return { error: 'No login configuration found for this policy.' };
+  const f = (p) => ({ path: p, text: cfg.read(p) });
+  const bools = lp.pol.active ? runningBooleans() : {};
+  const report = await loginctx.analyze({ seusers: f(cfg.seusers), defaults: f(cfg.defaults), userFile: (u) => (/^\w+$/.test(u) ? f(cfg.userFile(u)) : null), failsafe: f(cfg.failsafe) },
+    async (items) => {
+      const r = await policyQuery.request({ op: 'logincontexts', bin: lp.bin, items, bools });
+      if (r.error) throw new Error(`Policy query failed: ${r.error}`);
+      return r.answers;
+    });
+  return { report, cfg };
+}
+
+connection.onRequest('selinux/loginContexts', async ({ against } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
+  const policy = lp.pol ? { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active } : null;
+  if (lp.error) return { error: lp.error, policies, policy };
+  try {
+    const { report, cfg, error } = await loginContextReport(lp);
+    if (error) return { error, policies, policy };
+    return { policies, policy: { ...policy, configDir: cfg.dir }, ...report };
+  } catch (e) {
+    return { error: e.message, policies, policy };
+  }
+});
+
+/**
+ * After a good tree build: the login context problems as diagnostics on the seusers and contexts
+ * file lines that cause them (config/appconfig-<TYPE>), replacing the previous ones.
+ */
+let loginCtxUris = new Set(), loginCtxTimer = null;
+const LOGIN_FILES = /^(seusers|default_contexts|failsafe_context|\w+_default_contexts)$/;
+async function publishLoginContexts() {
+  const res = treeRoot && lastBuild.get(treeRoot);
+  const now = new Map();
+  if (res && res.ok && res.policyBin && fs.existsSync(res.policyBin) && !usingDevel) {
+    const pol = denialPolicies().find(p => p.build);
+    if (pol) {
+      const { report } = await loginContextReport({ pol, bin: res.policyBin });
+      const sev = { error: DiagnosticSeverity.Error, warning: DiagnosticSeverity.Warning, info: DiagnosticSeverity.Information };
+      for (const p of (report && report.problems) || []) {
+        if (!p.file) continue;
+        const text = readSource(p.file) || '';
+        const line = text.split('\n')[p.l] || '';
+        const d = { range: range(p.l, 0, Math.max(1, line.length)), severity: sev[p.severity], source: 'selinux-logins', code: p.kind, message: p.text };
+        const rel = (p.related || []).filter(x => x.file && !(x.file === p.file && x.l === p.l)).map(x => ({ location: { uri: toUri(x.file), range: range(x.l, 0, 1) }, message: x.text }));
+        if (rel.length) d.relatedInformation = rel.slice(0, 8);
+        const u = toUri(p.file);
+        if (!now.has(u)) now.set(u, []);
+        now.get(u).push(d);
+      }
+    }
+  }
+  for (const u of loginCtxUris) if (!now.has(u)) connection.sendDiagnostics({ uri: u, diagnostics: [] });
+  for (const [u, ds] of now) connection.sendDiagnostics({ uri: u, diagnostics: ds });
+  loginCtxUris = new Set(now.keys());
+}
 
 /** Every domain a user's sessions can reach, nearest first, with the path to each. */
 connection.onRequest('selinux/loginReach', async ({ against, user, starts } = {}) => {

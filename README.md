@@ -31,7 +31,9 @@ It works at two levels:
   context access another, which domains ignore levels, what categories
   don't keep apart). *Compare Host's Local Changes* shows what `semanage`
   changed on a host against your policy, and writes the changes that
-  belong into its source.
+  belong into its source. *Check Login Contexts* finds the logins that
+  would fail with "Unable to get valid context" even though the policy
+  compiles.
 * **Writing and fixing policy.**
   * A service editor that writes and edits a daemon's module from a form,
     and a user editor for SELinux users, their logins and ways in.
@@ -856,6 +858,56 @@ standalone module linked with the running policy and its configuration).
 On RHEL 9's targeted policy the report takes about 9 s (the reach of each
 user is 0.1–2.5 s; staff_u reaches 867 domains, user_u 100, guest_u 11).
 
+**Login contexts** (*SELinux: Check Login Contexts…*; after every tree
+build as diagnostics; Linux)
+
+A policy can compile and still lock people out. At login, `pam_selinux`
+(called by sshd, login, gdm, crond) finds the login's SELinux user and
+level in `seusers`. libselinux then takes the entries for the calling
+program's `role:type` from the user's own contexts file, then from
+`default_contexts`, and the session starts in the first one that works.
+When none works, the login fails with "Unable to get valid context for
+*user*". This check does the same for every `seusers` line and every way
+in, on the compiled policy:
+
+* **What it finds:**
+  * a login mapped to a SELinux user the policy doesn't have;
+  * no `__default__` line (a login without a line then uses its own name
+    as the SELinux user);
+  * a range the policy rejects, or one outside the user's range;
+  * entries with a role the user doesn't have, or a role not authorized
+    for the type;
+  * a login program that may not transition to the user's domain (no
+    rule, a boolean that is off, or a constraint, with the failing
+    comparison);
+  * a failsafe context as the only way in, and an entry for the user that
+    is passed over for a later one.
+* **RHEL 8 and RHEL 9 differ, and it checks both:**
+  * libselinux 3.x (RHEL 9, 10) takes the first *valid* entry at the
+    login's range; if the login program may not transition to it, the
+    session then fails to start.
+  * libselinux 2.x (RHEL 8) lets the kernel compute the contexts the
+    program may reach, with the range clipped to the user's.
+
+  So a configuration can work on one and fail on the other, and the
+  report says which.
+* **Users without a `seusers` line** that have a contexts file of their
+  own (their logins come from `semanage login` on the hosts) are checked as
+  if a login were mapped to them, and reported as information.
+* **Where the results appear:**
+  * For a tree build, each problem is a diagnostic on the `seusers` or
+    contexts file line in `config/appconfig-<TYPE>` that causes it, with
+    the lines involved as related information. Editing those files updates
+    the diagnostics without a rebuild.
+  * The panel checks the build or any installed policy (the running one
+    with its current booleans), with every way in, both versions' result,
+    and each listed context's reason.
+
+On RHEL 8 and 9's installed targeted policies every login gets a context,
+except one note: `initrc_t` (`runuser` in init scripts) can't start an
+`unconfined_u` session. For what it finds in CLIP, see
+[Findings](#login-contexts-in-clip).
+
 **User editor** (*SELinux: New User…*, or *New User…* in Logins and Users;
 full trees)
 
@@ -1622,6 +1674,15 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   `initrc_t`); RHEL's installed policy `init_t` 576, `sshd_t` 33 (incl.
   dynamic ones), 22 domains can enter `sysadm_t` (one boolean-controlled).
   The graph's webview script is tested against a fake DOM.
+* Login contexts (test/loginctx-test.js with a fake policy; test/loginctx-e2e.js
+  on Rocky 9.8 with CLIP RHEL 9 and on Rocky 8.10 with CLIP RHEL 8, both with
+  each host's own tools): the running targeted policy has no errors or
+  warnings; after a CLIP build its problems are diagnostics on the seusers
+  lines; a login mapped to a missing user, a rejected range (`c5000` of 1024
+  categories) and a passed-over contexts entry appear on their lines when
+  the files are edited on disk, and go away when they are restored.
+  `test/loginctx-survey.js` runs the check over installed policies and CLIP
+  builds (see Findings).
 * Logins and Users (test/logins-e2e.js on Rocky 9.8): the running targeted
   policy maps `root` and `__default__` to `unconfined_u` (noted; it runs
   unconfined and can load a policy); `staff_u` over ssh lands in `staff_t`
@@ -1772,6 +1833,34 @@ another container's FIFO aren't checked either, but opening one is, so
 they need a descriptor handed over. Network and IPC namespaces normally
 keep containers from reaching these objects at all.
 
+### Login contexts in CLIP
+
+Found with *Check Login Contexts* on builds made with CLIP's own make
+arguments (2026-10-22). Cron jobs are the only way in that fails; ssh,
+console, graphical and systemd user sessions work for every mapped login.
+
+* **CLIP RHEL 9:** users' own crontabs can't run, for `root` and for
+  `__default__` (`staff_u`).
+  * `default_contexts` and `root_default_contexts` offer `crond_t` the
+    roles' `cronjob_t`, but no role is authorized for `cronjob_t`: CLIP's
+    role modules don't call `cron_role`.
+  * The other entries (`staff_t`, `sysadm_t`) aren't reachable either,
+    because no rule lets `crond_t` transition to them.
+  * The failsafe `sysadm_r:sysadm_t` doesn't help, for the same reason.
+
+  cronie then refuses to run those jobs. If users aren't meant to have
+  crontabs, this is the lockdown working; if they are, the roles need
+  `cron_role`. Not yet confirmed on a running CLIP host.
+* **CLIP RHEL 8:** cron works for `__default__` (`staff_u`) on RHEL 8, but
+  would stop on RHEL 9 and later. RHEL 8's libselinux lets the kernel pick
+  a context `crond_t` may reach (`staff_r:cronjob_t`). RHEL 9's takes the
+  first valid entry, `staff_r:staff_t`, and `crond_t` may transition there
+  only with `cron_userdomain_transition` on, which is off. The same
+  configuration would break users' crontabs after an OS upgrade.
+* Both branches keep refpolicy's `unconfined_u_default_contexts` while the
+  `unconfined` module is off. Nothing maps a login to `unconfined_u`, so it
+  doesn't matter until someone does.
+
 ## Limitations
 
 **Wrapped programs**
@@ -1803,6 +1892,23 @@ keep containers from reaching these objects at all.
 * Rules are listed as written (for the type or one of its attributes), not
   per domain; dontaudit and neverallow rules aren't shown. Source statements
   can be traced for the workspace's build only.
+
+**Login contexts**
+
+* The calling program's context is taken as `system_u:system_r:<its domain>` at
+  the login's range (or `system_u`'s range when the seusers line has none),
+  as when sshd or crond start a session. Callers other than login programs
+  (`initrc_t`, `unconfined_t` lines) are reported as information only, and
+  lines for contexts no process can have (`system_r:sysadm_su_t`) are
+  skipped.
+* Booleans are the policy's defaults, or the current ones for the running
+  policy. PAM settings (`pam_selinux` options such as `select_context`),
+  `/etc/selinux/<name>/logins/` and newrole, su or sudo role changes aren't
+  covered; neither are the per-category limits of the login's range beyond
+  what the constraints check.
+* A tree's `seusers` and contexts files are read as written: the
+  `semanage login` and `semanage user` changes of each host are not known
+  (*Compare Host's Local Changes* shows them).
 
 **Logins and Users**
 
@@ -2076,6 +2182,7 @@ and exits non-zero on a failure.
 | `service-test.js`, `user-test.js`, `wrapper-test.js`, `denials-test.js`, `logins-test.js`, `filelabel-test.js`, `levels-test.js`, `webview-transitions-test.js` | Each feature's model and its webview against a fake DOM |
 | `client-test.js` | The All Features menu, *Add check*, the Configure from Spec items (stand-in `vscode`) |
 | `localmods-test.js` | Host Changes: the `semanage export` parser, the comparison, every fix, the panel |
+| `loginctx-test.js` | Login contexts: libselinux 3.x and 2.x context selection over seusers and the contexts files, every kind of problem, the panel |
 | `walkthrough-test.js` | The tutorials: pages, buttons, every contributed command registered |
 
 **End-to-end tests** need Linux with the SELinux toolchain and real trees
@@ -2102,6 +2209,7 @@ npm run test:wrapper-e2e  # wrapped programs: tree and standalone RPM
 npm run test:package      # standalone modules packaged as RPMs
 npm run test:denials-e2e  # denial assistant on the running policy and a build
 npm run test:logins-e2e   # Logins and Users
+npm run test:loginctx-e2e # login contexts: running policy, then a CLIP build with seusers / contexts edits
 npm run test:filelabel-e2e  # File Labels vs matchpathcon
 npm run test:levels-e2e   # Levels and Categories, level and isolation checks
 npm run test:hostmods-e2e # a host's local changes: compare, write into a tree, rebuild

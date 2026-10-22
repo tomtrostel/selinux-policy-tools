@@ -13,6 +13,7 @@ type's attributes) and re-indexed when the file changes, so a query is a
 dictionary lookup instead of a scan of every rule.
 """
 import json
+import re
 import os
 import sys
 
@@ -664,6 +665,129 @@ class Index:
         return {"problems": problems, "te": te.get("perms", {}), "permissiveDomain": te.get("permissiveDomain", False),
                 "constraints": cons, "levels": levels, "mls": bool(p.mls)}
 
+    # ----- login contexts: what libselinux and the kernel decide when a session starts -----
+
+    def canon_range(self, text):
+        """A range as written in seusers or a contexts file, m4 macros resolved (s0-mcs_systemhigh),
+        in setools' form; raises ValueError when the policy doesn't accept it."""
+        p = self.policy
+        # Refpolicy names them s0..sN and c0..cN (mls_num_sens / mls_num_cats).
+        num = lambda x: int(re.sub(r"\D", "", str(x)) or 0)
+        sens = sorted(p.sensitivities(), key=num)
+        cats = sorted(p.categories(), key=num)
+        low = str(sens[0]) if sens else "s0"
+        allcats = ("%s.%s" % (cats[0], cats[-1]) if len(cats) > 1 else str(cats[0])) if cats else ""
+        high = "%s:%s" % (sens[-1], allcats) if allcats else (str(sens[-1]) if sens else "s0")
+        out = text.strip()
+        for name, val in (("mls_systemhigh", high), ("mcs_systemhigh", high), ("mls_systemlow", low), ("mcs_systemlow", low),
+                          ("mcs_allcats", allcats), ("mls_allcats", allcats)):
+            out = re.sub(r"\b%s\b" % name, val, out)
+        out = re.sub(r"\s*-\s*", "-", out)
+        try:
+            rng = p.lookup_range(out)
+        except Exception as e:
+            raise ValueError("%s isn't a valid range for this policy (%s)" % (text.strip(), e))
+        return str(rng).replace(" - ", "-"), rng
+
+    def ctx_parts(self, ctx):
+        parts = ctx.strip().split(":")
+        return parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "", ":".join(parts[3:])
+
+    def context_valid(self, ctx):
+        """security_check_context: the user has the role, the role the type, and (MLS) the range
+        is valid and within the user's range. Reasons for each failure."""
+        p = self.policy
+        u, r, t, rng = self.ctx_parts(ctx)
+        t = self.aliases.get(t, t)
+        reasons = []
+        if u not in self.user_roles:
+            reasons.append({"kind": "user", "text": "there is no SELinux user %s" % u})
+        if r not in self.role_types:
+            reasons.append({"kind": "role", "text": "there is no role %s" % r})
+        elif u in self.user_roles and r not in self.user_roles[u]:
+            reasons.append({"kind": "userrole", "text": "%s doesn't have role %s (its roles: %s)" % (u, r, " ".join(sorted(self.user_roles[u])))})
+        if t not in self.attrs:
+            reasons.append({"kind": "type", "text": "%s is an attribute, not a type" % t if t in self.members else "there is no type %s" % t})
+        elif r in self.role_types and r != "object_r" and t not in self.role_types[r]:
+            reasons.append({"kind": "roletype", "text": "role %s isn't authorized for %s" % (r, t)})
+        if p.mls:
+            if not rng:
+                reasons.append({"kind": "range", "text": "the context has no level"})
+            else:
+                try:
+                    _, cr = self.canon_range(rng)
+                    if u in self.user_roles and r != "object_r":
+                        ur = p.lookup_user(u).mls_range
+                        if not (cr.low >= ur.low and ur.high >= cr.high):
+                            reasons.append({"kind": "userrange", "text": "%s is outside %s's range %s" % (rng, u, str(ur).replace(" - ", "-"))})
+                except ValueError as e:
+                    reasons.append({"kind": "range", "text": str(e)})
+        return {"ok": not reasons, "reasons": reasons}
+
+    def user_range(self, user, fromrange):
+        """The range the kernel gives a session of `user` started from a context with `fromrange`
+        (mls_setup_user_range, used by security_compute_user: libselinux before 3.x)."""
+        p = self.policy
+        u = p.lookup_user(user)
+        ud, ul, uc = u.mls_level, u.mls_range.low, u.mls_range.high
+        _, fr = self.canon_range(fromrange)
+        fl, fc = fr.low, fr.high
+        between = lambda l, lo, hi: l >= lo and hi >= l
+        if between(ud, fl, fc):
+            sen = ud
+        elif between(fl, ud, uc):
+            sen = fl
+        elif between(fc, ul, ud):
+            sen = ul
+        else:
+            raise ValueError("%s's default level %s and the range %s don't meet" % (user, ud, fromrange))
+        if uc >= fc:
+            clr = fc
+        elif fc >= uc:
+            clr = uc
+        else:
+            raise ValueError("%s's clearance %s and %s aren't comparable" % (user, uc, fc))
+        return str(sen) if str(sen) == str(clr) else "%s-%s" % (sen, clr)
+
+    def login_contexts(self, items, bools):
+        """Batched questions for the login context check: {id, kind: info | resolve | valid |
+        transition | userrange, ...} → answers by id."""
+        p = self.policy
+        out = {}
+        for it in items:
+            k, a = it.get("kind"), {}
+            try:
+                if k == "info":
+                    users = {}
+                    for u in p.users():
+                        x = {"roles": sorted(self.user_roles[str(u)])}
+                        if p.mls:
+                            x["range"] = str(u.mls_range).replace(" - ", "-")
+                            x["level"] = str(u.mls_level)
+                        users[str(u)] = x
+                    a = {"mls": bool(p.mls), "users": users}
+                elif k == "resolve":
+                    a = {"range": self.canon_range(it["range"])[0]} if p.mls else {"range": None}
+                elif k == "valid":
+                    a = self.context_valid(it["ctx"])
+                elif k == "userrange":
+                    a = {"range": self.user_range(it["user"], it["from"]) if p.mls else None}
+                elif k == "transition":
+                    fu, fr, ft, _ = self.ctx_parts(it["from"])
+                    tu, tr, tt, _ = self.ctx_parts(it["to"])
+                    ft, tt = self.aliases.get(ft, ft), self.aliases.get(tt, tt)
+                    te = self.avc([{"s": ft, "t": tt, "c": "process", "perms": ["transition"]}], bools)[0]
+                    per = (te.get("perms") or {}).get("transition") or {"status": "missing"}
+                    cons = self.constraints(it["from"], it["to"], "process", {"transition"}) if "unknown" not in te else []
+                    a = {"te": per.get("status"), "options": per.get("options"), "rules": per.get("rules"),
+                         "constraints": cons, "ok": per.get("status") == "allowed" and not cons}
+                else:
+                    a = {"error": "unknown question %s" % k}
+            except (ValueError, KeyError) as e:
+                a = {"error": str(e).strip("'\"")}
+            out[str(it.get("id"))] = a
+        return out
+
     def constraints(self, scontext, tcontext, cls, perms, everything=False):
         """The constraints for cls on any of perms that the two contexts fail, each with the
         comparisons it is made of (operands' values and whether each held). everything: the
@@ -1101,6 +1225,8 @@ def main():
             elif req.get("op") == "isolation":
                 doms = idx.names(req.get("domains") or []) & idx.domains
                 resp.update(results=idx.isolation(doms, req.get("weight") or 10, set(req.get("classes") or []) or None, scope=req.get("scope") or "own"), mls=bool(idx.policy.mls))
+            elif req.get("op") == "logincontexts":
+                resp.update(answers=idx.login_contexts(req.get("items") or [], req.get("bools") or {}))
             elif req.get("op") == "context":
                 resp.update(idx.context_check(req["s"], req["t"], req["c"], req.get("perms") or [], req.get("bools") or {}))
             elif req.get("op") == "entrypoints":
