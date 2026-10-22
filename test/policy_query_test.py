@@ -448,6 +448,37 @@ check(hf["users"]["user_u"] == {"roles": ["staff_r"], "range": "s0"} and hf["use
 check(hf["ports"] == [{"proto": "tcp", "low": 80, "high": 80, "type": "http_port_t"}, {"proto": "tcp", "low": 8000, "high": 8010, "type": "http_port_t"}], "hostfacts: port labels with ranges", hf["ports"])
 check(hf["netifs"] == {"lo": "lo_netif_t"} and hf["nodes"] == [{"addr": "127.0.0.0", "mask": "255.0.0.0", "proto": "ipv4", "type": "lo_node_t"}], "hostfacts: interface and node labels", (hf["netifs"], hf["nodes"]))
 
+# ---------- session starts: computed types, NoNewPrivileges/nosuid, invalid automatic transitions, typebounds ----------
+CLASSES.append(FClass("process2", ["nnp_transition", "nosuid_transition"]))
+CLASSES.append(FClass("chr_file", ["read", "write", "relabelfrom", "relabelto"]))
+TYPES.extend([FType("devpts_t", ["file_type"]), FType("staff_devpts_t", ["file_type"]), FType("sshd_devpts_t", ["file_type"])])
+RULES.extend([
+    FRule("type_transition", "init_t", "devpts_t", "chr_file", default="sshd_devpts_t"),
+    FRule("type_change", "staff_t", "sshd_devpts_t", "chr_file", default="staff_devpts_t"),
+    FRule("allow", "init_t", "staff_t", "process2", ["nnp_transition"]),
+    # staff_t may run container_exec_t, and a type_transition puts it in container_t, which staff_r may not have.
+    FRule("allow", "staff_t", "container_exec_t", "file", ["execute"]),
+    FRule("type_transition", "staff_t", "container_exec_t", "process", default="container_t"),
+])
+SELinuxPolicy.bounds = lambda self: [types.SimpleNamespace(ruletype=Named("typebounds"), parent=Named("init_t"), child=Named("container_t"))]
+SELinuxPolicy.polcaps = lambda self: [Named("nnp_nosuid_transition")]
+fake.RBACRuleQuery = lambda policy, ruletype=None: types.SimpleNamespace(results=lambda: [])  # no role allow / role_transition
+idx2 = policy_query.Index(path)
+check(idx2.computed_type("type_transition", "init_t", "devpts_t", "chr_file", {}) == "sshd_devpts_t" and idx2.computed_type("type_change", "staff_t", "sshd_devpts_t", "chr_file", {}) == "staff_devpts_t"
+      and idx2.computed_type("type_change", "init_t", "sshd_devpts_t", "chr_file", {}) is None, "computed types: type_transition and type_change; none without a rule")
+n1, n2 = idx2.nnp_check("init_t", "staff_t", {}), idx2.nnp_check("init_t", "container_t", {})
+check(n1["cap"] and n1["nnp_transition"]["status"] == "allowed" and n1["nosuid_transition"]["status"] == "missing" and not n1["bounded"] and n1["nnpTo"] == [{"name": "staff_t", "attribute": False}],
+      "nnp: nnp_transition allowed, nosuid_transition not; where init_t may start things under NoNewPrivileges", n1)
+check(n2["bounded"] and n2["nnp_transition"]["status"] == "missing", "nnp: container_t bounded by init_t (typebounds) passes without the rule", n2)
+ai = idx2.auto_invalid("staff_u", [{"role": "staff_r", "type": "staff_t"}], None, {})
+check(len(ai["items"]) == 1 and ai["items"][0]["entry"] == "container_exec_t" and ai["items"][0]["target"] == "container_t" and "staff_r isn't authorized for container_t" in ai["items"][0]["reason"] and ai["items"][0]["depth"] == 0,
+      "invalid automatic transition: staff_t running container_exec_t computes staff_r:container_t", ai)
+bm = idx2.bounds_masked({})
+check(len(bm) == 1 and bm[0]["child"] == "container_t" and bm[0]["parent"] == "init_t" and {"t": "container_file_t", "c": "file", "perms": ["create", "open", "read", "write"]} in bm[0]["masked"],
+      "typebounds: what container_t has and init_t lacks is masked", bm)
+lc2 = idx2.login_contexts([{"id": 1, "kind": "avc", "s": "staff_t", "t": "etc_t", "c": "file", "perms": ["read", "map"]}, {"id": 2, "kind": "autoinvalid", "user": "staff_u", "starts": [{"role": "staff_r", "type": "staff_t"}], "depth": 0}], {})
+check(list(lc2["1"]["perms"]) == ["read"] and lc2["1"]["perms"]["read"]["status"] == "allowed" and len(lc2["2"]["items"]) == 1, "logincontexts avc: permissions the class lacks (map) aren't asked; autoinvalid by question", lc2)
+
 os.remove(path)
 print("\n%d check(s) failed" % failures if failures else "\nall policy_query checks passed")
 sys.exit(1 if failures else 0)

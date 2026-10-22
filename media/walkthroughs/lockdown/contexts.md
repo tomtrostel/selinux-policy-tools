@@ -17,6 +17,13 @@ sessions), as libselinux does when a session starts:
 * RHEL 8 and RHEL 9 pick differently (RHEL 9 takes the first valid entry
   without checking that the program may switch to it), so a configuration
   can work on one and fail on the other. The report says which.
+* a login that gets a context and then bounces: the user's domain can't
+  be entered through the shell or can't load its libraries, the kernel
+  closes the terminal it inherits (no `fd use` on sshd, no access to the
+  pty), or NoNewPrivileges / a nosuid mount refuses the change
+  ("security_bounded_transition"). **How to fix** lists the interfaces of
+  your policy that grant exactly what is missing, narrowest first, and
+  writes the one you pick into the domain's module.
 
 **SELinux: Check Context Files…** covers every other place a context is
 named:

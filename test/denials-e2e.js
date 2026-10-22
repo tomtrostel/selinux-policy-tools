@@ -111,7 +111,8 @@ const LOG = [
   check(!by('httpd_t', 'httpd_sys_content_t').suggest, 'no suggestions for an allowed access');
   check(by('nope_t', 'etc_t').v.verdict === 'unknown', 'nope_t: not in this policy');
   check(by('demo_t', 'demo_data_t').v.verdict === 'unknown', 'the module\'s types are unknown to the installed policy');
-  check(r.groups.find(g => g.kind === 'error').v.verdict === 'error', 'SELINUX_ERR: error verdict');
+  const ge = r.groups.find(g => g.kind === 'error');
+  check(ge.v.verdict === 'invalid' && /there is no type demo_t/.test(ge.v.detail), 'SELINUX_ERR invalid_context: the computed context and why it is invalid', ge.v);
 
   // The same user_home_t read without a path is a boolean (httpd_read_user_content).
   r = await conn.sendRequest('selinux/analyzeDenials', { text: LOG.split('\n')[2] + '\n' });

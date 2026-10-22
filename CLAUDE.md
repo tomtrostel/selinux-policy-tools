@@ -55,6 +55,9 @@ work").
 RHEL 8 hosts (ricardo: fc order, matchpathcon -f), user editor kind
 changes, a lockdown tutorial step; the user tried it before the release
 ("It looks like it works").
+Unreleased: step 15 (logins that bounce: session starts, fixes from the
+tree's interfaces, SELINUX_ERR verdicts in the denial assistant); not yet
+tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1256,6 +1259,87 @@ so far covered by the e2e tests only.
    (melody CLIP 9 + ricardo CLIP 8; clip-all `ctxfiles`),
    test/ctxfiles-survey.js (installed | tree <copy> [TYPE] | build <tree>).
 
+15. **Logins that bounce** (done, unreleased; user 2026-10-22: "giving a
+   user can cause the login to bounce … SELinux thinks the rights were
+   elevated too much and kills the login even though everything compiles …
+   helpful suggestions based on the actual policy … preferable to …
+   audit2allow"; "lets do both": the session checks + the audit records,
+   which the user didn't paste; journals had none, audit.log needs root).
+   Kernel facts used: exec into the session domain D from login program S
+   needs D entrypoint on the program's label (symlinks followed: /bin/sh →
+   bash), the loader D read/open/getattr/execute/map on its libs (ldd) and
+   read/open/getattr/map on /etc/ld.so.cache; inherited files are
+   revalidated (flush_unauthorized_files): D S:fd use + chr_file read write
+   ioctl getattr on the terminal, else /dev/null and the shell exits; ssh
+   pty = type_transition S devpts_t:chr_file (sshd_devpts_t), relabeled by
+   type_change D old:chr_file when S has relabelfrom/relabelto (sshd keeps
+   going if setfilecon fails); console = tty_device_t + type_change.
+   NoNewPrivileges/nosuid (policycap nnp_nosuid_transition): process2
+   nnp_transition / nosuid_transition, else D bounded by S, else exec fails
+   with SELINUX_ERR op=security_bounded_transition (the user's "rights
+   elevated too much"). compute_sid of a process type_transition keeps the
+   role (unless role_transition); invalid → exec refused (SELINUX_ERR
+   security_compute_sid invalid_context). typebounds mask the child's extra
+   perms at run time (op=security_compute_av reason=bounds). RHEL 9:
+   userdom_login_user_template puts users in login_userdomain; init_t,
+   local_login_t, xdm_t have nnp_transition to it (userdom_nnp_transition_
+   login_userdomain); sshd_t has none; RHEL 9 compiled policy has 0
+   typebounds; no login unit sets NoNewPrivileges on melody.
+   policy_query logincontexts kinds computed (type_transition/type_change,
+   unnamed, active cond), avc (perms the class lacks dropped), nnp
+   (nnp_check: statuses, bounded_by via policy.bounds(), polcaps, nnpTo =
+   S's unconditional nnp rules, `holds` = session domains in an attribute),
+   autoinvalid (auto_invalid: reach() states up to `depth`, type_transition
+   on exec types the state may execute, computed role invalid), bounds
+   (bounds_masked). server/sessions.js (pure, analyze(report, facts, ask)):
+   starts = each way's v3 / v2 context (both when different, `on`),
+   FIRST_PROGRAM (shell | /bin/sh for crond_t | systemd for init_t),
+   TERMINALS (sshd_t/sshd_session_t pty, local_login_t tty), checks entry /
+   libs / tty / nnp per session; problems session-entry, session-libs,
+   session-fd, session-tty (hint: a user pty type via type_change),
+   session-relabel (info), session-nnp (unit sets NoNewPrivileges),
+   session-nosuid (program on a nosuid mount), session-nnp-other (warning:
+   S may nnp into other sessions' domains / an attribute holding one, not
+   D), session-invalid (info per user, depth 0 only, grouped by target; the
+   whole reach was noise: daemons reached through others), bounds
+   (warning); `need` {source,target,tclass,perms} + `attrs` for fixes;
+   END_TEXT per login program; hypothetical logins → info. Server:
+   loginContextReport runs it after loginctx (report.sessions/invalid/
+   bounds, problems merged, so they reach seusers with
+   publishLoginContexts); sessionFacts(pol, cfg) (passwd shells for host
+   policies, ldd, realpath, /proc/self/mountinfo nosuid, systemctl show
+   NoNewPrivileges for the login programs' units, 30 s cache);
+   `selinux/sessionFix` {against, need, attrs} → suggestInterfaces on a
+   synthetic missing group + joins (attributeInterfaces(): 1-arg .if
+   interfaces with `typeattribute $1 A`, pure first). Denial assistant:
+   parseDenials reads SELINUX_ERR oldcontext/newcontext (tclass process),
+   older "invalid context X for", reason, perms; groups keep invalids /
+   reasons; errorVerdict(): nnp (bounded_transition; allowed when the policy
+   now allows/bounds it), invalid (context_valid reasons; role to
+   authorize; allowed when valid), bounds (parent from bounds_masked),
+   validatetrans, generic; the nnp_transition AVC gets a note. Server
+   analyzeDenials asks nnp / valid / bounds for error groups;
+   suggestForErrors(): synthetic group → suggestInterfaces + joins, invalid
+   → roleInterfaces(T) (2-arg interfaces with `role $2 types T`, *_run
+   first) as calls (S, R); denialFix takes 2-arg calls. Webviews:
+   loginctx.js Session starts card + How to fix (Add… → selinux/denialFix →
+   Apply → applyDenialFix; showReport handles sessionFix/fix/applyFix);
+   denials.js badges nnp/invalid/bounds, x.call, joins with their own
+   domain. Tests: test/sessions-test.js (npm test), denials-test (records +
+   verdicts), policy_query_test.py (computed, nnp, auto_invalid,
+   bounds_masked), test/sessions-e2e.js (melody CLIP 9 + ricardo CLIP 8:
+   running targeted 54 sessions start; CLIP + module brk
+   (domain_user_exemption_target needed, else CLIP's process_user_target
+   constraint refuses the transition; loginctx reported that first):
+   session-entry/fd/tty → corecmd_shell_entry_type, domain_use_interactive_
+   fds, term_use_all_ptys suggested, applied, rebuilt, gone; denial records
+   against the build; in clip-all as `sessions`); loginctx-survey prints
+   the session checks (VERBOSE=1 every check). Survey: every session starts
+   on RHEL 8/9 targeted and both CLIP trees; note: sysadm_t can't run
+   rpc.nfsd (CLIP). Open question for the user: ricardo's
+   ro_u_default_contexts has only a console line, so ro logins over ssh
+   would get no context.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1440,7 +1524,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/logins.js`: logins view (seusers/contexts/passwd parsing, ways in,
   paths); `media/logins.js` its webview.
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
-- `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview.
+- `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview (also session starts and How to fix).
+- `server/sessions.js`: session starts after the context is picked (entrypoint, libraries, inherited terminal, NoNewPrivileges/nosuid, invalid automatic transitions, typebounds).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1556,6 +1641,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/loginctx-test.js` (in `npm test`), `test/loginctx-e2e.js`
   (`npm run test:loginctx-e2e`, melody/ricardo; optional tree arg, default
   CLIP RHEL 9) and `test/loginctx-survey.js` (installed | tree | build).
+- `test/sessions-test.js` (in `npm test`) and `test/sessions-e2e.js`
+  (`npm run test:sessions-e2e`, melody/ricardo; optional tree arg; in
+  clip-all as `sessions`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
   (`npm run test:ctxfiles-e2e`, melody/ricardo; optional tree arg) and
   `test/ctxfiles-survey.js` (installed | tree | build).
@@ -1574,7 +1662,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   service-e2e).
 - `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
   tree-based e2e test (build-tree checks diff preview filelabel logins
-  loginctx ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  loginctx sessions ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
   and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);

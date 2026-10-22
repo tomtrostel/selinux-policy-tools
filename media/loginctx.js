@@ -20,6 +20,10 @@
   const SEV = { error: ['✗', 'bad', 'Error'], warning: ['⚠', 'warn', 'Warning'], info: ['ℹ', 'muted', 'Info'] };
   let result = null, against = null, key = 0, loading = false;
   const open = new Map();
+  // Fixes per problem (by its text): { state: 'loading' | 'done', result, plans: Map call → { state, plan } }.
+  const fixes = new Map();
+  let fixKey = 0;
+  const fixWait = new Map(); // key → { id, k }
 
   const base = (p) => String(p || '').split('/').pop();
   const loc = (file, l, text) => (file ? h('button', { class: 'link', title: `Open ${file}:${l + 1}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: { p: file, l, c: 0 } }) }, text || `${base(file)}:${l + 1}`) : null);
@@ -44,7 +48,73 @@
     return h('div', { class: `problem ${cls}`, 'data-i': i },
       h('div', {}, h('span', { class: `sev ${cls}`, title: word }, icon), ' ', h('span', { class: 'ptext' }, p.text)),
       h('div', { class: 'where small' }, loc(p.file, p.l), p.source ? h('span', { class: 'muted' }, ` · from ${p.source}`) : null),
-      rel);
+      rel, p.need ? fixBox(p) : null);
+  }
+
+  /** How to fix a session-start problem: interfaces of this policy that grant the missing rule, narrowest first. */
+  function fixBox(p) {
+    const id = p.text;
+    const f = fixes.get(id);
+    const need = p.need;
+    if (!f) {
+      return h('div', { class: 'fix small' }, h('button', { title: `Find interfaces in this policy that allow ${need.source} ${need.target}:${need.tclass} { ${need.perms.join(' ')} }`,
+        onclick: () => { fixes.set(id, { state: 'loading', plans: new Map() }); fixWait.set(++fixKey, { id }); vscode.postMessage({ cmd: 'sessionFix', key: fixKey, against, need, attrs: p.attrs || [] }); render(); } }, 'How to fix'));
+    }
+    if (f.state === 'loading') return h('div', { class: 'fix small muted' }, "Looking for interfaces that grant it… (the first time, the tree's interfaces are expanded with m4)");
+    const r = f.result || {};
+    if (r.error) return h('div', { class: 'fix small bad' }, r.error);
+    const rows = [];
+    const addBtn = (domain, call, rule) => {
+      const k = call || rule;
+      const st = f.plans.get(k);
+      if (!r.canEdit) return null;
+      if (!st) return h('button', { title: call ? `Add ${call} to ${domain}'s module` : `Add the rule to ${domain}'s module`, onclick: () => { f.plans.set(k, { state: 'planning' }); fixWait.set(++fixKey, { id, k }); vscode.postMessage({ cmd: 'fix', key: fixKey, domain, call, rule }); render(); } }, 'Add…');
+      if (st.state === 'planning') return h('span', { class: 'muted' }, 'planning…');
+      if (st.state === 'applying') return h('span', { class: 'muted' }, 'writing…');
+      if (st.state === 'applied') return h('span', { class: 'ok' }, `✓ added to ${base(st.plan.path)}; building…`);
+      const pl = st.plan || {};
+      if (pl.already) return h('span', { class: 'muted' }, 'already there');
+      if (pl.unavailable) return h('span', { class: 'warn' }, pl.unavailable);
+      return h('span', {}, h('button', { class: 'primary', title: `Write it to ${pl.path} and save (builds)`, onclick: () => { st.state = 'applying'; fixWait.set(++fixKey, { id, k }); vscode.postMessage({ cmd: 'applyFix', key: fixKey, plan: pl }); render(); } }, `Apply to ${base(pl.path)}`),
+        ' ', h('code', { class: 'small' }, (pl.inserted || []).join(' ').slice(0, 160)), pl.optional ? h('span', { class: 'muted' }, ' (in optional_policy)') : null);
+    };
+    const s = r.suggest;
+    if (s && s.own) {
+      rows.push(h('div', {}, 'Both types belong to ', h('code', {}, s.module || 'one module'), ': add the rule there. ', h('code', {}, r.rule), ' ', addBtn(need.source, null, r.rule)));
+    } else if (s && (s.list || []).length) {
+      rows.push(h('div', { class: 'sub' }, s.partial ? 'No interface grants all of it; the closest:' : 'Interfaces in this policy that grant it (narrowest first):'));
+      rows.push(h('table', {}, s.list.map((x, n) => h('tr', {},
+        h('td', {}, h('button', { class: 'link', title: x.summary || `Open ${x.name}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, x.call)),
+        h('td', { class: 'muted' }, [n === 0 && !s.partial ? 'narrowest' : null, x.owner ? 'owner module' : null, x.off ? 'module off' : null, x.writes ? 'writes' : null, x.attrs && x.attrs.length ? `adds ${x.attrs.join(', ')}` : null].filter(Boolean).join(' · ')),
+        h('td', {}, x.summary ? h('span', { class: 'muted' }, x.summary) : null),
+        h('td', {}, addBtn(need.source, x.call))))));
+    } else if (s && s.note) rows.push(h('div', { class: 'muted' }, s.note));
+    if ((r.joins || []).length) {
+      rows.push(h('div', { class: 'sub' }, `Or make ${need.target} one of the domains that already have it:`));
+      rows.push(h('table', {}, r.joins.map(x => h('tr', {},
+        h('td', {}, h('button', { class: 'link', title: `Open ${x.name}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, x.call)),
+        h('td', { class: 'muted' }, `puts it in ${x.attr}${x.pure ? '' : ' (and more)'}`),
+        h('td', {}, addBtn(x.domain, x.call))))));
+    }
+    rows.push(h('div', { class: 'muted' }, 'The rule itself: ', h('code', {}, r.rule), s && s.list && s.list.length ? ' (an interface keeps it in the module that owns the type)' : ''));
+    for (const n of r.notes || []) rows.push(h('div', { class: 'muted' }, n));
+    return h('div', { class: 'fix small' }, rows);
+  }
+
+  const MARK = { true: ['✓', 'ok'], false: ['✗', 'bad'], null: ['?', 'muted'] };
+  function sessionsCard() {
+    const list = result.sessions || [];
+    if (!list.length) return null;
+    const failing = list.filter(x => x.checks.some(c => c.ok === false)).length;
+    return card('sessions', 'Session starts', `${list.length} checked${failing ? ` · ${failing} failing` : ''}`, [
+      h('div', { class: 'small muted' }, "Once a context is picked, the kernel still checks the start: the user's domain enters through the first program (the shell; /bin/sh for cron; systemd for the user instance), loads its libraries, keeps the terminal and descriptors the login program hands over, and, under NoNewPrivileges or from a nosuid mount, needs process2 nnp_transition / nosuid_transition. Any of these failing makes the login bounce although the policy compiles. Hover a check for details."),
+      h('table', {}, h('tr', {}, h('th', {}, 'Login'), h('th', {}, 'Way in'), h('th', {}, 'Session'), h('th', {}, 'Checks')),
+        list.map(x => h('tr', {},
+          h('td', {}, x.group ? `%${x.login}` : x.login),
+          h('td', {}, x.way, x.on && x.on !== 'both' ? h('span', { class: 'muted' }, ` (${x.on})`) : null),
+          h('td', {}, h('code', {}, x.ctx)),
+          h('td', {}, x.checks.map(c => { const [m, cl] = MARK[String(c.ok)]; return h('span', { class: cl, title: c.text, style: 'margin-right:10px' }, `${m} ${c.id}`); }))))),
+    ], failing > 0);
   }
 
   function wayRow(m, w) {
@@ -96,6 +166,8 @@
       h('span', { class: 'muted' }, ` · ${result.policy && result.policy.label}`)));
     if (result.problems.length) main.append(card('problems', 'Problems', `${result.problems.length}`, result.problems.map(problemRow), true));
     main.append(card('logins', 'Logins and their ways in', `${result.mappings.length} seusers line${result.mappings.length === 1 ? '' : 's'}`, result.mappings.map(mappingCard), true));
+    const sc = sessionsCard();
+    if (sc) main.append(sc);
     if ((result.notes || []).length) main.append(h('div', { class: 'notes' }, result.notes.map(n => h('div', { class: 'note muted' }, n))));
   }
 
@@ -109,8 +181,17 @@
       result = m.result;
       if (result && result.policy) against = result.policy.id;
       render();
+    } else if (m.cmd === 'sessionFix' || m.cmd === 'fixPlan' || m.cmd === 'applied') {
+      const w = fixWait.get(m.key);
+      if (!w) return;
+      fixWait.delete(m.key);
+      const f = fixes.get(w.id);
+      if (!f) return;
+      if (m.cmd === 'sessionFix') { f.state = 'done'; f.result = m.result; } else if (m.cmd === 'fixPlan') f.plans.set(w.k, { state: 'plan', plan: m.plan });
+      else { const st = f.plans.get(w.k); if (st) st.state = 'applied'; }
+      render();
     } else if (m.cmd === 'built') {
-      if (m.ok && (!result || !result.policy || result.policy.build)) load();
+      if (m.ok && (!result || !result.policy || result.policy.build)) { fixes.clear(); load(); }
     } else if (m.cmd === 'error') {
       loading = false;
       result = { error: m.text, policies: (result && result.policies) || [] };

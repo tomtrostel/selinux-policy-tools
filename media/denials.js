@@ -18,7 +18,8 @@
   }
 
   const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week']];
-  const BADGE = { label: 'label', boolean: 'boolean', allowed: 'allowed', generic: 'label', missing: 'rule', unknown: 'other policy', error: 'error', transition: 'domain', constraint: 'constraint' };
+  const BADGE = { label: 'label', boolean: 'boolean', allowed: 'allowed', generic: 'label', missing: 'rule', unknown: 'other policy', error: 'error', transition: 'domain', constraint: 'constraint',
+    nnp: 'NoNewPrivileges', invalid: 'invalid context', bounds: 'typebounds' };
 
   const tip = (id, text) => $(id).setAttribute('title', text);
   tip('analyze', 'Read the denials in the box and check each group against the chosen policy');
@@ -55,7 +56,7 @@
   const ruleText = (r) => `${r.rt} ${r.s} ${r.t}:${r.c} { ${r.perms.join(' ')} };${r.cond ? `   [when ${r.cond.replace(/:true$/, '').replace(/^(.*):false$/, 'not ($1)')}]` : ''}`;
   const typeLink = (name, loc) => (loc ? h('button', { class: 'link', title: `Open the declaration of ${name}${loc.m ? ` (module ${loc.m})` : ''}`, onclick: () => vscode.postMessage({ cmd: 'open', loc }) }, name) : h('code', {}, name));
 
-  const fixBtn = (g, what) => h('button', { title: 'Add this to the module of ' + g.source + ': shows exactly what will be inserted where, before anything changes',
+  const fixBtn = (g, what) => h('button', { title: 'Add this to the module of ' + (what.domain || g.source) + ': shows exactly what will be inserted where, before anything changes',
     onclick: () => { fixes.set(g.key, { planning: true }); rerender(); vscode.postMessage({ cmd: 'fix', key: g.key, domain: g.source, ...what }); } }, 'Add to module…');
 
   /** What a planned / applied fix looks like in its card. */
@@ -83,14 +84,14 @@
 
   /** The interfaces that grant a missing access, narrowest first (or the rule for the domain's own module). */
   function suggestions(g) {
-    const s = g.suggest;
-    if (!s) return null;
+    if (!g.suggest && !(g.joins || []).length) return null;
+    const s = g.suggest || { list: [] };
     if (s.own) {
       return [h('div', { class: 'sub', title: 'Both types belong to the same module, so a plain rule in that module is the normal way to allow it' }, `Fix: a rule in ${s.module ? `module ${s.module}` : 'the domain’s own module'}`),
         h('div', { class: 'cmd' }, h('code', {}, s.rule), copyBtn(s.rule, 'the rule'), fixBtn(g, { rule: s.rule }))];
     }
     const rows = (s.list || []).map((x, k) => {
-      const call = `${x.name}(${g.source})`;
+      const call = x.call || `${x.name}(${g.source})`;
       const tags = [
         k === 0 && x.covers ? h('span', { class: 'tag best', title: 'Covers every denied permission with the fewest other rights' }, 'narrowest') : null,
         x.owner ? h('span', { class: 'tag', title: `Defined by the module that owns ${g.target}` }, 'owner') : null,
@@ -123,8 +124,14 @@
       h('div', { class: 'iface' },
         h('div', { class: 'cmd' }, h('code', {}, ni.call), fixBtn(g, { newInterface: { target: g.target, tclass: g.tclass, perms: g.perms } })),
         h('div', { class: 'muted' }, `${ni.summary} Written into ${ni.ifPath.split(/[\\/]/).pop()} as `, h('code', {}, ni.rule.replace(g.source, '$1')), '.'))] : null;
-    return [rows.length || s.note ? h('div', { class: 'sub', title: 'Interfaces that grant this access, worked out from what each one really expands to; the narrowest first' }, s.partial ? 'Interfaces that grant part of it' : 'Suggested interfaces') : null,
+    // Interfaces that put the domain into an attribute that already has the access (RHEL: login_userdomain).
+    const joins = (g.joins || []).map(x => h('div', { class: 'iface' },
+      h('div', { class: 'cmd' }, h('button', { class: 'link', title: `Open the definition of ${x.name}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, x.call),
+        copyBtn(x.call, 'the call'), fixBtn(g, { call: x.call, domain: x.domain })),
+      h('div', { class: 'muted' }, `Makes ${x.domain} one of the ${x.attr} domains, which already have it${x.pure ? '' : ' (the interface does more; open it)'}.${x.summary ? ` ${x.summary}` : ''}`)));
+    return [rows.length || s.note ? h('div', { class: 'sub', title: 'Interfaces that grant this access, worked out from what each one really expands to; the narrowest first' }, s.roleCalls ? 'Interfaces that authorize the role (with the transition)' : s.partial ? 'Interfaces that grant part of it' : 'Suggested interfaces') : null,
       rows.length ? rows : null, s.note ? h('div', { class: 'muted' }, s.note) : null,
+      joins.length ? [h('div', { class: 'sub' }, `Or make ${g.target} one of the domains that already have it`), joins] : null,
       pairs.length ? [h('div', { class: 'sub' }, 'Together they cover it'), pairs] : null, newRow];
   }
 

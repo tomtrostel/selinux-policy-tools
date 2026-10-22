@@ -100,6 +100,42 @@ check(v.notes.length === 2, 'permissive mode and permissive domain noted');
 v = d.verdict({ ...g({}), kind: 'error', ops: ['security_compute_sid'], target: 'myd_exec_t', tclass: 'process' }, null, null, P);
 check(v.verdict === 'error', 'SELinux error verdict');
 
+/* ---------- SELINUX_ERR: refused at run time though the policy compiles ---------- */
+{
+  const log = [
+    'type=AVC msg=audit(1728650500.000:4800): avc:  denied  { nnp_transition } for  pid=900 comm="sshd" scontext=system_u:system_r:sshd_t:s0-s0:c0.c1023 tcontext=ro_u:ro_r:ro_t:s0 tclass=process2 permissive=0',
+    'type=SELINUX_ERR msg=audit(1728650500.000:4800): op=security_bounded_transition seresult=denied oldcontext=system_u:system_r:sshd_t:s0-s0:c0.c1023 newcontext=ro_u:ro_r:ro_t:s0',
+    'type=SYSCALL msg=audit(1728650500.000:4800): arch=c000003e syscall=59 success=no exit=-1 pid=900 comm="sshd" exe="/usr/sbin/sshd"',
+    'type=SELINUX_ERR msg=audit(1728650501.000:4801): security_compute_sid:  invalid context staff_u:staff_r:passwd_t:s0 for scontext=staff_u:staff_r:staff_t:s0 tcontext=system_u:object_r:passwd_exec_t:s0 tclass=process',
+    'type=SELINUX_ERR msg=audit(1728650502.000:4802): op=security_compute_av reason=bounds scontext=system_u:system_r:web_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file perms=read,open',
+  ].join('\n');
+  const recs = d.parseDenials(log);
+  const bt = recs.find(x => x.op === 'security_bounded_transition');
+  check(recs.length === 4 && bt && bt.scontext.type === 'sshd_t' && bt.tcontext.type === 'ro_t' && bt.tclass === 'process' && bt.exe === '/usr/sbin/sshd', 'bounded transition: oldcontext → newcontext as source → target, with the program', recs);
+  const cs = recs.find(x => x.op === 'security_compute_sid');
+  check(cs && cs.invalid === 'staff_u:staff_r:passwd_t:s0' && cs.tcontext.type === 'passwd_exec_t', 'older "invalid context X for" wording read too', cs);
+  const ca = recs.find(x => x.op === 'security_compute_av');
+  check(ca && ca.reason === 'bounds' && ca.perms.join() === 'read,open', 'typebounds mask: reason and permissions', ca);
+  const gs = d.groupDenials(recs);
+  const gb = gs.find(x => x.kind === 'error' && x.tclass === 'process' && x.target === 'ro_t');
+  v = d.verdict(gb, { err: { nnp: { process2: true, bounded: false, nnp_transition: { status: 'missing' }, nosuid_transition: { status: 'missing' }, nnpTo: [{ name: 'login_userdomain', attribute: true }], attrs: ['userdomain'] } } }, null, P);
+  check(v.verdict === 'nnp' && /NoNewPrivileges/.test(v.detail) && v.need.tclass === 'process2' && v.need.source === 'sshd_t' && v.need.target === 'ro_t' && v.attrs.join() === 'login_userdomain'
+    && v.needed === 'allow sshd_t ro_t:process2 { nnp_transition nosuid_transition };', 'bounded transition: NoNewPrivileges/nosuid verdict, the need, the attribute that has it', v);
+  v = d.verdict(gb, { err: { nnp: { process2: true, bounded: false, nnp_transition: { status: 'allowed' }, nosuid_transition: { status: 'missing' } } } }, null, P);
+  check(v.verdict === 'allowed', 'bounded transition the build now allows: allowed (a fix shows as resolved)', v);
+  const gc = gs.find(x => x.kind === 'error' && x.target === 'passwd_exec_t');
+  v = d.verdict(gc, { err: { valid: { ok: false, reasons: [{ kind: 'roletype', text: "role staff_r isn't authorized for passwd_t" }] } } }, null, P);
+  check(v.verdict === 'invalid' && /staff_r isn't authorized for passwd_t/.test(v.detail) && v.role.role === 'staff_r' && v.role.type === 'passwd_t' && v.needed === 'role staff_r types passwd_t;', 'invalid computed context: the reason and the role to authorize', v);
+  v = d.verdict(gc, { err: { valid: { ok: true, reasons: [] } } }, null, P);
+  check(v.verdict === 'allowed', 'a context the build accepts now: allowed');
+  const ga = gs.find(x => x.kind === 'error' && x.target === 'shadow_t');
+  v = d.verdict(ga, { err: { bounds: { parent: 'httpd_t', masked: [] } } }, null, P);
+  check(v.verdict === 'bounds' && /bounded by httpd_t/.test(v.detail) && v.need.source === 'httpd_t' && v.needed === 'allow httpd_t shadow_t:file { read open };', 'typebounds mask: the parent needs the access', v);
+  const gn = gs.find(x => x.kind === 'deny' && x.tclass === 'process2');
+  v = d.verdict(gn, { perms: { nnp_transition: { status: 'missing' } } }, null, P);
+  check(v.verdict === 'missing' && v.notes.some(n => /NoNewPrivileges/.test(n)), 'the nnp_transition AVC itself: missing rule, explained', v);
+}
+
 /* ---------- interface suggestions ---------- */
 
 const PROBE = `policy_module(zzprobe, 1.0.0)

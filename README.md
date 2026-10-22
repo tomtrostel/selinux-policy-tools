@@ -33,7 +33,9 @@ It works at two levels:
   changed on a host against your policy, and writes the changes that
   belong into its source. *Check Login Contexts* finds the logins that
   would fail with "Unable to get valid context" even though the policy
-  compiles, and *Check Context Files* the contexts in `file_contexts`
+  compiles, and those that get a context and then bounce (the shell can't
+  enter the domain, the terminal is closed, NoNewPrivileges). It offers the
+  fix from the policy's own interfaces. *Check Context Files* finds the contexts in `file_contexts`
   (home directories and `.local` too) and the other context files that the
   policy would reject.
 * **Writing and fixing policy.**
@@ -911,6 +913,72 @@ except one note: `initrc_t` (`runuser` in init scripts) can't start an
 `unconfined_u` session. For what it finds in CLIP, see
 [Findings](#login-contexts-in-clip).
 
+**Session starts: logins that bounce** (part of *Check Login Contexts*;
+Linux)
+
+Getting a valid context is not the end. The login program then starts the
+session's first program in the user's domain, and the kernel checks that
+start once more. If any check fails, the login bounces: the connection
+closes right after the password, the console returns to the login prompt, or
+the cron job never runs. Nothing about it shows when the policy compiles.
+For every way in that gets a context, the report checks what the kernel
+checks:
+
+* **The first program:** the user's shell (from `/etc/passwd` on a host;
+  `/bin/bash` for a build), `/bin/sh` for cron jobs, systemd for the user
+  instance. Symlinks are followed as exec does. The domain needs
+  `entrypoint` on the program's label, and the loader needs its libraries
+  (`ldd` on this host) and `/etc/ld.so.cache`.
+* **The terminal and descriptors it inherits:** the kernel checks inherited
+  files again at exec. Without `fd use` on the login program, or access to
+  the terminal, stdin and stdout become `/dev/null` and the shell exits at
+  once. For ssh, the terminal is the pty sshd created (its
+  `type_transition` on `devpts_t`), relabeled for the user by
+  `type_change` when sshd may relabel it. For the console, it is
+  `tty_device_t`, relabeled the same way.
+* **NoNewPrivileges and nosuid:** a process with NoNewPrivileges (a systemd
+  unit's `NoNewPrivileges=yes`), or a program on a `nosuid` mount (a jail, a
+  hardened `/home`), may enter another domain only with `process2
+  nnp_transition` / `nosuid_transition`, or when the new domain has no
+  rights the old one lacks (typebounds). Otherwise exec fails with
+  `SELINUX_ERR op=security_bounded_transition`, the "too many rights" refusal.
+  The report flags it when this host's unit sets NoNewPrivileges or the
+  program sits on a nosuid mount. It warns when the policy allows it for
+  other users' sessions (RHEL: `login_userdomain`) but not this one.
+* **Programs the session can't run:** a `type_transition` from the
+  session's domain to a type its role isn't authorized for. The kernel
+  computes an invalid context and refuses the exec
+  (`security_compute_sid: invalid context`). These are notes per user,
+  grouped by target. Usually the program's `*_run` interface is wanted
+  instead of `*_domtrans`.
+* **typebounds:** a bounded domain gets only what its parent has, and the
+  rest is masked at run time (`reason=bounds`).
+
+**How to fix** (on each problem in the panel) lists the interfaces of the
+policy you are working on that grant exactly what is missing, narrowest
+first, ranked the way the denial assistant ranks them (what each one really
+expands to). It also offers interfaces that make the domain a member of an
+attribute that already has the access, such as RHEL's
+`userdom_login_userdomain`, and shows the raw rule. *Add…* plans the call in
+the domain's module, *Apply* writes it, and the build checks again. On CLIP,
+a domain given to staff_r by hand failed three ways over ssh (no
+`entrypoint` on the shell, no `fd use` on sshd, no access to sshd's pty).
+The fixes suggested were `corecmd_shell_entry_type`,
+`domain_use_interactive_fds` and `term_use_all_ptys`, and after the rebuild
+the session starts. For the pty, a type of the user's own that sshd
+relabels to (the userdom templates set that up) is the narrower design.
+
+The denial assistant reads the records such a bounce leaves.
+`security_bounded_transition` is reported as a NoNewPrivileges/nosuid
+refusal with the rule and interfaces that allow it. `security_compute_sid`
+invalid contexts say which role to authorize for which type, with the
+target's `*_run` interfaces. `reason=bounds` names the parent that lacks
+the access. Once the build allows the change, such a record shows as
+resolved.
+
+RHEL 8 and 9 targeted and both CLIP trees: every session that gets a
+context starts.
+
 
 **Context files** (*SELinux: Check Context Files…*; after every tree build
 as diagnostics; Linux)
@@ -1740,6 +1808,18 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   the files are edited on disk, and go away when they are restored.
   `test/loginctx-survey.js` runs the check over installed policies and CLIP
   builds (see Findings).
+* Session starts (test/sessions-test.js with a fake policy and host facts;
+  test/sessions-e2e.js on Rocky 9.8 with CLIP RHEL 9 and on Rocky 8.10 with
+  CLIP RHEL 8): every session of the running targeted policy starts (54
+  checked). On a CLIP build, a domain given to `staff_r` with only a
+  transition from sshd is reported three ways (entrypoint, sshd's
+  descriptors, the pty) on the login's seusers line. The tree's narrowest
+  interfaces are suggested, applied with the denial assistant's fix
+  planner, and after the rebuild the problems are gone. The records of a bounce
+  (`security_bounded_transition`, the `nnp_transition` AVC, a
+  `security_compute_sid` invalid context) get their verdicts against the
+  build. The survey shows every session starting on RHEL 8 and 9 targeted
+  and on both CLIP trees.
 * Context files (test/ctxfiles-test.js with a fake policy; test/ctxfiles-e2e.js
   on Rocky 9.8 with CLIP RHEL 9 and on Rocky 8.10 with CLIP RHEL 8): the
   installed targeted policies (6,752 and 6,500 file-context lines, 17
@@ -1927,6 +2007,10 @@ console, graphical and systemd user sessions work for every mapped login.
 * Both branches keep refpolicy's `unconfined_u_default_contexts` while the
   `unconfined` module is off. Nothing maps a login to `unconfined_u`, so it
   doesn't matter until someone does.
+* Session starts: every login that gets a context also starts its session
+  (shell entrypoint, libraries, terminal) on both branches. One note:
+  `sysadm_t` can't run `rpc.nfsd` directly (`nfsd_t` isn't authorized for
+  `sysadm_r`, so the computed context is invalid).
 
 ### Context files in CLIP
 
@@ -2323,6 +2407,7 @@ npm run test:package      # standalone modules packaged as RPMs
 npm run test:denials-e2e  # denial assistant on the running policy and a build
 npm run test:logins-e2e   # Logins and Users
 npm run test:loginctx-e2e # login contexts: running policy, then a CLIP build with seusers / contexts edits
+npm run test:sessions-e2e # session starts: running policy, then a CLIP domain that bounces, fixed from the tree's interfaces
 npm run test:ctxfiles-e2e # context files: running policy, then a CLIP build with .fc / x_contexts / users edits
 npm run test:filelabel-e2e  # File Labels vs matchpathcon
 npm run test:levels-e2e   # Levels and Categories, level and isolation checks

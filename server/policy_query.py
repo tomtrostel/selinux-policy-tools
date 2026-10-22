@@ -765,6 +765,144 @@ class Index:
             raise ValueError("%s's clearance %s and %s aren't comparable" % (user, uc, fc))
         return str(sen) if str(sen) == str(clr) else "%s-%s" % (sen, clr)
 
+    # ----- session start: what the kernel checks after a login program picked the context -----
+
+    def rule_active(self, i, states):
+        return i not in self.conds or self.cond_active(i, states)
+
+    def computed_type(self, rt, s, t, c, states):
+        """The type a type_transition / type_change rule gives (s, t, c), or None (unnamed rules only)."""
+        s, t = self.aliases.get(s, s), self.aliases.get(t, t)
+        if s not in self.attrs or t not in self.attrs:
+            return None
+        tn = set([t] + self.attrs[t])
+        for n in [s] + self.attrs[s]:
+            for i in self.by_src.get(n, ()):
+                r = self.rules[i]
+                if r["rt"] == rt and r["c"] == c and "name" not in r and (r["t"] in tn or (r["t"] == "self" and s == t)) and self.rule_active(i, states):
+                    return r["perms"][0]
+        return None
+
+    def bounds_of(self):
+        """typebounds as {child: parent}."""
+        if not hasattr(self, "_bounds"):
+            self._bounds = {}
+            try:
+                for b in self.policy.bounds():
+                    if str(b.ruletype) == "typebounds":
+                        self._bounds[str(b.child)] = str(b.parent)
+            except Exception:  # setools without bounds support
+                pass
+        return self._bounds
+
+    def bounded_by(self, child, parent):
+        """security_bounded_transition: parent is on child's typebounds chain."""
+        b, seen = self.bounds_of(), set()
+        while child in b and child not in seen:
+            seen.add(child)
+            child = b[child]
+            if child == parent:
+                return True
+        return False
+
+    def nnp_check(self, f, t, states, domains=()):
+        """A transition f → t under NoNewPrivileges or from a nosuid mount: the kernel lets it
+        happen only with process2 nnp_transition / nosuid_transition (policy capability
+        nnp_nosuid_transition) or when t is bounded by f; else the exec fails."""
+        f, t = self.aliases.get(f, f), self.aliases.get(t, t)
+        out = {"process2": "process2" in self.classperms, "bounded": self.bounded_by(t, f)}
+        try:
+            out["cap"] = "nnp_nosuid_transition" in {str(c) for c in self.policy.polcaps()}
+        except Exception:
+            out["cap"] = None
+        if out["process2"] and f in self.attrs and t in self.attrs:
+            res = self.avc([{"s": f, "t": t, "c": "process2", "perms": ["nnp_transition", "nosuid_transition"]}], states)[0]
+            for p in ("nnp_transition", "nosuid_transition"):
+                x = (res.get("perms") or {}).get(p) or {"status": "missing"}
+                out[p] = {"status": x["status"], "options": x.get("options"), "rules": x.get("rules")}
+            # Where f may make that transition: names as written (attributes too) → what the policy authors meant.
+            # `domains`: the sessions' domains; an attribute counts for them only if it holds one.
+            to = {}
+            for r in self.with_perm([f] + self.attrs.get(f, []), self.by_src, "process2", "nnp_transition"):
+                if r["cond"]:
+                    continue
+                to[r["t"]] = r["t"] in self.members
+            out["nnpTo"] = [{"name": n, "attribute": a, "holds": sorted(d for d in domains if n in self.attrs.get(d, []))} if a else {"name": n, "attribute": False}
+                            for n, a in sorted(to.items())][:30]
+            out["attrs"] = self.attrs.get(t, [])
+        return out
+
+    def auto_invalid(self, user, starts, roles, states, limit=60, maxdepth=None):
+        """Programs a session of `user` would run into an invalid context: from each (role, domain)
+        it reaches, a type_transition on an exec type the domain may run whose computed context
+        (role kept, or role_transition) the user/role may not have. The kernel refuses that exec
+        (security_compute_sid: invalid context) although the policy compiles."""
+        uroles = set(roles) if roles else self.user_roles.get(user, set())
+        if maxdepth == 0:
+            # Only the session's own domains: no need to walk everything they can reach.
+            steps = {"%s:%s" % (s["role"], s["type"]): {"depth": 0, "role": s["role"], "type": s["type"]}
+                     for s in starts if s["type"] in self.attrs and s["role"] in uroles}
+            rr = {"steps": steps, "reached": {s["type"]: k for k, s in steps.items()}}
+        else:
+            rr = self.reach(user, starts, roles=roles)
+        _, rt = self.rbac()
+        out, seen = [], set()
+        for key, st in sorted(rr["steps"].items(), key=lambda kv: (kv[1]["depth"], kv[0])):
+            if maxdepth is not None and st["depth"] > maxdepth:
+                continue
+            role, s = st["role"], st["type"]
+            ex = self.exec_types(s)
+            for n in [s] + self.attrs.get(s, []):
+                for i in self.by_src.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] != "type_transition" or r["c"] != "process" or "name" in r or not self.rule_active(i, states):
+                        continue
+                    T = r["perms"][0]
+                    for e in self.side_types(r, "t", s):
+                        if e not in ex or (s, e) in seen:
+                            continue
+                        r2s = sorted(rt.get((role, e), {role}))
+                        bad = []
+                        for r2 in r2s:
+                            if r2 not in uroles:
+                                bad.append("%s doesn't have role %s" % (user, r2))
+                            elif T not in self.role_types.get(r2, ()):
+                                bad.append("role %s isn't authorized for %s" % (r2, T))
+                        if len(bad) < len(r2s) or not bad:
+                            continue
+                        seen.add((s, e))
+                        out.append({"state": key, "role": role, "domain": s, "entry": e, "target": T, "role2": r2s[0], "reason": bad[0],
+                                    "rule": r, "depth": st["depth"]})
+                        if len(out) >= limit:
+                            return {"items": out, "more": True, "reached": len(rr["reached"])}
+        return {"items": out, "more": False, "reached": len(rr["reached"])}
+
+    def bounds_masked(self, states, limit=40):
+        """Permissions the kernel masks at run time (typebounds: a bounded domain gets only what
+        its parent has; logged as SELINUX_ERR op=security_compute_av reason=bounds)."""
+        out = []
+        for child, parent in sorted(self.bounds_of().items()):
+            if child not in self.domains:
+                continue
+            want = {}
+            for n in [child] + self.attrs.get(child, []):
+                for i in self.by_src.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] != "allow" or not self.rule_active(i, states):
+                        continue
+                    for t in self.side_types(r, "t", child):
+                        # Rules on the child itself are checked against the parent itself.
+                        want.setdefault((parent if t == child else t, r["c"]), set()).update(r["perms"])
+            masked = []
+            for (t, c), perms in sorted(want.items()):
+                res = self.avc([{"s": parent, "t": t, "c": c, "perms": sorted(perms)}], states)[0]
+                miss = sorted(p for p, x in (res.get("perms") or {}).items() if x["status"] != "allowed")
+                if miss:
+                    masked.append({"t": t, "c": c, "perms": miss})
+            if masked:
+                out.append({"child": child, "parent": parent, "masked": masked[:limit], "count": len(masked)})
+        return out
+
     def login_contexts(self, items, bools):
         """Batched questions for the login context check: {id, kind: info | resolve | valid |
         transition | userrange, ...} → answers by id."""
@@ -801,6 +939,18 @@ class Index:
                     # What each name is: type | alias (→ its type) | attribute | None.
                     a = {"kinds": {n: ("type" if n in self.attrs else "alias" if n in self.aliases else "attribute" if n in self.members else None)
                                    for n in it.get("names") or []}}
+                elif k == "computed":
+                    a = {"type": self.computed_type(it["rt"], it["s"], it["t"], it["c"], bools)}
+                elif k == "avc":
+                    # Permissions the class lacks here (map before policy 30) aren't checked.
+                    perms = [x for x in it["perms"] if x in self.classperms.get(it["c"], ())] or it["perms"]
+                    a = self.avc([{"s": it["s"], "t": it["t"], "c": it["c"], "perms": perms}], bools)[0]
+                elif k == "nnp":
+                    a = self.nnp_check(it["from"], it["to"], bools, it.get("domains") or ())
+                elif k == "autoinvalid":
+                    a = self.auto_invalid(it["user"], it.get("starts") or [], it.get("roles"), bools, maxdepth=it.get("depth"))
+                elif k == "bounds":
+                    a = {"bounds": self.bounds_masked(bools)}
                 elif k == "roletype":
                     r, t = it["role"], self.aliases.get(it["type"], it["type"])
                     reasons = []

@@ -113,12 +113,19 @@ function parseDenials(text) {
     const sf = sys ? fields(sys.text) : {};
     const cwd = (() => { const c = same.find(x => x.type === 'CWD'); return c ? fields(c.text).cwd : null; })();
     const pathRecs = same.filter(x => x.type === 'PATH').map(x => fields(x.text));
-    const sctx = parseContext(f.scontext), tctx = parseContext(f.tcontext);
+    // SELINUX_ERR op=security_bounded_transition / security_validate_transition name the change as
+    // oldcontext → newcontext (a process changing domain, or a file being relabeled).
+    const err = r.type === 'SELINUX_ERR';
+    const sctx = parseContext(f.scontext || (err ? f.oldcontext : null)), tctx = parseContext(f.tcontext || (err ? f.newcontext : null));
     if (!sctx || !tctx) continue;
-    const base = { event: r.event, time: r.time, at: stampMs(r.time), scontext: sctx, tcontext: tctx, tclass: f.tclass || null,
+    const base = { event: r.event, time: r.time, at: stampMs(r.time), scontext: sctx, tcontext: tctx, tclass: f.tclass || (err && f.oldcontext ? 'process' : null),
       permissive: f.permissive === '1', pid: f.pid || sf.pid || null, comm: f.comm || sf.comm || null, exe: f.exe || sf.exe || null };
-    if (r.type === 'SELINUX_ERR') {
-      out.push({ ...base, kind: 'error', perms: [], op: f.op || null, invalid: f.invalid_context || null, message: r.text.trim() });
+    if (err) {
+      // Older kernels: "security_compute_sid:  invalid context U:R:T for scontext=…".
+      const inv = f.invalid_context || (/invalid context (\S+) for/.exec(r.text) || [])[1] || null;
+      const op = f.op || (/security_compute_sid/.test(r.text) ? 'security_compute_sid' : /security_bounded_transition/.test(r.text) ? 'security_bounded_transition' : null);
+      out.push({ ...base, kind: 'error', perms: f.perms ? f.perms.split(/[\s,]+/).filter(Boolean) : [], op, invalid: inv, reason: f.reason || null,
+        task: f.taskcontext ? parseContext(f.taskcontext) : null, message: r.text.trim() });
       continue;
     }
     const p = avcPerms(r.text);
@@ -151,7 +158,7 @@ function groupDenials(denials) {
     if (!g) {
       g = { key: k, kind: d.kind === 'error' ? 'error' : 'deny', source: d.scontext.type, target: d.tcontext.type, tclass: d.tclass,
         perms: [], count: 0, permissive: true, enforcing: false, comms: [], exes: [], paths: [], names: [], first: null, last: null,
-        scontext: d.scontext.raw, tcontext: d.tcontext.raw, ops: [], userspace: false, events: new Set() };
+        scontext: d.scontext.raw, tcontext: d.tcontext.raw, ops: [], invalids: [], reasons: [], userspace: false, events: new Set() };
       map.set(k, g);
     }
     // One event can repeat the same AVC (e.g. a USER_AVC also logged by the kernel): count events once.
@@ -164,6 +171,8 @@ function groupDenials(denials) {
     const add = (list, v, max = 8) => { if (v && !list.includes(v) && list.length < max) list.push(v); };
     add(g.comms, d.comm); add(g.exes, d.exe); add(g.paths, d.path, 20); add(g.names, d.name);
     if (d.op) add(g.ops, d.op);
+    if (d.invalid) add(g.invalids, d.invalid);
+    if (d.reason) add(g.reasons, d.reason);
     if (d.at != null) { g.first = g.first == null ? d.at : Math.min(g.first, d.at); g.last = g.last == null ? d.at : Math.max(g.last, d.at); }
   }
   const out = [...map.values()].map(g => { const { events, ...rest } = g; return rest; });
@@ -180,14 +189,60 @@ function groupDenials(denials) {
  * a constraint (te.constraints: allowed by the rules, denied by constrain/mlsconstrain),
  * already allowed, generic label, missing rule.
  */
+/**
+ * SELINUX_ERR records: the kernel refused something the rules alone don't decide. te.err (from the
+ * server) = { nnp: policy_query nnp answer, valid: context_valid of the computed context, bounds:
+ * { parent, masked } }. Groups the build now handles get 'allowed' (so a fix shows as resolved).
+ */
+function errorVerdict(g, te, policyName, notes) {
+  const err = (te && te.err) || {};
+  const ops = g.ops || [];
+  const S = g.source, T = g.target;
+  if (ops.includes('security_bounded_transition')) {
+    const n = err.nnp || null;
+    const ok = (p) => n && n[p] && n[p].status === 'allowed';
+    if (n && (n.bounded || ok('nnp_transition') || ok('nosuid_transition'))) {
+      return { verdict: 'allowed', title: 'Allowed now', detail: `${policyName} lets ${S} start ${T} under NoNewPrivileges or from a nosuid mount (${n.bounded ? `${T} is bounded by ${S}` : `process2 ${['nnp_transition', 'nosuid_transition'].filter(ok).join(' and ')}`}), so this refusal won't recur with it. If it still happens, the host runs a different policy.`, fixes: [], notes };
+    }
+    const perms = n ? ['nnp_transition', 'nosuid_transition'].filter(p => !ok(p)) : ['nnp_transition', 'nosuid_transition'];
+    const needed = `allow ${S} ${T}:process2 { ${perms.join(' ')} };`;
+    return { verdict: 'nnp', title: 'Domain change refused: NoNewPrivileges or nosuid',
+      detail: `${S} ran a program that starts ${T}, while the process had NoNewPrivileges set (a systemd unit's NoNewPrivileges=yes, or options that imply it for units with User=) or the program was on a nosuid mount. The kernel then takes the change only if ${T} has no rights ${S} lacks (typebounds) or the policy allows process2 nnp_transition / nosuid_transition, so exec failed ("Operation not permitted" / "Permission denied"). For a login this is the session that closes right after the password. The policy compiles either way: this is checked only when the program starts.`,
+      fixes: [{ text: `Either allow the change (below: an interface of this policy, or the rule), or stop setting NoNewPrivileges for this program (and options that imply it) / mount its filesystem without nosuid.` }],
+      needed, need: { source: S, target: T, tclass: 'process2', perms }, attrs: n ? (n.nnpTo || []).filter(x => x.attribute && !(n.attrs || []).includes(x.name)).map(x => x.name) : [], notes };
+  }
+  if (ops.includes('security_compute_sid') && (g.invalids || []).length) {
+    const ctx = parseContext(g.invalids[0]);
+    const v = err.valid;
+    if (v && v.ok) {
+      return { verdict: 'allowed', title: 'Valid now', detail: `${g.invalids[0]} is a valid context in ${policyName}, so starting it won't fail this way any more.`, fixes: [], notes };
+    }
+    const reasons = v ? v.reasons.map(r => r.text) : [];
+    const role = reasons.some(r => /isn't authorized for/.test(r));
+    const userRole = reasons.some(r => /doesn't have role/.test(r));
+    return { verdict: 'invalid', title: "Program can't start: invalid context",
+      detail: `${S} ran a program labeled ${T}${g.tclass && g.tclass !== 'process' ? ` (${g.tclass})` : ''}, and the policy's type_transition computes ${g.invalids[0]} for it${reasons.length ? `, which isn't valid: ${reasons.join('; ')}` : ', which this policy doesn\'t accept'}. The kernel refuses such an exec (security_compute_sid: invalid context) although every rule is there. ${role && ctx ? `Authorize role ${ctx.role} for ${ctx.type}: the program's *_run interface does that and the transition together (below), or role ${ctx.role} types ${ctx.type}; in its module.` : userRole && ctx ? `Give the SELinux user ${ctx.user} role ${ctx.role} (users file / semanage user -R), or keep the old role with a role_transition.` : ''}`,
+      fixes: [], needed: role && ctx ? `role ${ctx.role} types ${ctx.type};` : null, role: ctx ? { role: ctx.role, type: ctx.type, user: ctx.user } : null, notes };
+  }
+  if (ops.includes('security_compute_av') && (g.reasons || []).includes('bounds')) {
+    const b = err.bounds;
+    const P = b ? b.parent : null;
+    return { verdict: 'bounds', title: 'Masked by typebounds',
+      detail: `${S} is bounded${P ? ` by ${P}` : ''} (typebounds): the kernel gives it only what ${P || 'its parent'} has, so its rule for ${T}:${g.tclass} { ${g.perms.join(' ')} } is masked at run time, although it compiles. Give ${P || 'the parent'} the same access, or remove the rule from ${S}.`,
+      fixes: [], needed: P ? `allow ${P} ${T}:${g.tclass} { ${g.perms.join(' ')} };` : null, need: P ? { source: P, target: T, tclass: g.tclass, perms: g.perms } : null, notes };
+  }
+  if (ops.includes('security_validate_transition')) {
+    return { verdict: 'error', title: 'Relabel refused by a validatetrans rule', detail: `A validatetrans constraint (mlsvalidatetrans in MLS policies) refused relabeling a ${g.tclass} from ${g.scontext} to ${g.tcontext}. Check the policy's validatetrans rules for ${g.tclass}; the type rules aren't involved.`, fixes: [], notes };
+  }
+  return { verdict: 'error', title: 'SELinux error', detail: `The kernel refused ${ops.length ? ops.join(', ') : 'an operation'} for ${S} → ${T} (${g.tclass}). This is not an access denial; the record itself (Evidence) says what was refused.`, fixes: [], notes };
+}
+
 function verdict(g, te, labels, policyName) {
   const notes = [];
   if (g.permissive) notes.push(g.userspace ? 'Logged in permissive mode: the access was allowed this time, and will be denied when enforcing.' : 'Logged in permissive mode (permissive=1): the access was allowed this time, and will be denied when enforcing.');
   if (te && te.permissiveDomain) notes.push(`${g.source} is a permissive domain in ${policyName}: its denials are logged, not enforced.`);
   const allow = `allow ${g.source} ${g.source === g.target ? 'self' : g.target}:${g.tclass} { ${g.perms.join(' ')} };`;
-  if (g.kind === 'error') {
-    return { verdict: 'error', title: 'SELinux error', detail: `The kernel refused ${g.ops.length ? g.ops.join(', ') : 'an operation'} for ${g.source} → ${g.target} (${g.tclass}). This is not an access denial: typically a domain transition into a context the policy doesn't allow (invalid_context), or a bounded transition. Check the role and user allow the target type.`, fixes: [], notes };
-  }
+  if (g.kind === 'error') return errorVerdict(g, te, policyName, notes);
   if (te && te.unknown && te.unknown.length) {
     return { verdict: 'unknown', title: 'Not in this policy', detail: `${te.unknown.join(' and ')} ${te.unknown.length > 1 ? "aren't types" : "isn't a type"} in ${policyName}. The denial came from a host running a different policy; check it against that policy (Check against).`, fixes: [], notes };
   }
@@ -260,6 +315,9 @@ function verdict(g, te, labels, policyName) {
   if (GENERIC_TYPES.has(g.target) && FILE_MODES[g.tclass]) {
     return { verdict: 'generic', title: 'Generic label', detail: `${g.target} is a catch-all type: allowing ${g.source} to use it would let it use every file with that label. Give the files a type of their own instead (a file context in the module that owns them, or a file type in the service editor), relabel, and allow access to that type.${g.paths.length ? `\nFiles: ${g.paths.slice(0, 5).join(', ')}` : ''}`,
       fixes: [], needed: allow, notes };
+  }
+  if (g.tclass === 'process2' && g.perms.some(p => p === 'nnp_transition' || p === 'nosuid_transition')) {
+    notes.push(`${g.source} started a program in ${g.target} under NoNewPrivileges (nnp_transition) or from a nosuid mount (nosuid_transition): the kernel refused the change of domain and exec failed (see the security_bounded_transition record of the same event). Allowing it is the fix when ${g.target} is meant to start there; otherwise drop NoNewPrivileges for that program or remount without nosuid.`);
   }
   return { verdict: 'missing', title: 'Missing rule', detail: `${policyName} doesn't allow ${(missing.length ? missing : g.perms).join(', ')} for ${g.source} on ${g.target} (${g.tclass}). Grant it with an interface of the module that owns ${g.target}, in the module of ${g.source}, rather than with this raw rule.`,
     fixes: [], needed: allow, notes };

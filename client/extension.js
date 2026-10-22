@@ -2225,6 +2225,9 @@ function showReport(context, viewType) {
   code { font-family: var(--vscode-editor-font-family); }
   .muted { opacity: .7; }
   .small { font-size: .92em; }
+  .fix { margin: 6px 0 2px; }
+  .fix .sub { font-weight: 600; margin: 6px 0 2px; }
+  button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
 </style></head><body>
 <div id="bar">
   <span id="title">${def.title}</span>
@@ -2241,6 +2244,13 @@ function showReport(context, viewType) {
         panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest(def.request, { against: m.against }) });
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
+      } else if (m.cmd === 'sessionFix') {
+        panel.webview.postMessage({ cmd: 'sessionFix', key: m.key, result: await client.sendRequest('selinux/sessionFix', { against: m.against, need: m.need, attrs: m.attrs }) });
+      } else if (m.cmd === 'fix') {
+        panel.webview.postMessage({ cmd: 'fixPlan', key: m.key, plan: await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, rule: m.rule }) });
+      } else if (m.cmd === 'applyFix') {
+        await applyDenialFix(m.plan);
+        panel.webview.postMessage({ cmd: 'applied', key: m.key, path: m.plan.path });
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });

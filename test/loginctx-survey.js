@@ -8,6 +8,8 @@ const os = require('os');
 const path = require('path');
 const cp = require('child_process');
 const L = require('../server/loginctx');
+const S = require('../server/sessions');
+const FL = require('../server/filelabel');
 
 let [mode, a, b] = process.argv.slice(2);
 const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
@@ -58,5 +60,34 @@ const req = (o) => new Promise((res) => { const id = ++n; waiting.set(id, res); 
   for (const m of r.mappings) console.log(`  ${m.group ? '%' : ''}${m.login} → ${m.user}${m.level ? ` ${m.level}` : ''}: ${m.ways.map(w => `${w.source}=${w.works3 ? w.v3.ctx.split(':').slice(1, 3).join(':') : '✗'}${w.works2 ? '' : '(✗ on 2.x)'}`).join(' ') || 'no ways'}`);
   for (const p of r.problems) console.log(`${p.severity.toUpperCase().padEnd(7)} ${path.basename(p.file)}:${p.l + 1} ${p.text}`);
   for (const x of r.notes) console.log(`note    ${x}`);
+  // Session starts: shell /bin/bash, this host's libraries and mounts; labels from the build's .fc (tree) or matchpathcon.
+  const run = (c, args) => { try { return cp.execFileSync(c, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { return e.stdout || ''; } };
+  let order = null;
+  if (mode === 'tree') {
+    const work = path.dirname(path.dirname(bin));
+    const fcs = [path.join(work, 'base.fc'), ...fs.readdirSync(path.join(work, 'tmp')).filter(n => n.endsWith('.mod.fc')).map(n => path.join(work, 'tmp', n))].filter(f => fs.existsSync(f));
+    order = FL.lookupOrder(FL.sortSpecs(fcs.flatMap(f => FL.parseSpecs(read(f), f))));
+  }
+  const facts = {
+    realpath: (p) => { try { return fs.realpathSync(p); } catch { return p; } },
+    libsOf: (p) => { const out = [...run('ldd', [p]).matchAll(/(?:=>\s*)?(\/\S+)\s+\(0x/g)].map(m => m[1]); return out.length ? [...new Set(out), '/etc/ld.so.cache'] : []; },
+    labels: async (paths, m) => {
+      const out = new Map();
+      for (const p0 of paths) {
+        let p = p0;
+        try { p = path.join(fs.realpathSync(path.dirname(p0)), path.basename(p0)); } catch { /* keep */ }
+        if (order) { const ms = FL.matches(order, p, m, 1); if (ms.length && ms[0].context !== '<<none>>') out.set(p0, ms[0].context); } else {
+          const x = /	(\S+)$/m.exec(run('matchpathcon', ['-m', m, p0])); if (x && x[1] !== '<<none>>') out.set(p0, x[1]);
+        }
+      }
+      return out;
+    },
+  };
+  const t1 = Date.now();
+  const s = await S.analyze(r, facts, async (items) => { const x = await req({ op: 'logincontexts', items }); if (x.error) throw new Error(x.error); return x.answers; });
+  console.log(`sessions: ${s.sessions.length} checked in ${Date.now() - t1} ms`);
+  for (const x of s.sessions) console.log(`  ${x.login} ${x.way} ${x.ctx}: ${x.checks.map(c => `${c.id}=${c.ok === null ? '?' : c.ok ? 'ok' : 'FAIL'}`).join(' ')}`);
+  for (const p of s.problems) console.log(`${p.severity.toUpperCase().padEnd(7)} ${p.file ? `${path.basename(p.file)}:${p.l + 1}` : '-'} ${p.text}`);
+  if (process.env.VERBOSE) for (const x of s.sessions) for (const c of x.checks) console.log(`    ${x.login}/${x.source}: ${c.text}`);
   proc.stdin.end();
 })();

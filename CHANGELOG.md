@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Logins that bounce** (part of *Check Login Contexts*, and diagnostics
+  after every tree build): a login can get a valid context and still be
+  thrown out right after the password. The report now checks what the
+  kernel checks when the session starts:
+  * the user's domain entering through the shell (`/bin/sh` for cron,
+    systemd for the user instance; symlinks followed) and loading its
+    libraries;
+  * the terminal and descriptors the login program hands over (`fd use`, the
+    pty sshd creates and relabels with `type_change`, the console tty);
+    without them the kernel closes them and the shell exits at once;
+  * NoNewPrivileges and nosuid mounts: `process2 nnp_transition` /
+    `nosuid_transition` or typebounds (`SELINUX_ERR
+    op=security_bounded_transition`), for this host's units and mounts. It
+    warns when the policy allows it for other users' sessions (RHEL's
+    `login_userdomain`) but not this one;
+  * programs the session would run into an invalid context (a role not
+    authorized for the target of a `type_transition`), and typebounds
+    masking.
+* **How to fix** on each of these problems: the interfaces of the policy
+  you are working on that grant exactly what is missing, narrowest first,
+  and interfaces that make the domain a member of an attribute that
+  already has it. *Add…* / *Apply* write the call into the domain's
+  module, and the build checks again.
+* **Denial assistant:** `SELINUX_ERR` records get real verdicts instead of
+  "SELinux error". `security_bounded_transition` (NoNewPrivileges/nosuid) and
+  `security_compute_sid` invalid contexts get the role to authorize and the
+  target's `*_run` interfaces. `reason=bounds` (typebounds) names the parent
+  that lacks the access. Each comes with the rule and the interfaces of the
+  policy, and shows as resolved once the build allows it. The fix planner
+  takes two-argument calls such as `passwd_run(staff_t, staff_r)`.
+
 ## 0.17.0 (2026-10-22)
 
 **Added**

@@ -3511,7 +3511,8 @@ function domainModuleFile(domain) {
  */
 connection.onRequest('selinux/denialFix', async ({ domain, call, calls, rule, newInterface }) => {
   await indexing;
-  let list = (calls && calls.length ? calls : call ? [call] : []).filter(c => /^\w+\(\w+\)$/.test(c));
+  // One-argument calls, or (domain, role) ones such as passwd_run(staff_t, staff_r).
+  let list = (calls && calls.length ? calls : call ? [call] : []).filter(c => /^\w+\(\w+(, ?\w+)?\)$/.test(c));
   if (!/^[A-Za-z_]\w*$/.test(domain || '') || (!list.length && !rule && !newInterface)) return { unavailable: 'Nothing to add.' };
   // A new interface in the module that owns the target type, then a call to it.
   const also = [];
@@ -3682,6 +3683,23 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
         if (!r.error && r.failing && r.failing.length) x.constraints = r.failing;
       }
       transitions = await denialTransitions(groups, pol, bin);
+      // SELINUX_ERR records: what the policy says about the refused change.
+      const errs = groups.filter(g => g.kind === 'error');
+      if (errs.length) {
+        const items = [];
+        errs.forEach((g, i) => {
+          if (g.ops.includes('security_bounded_transition')) items.push({ id: `n${i}`, kind: 'nnp', from: g.source, to: g.target });
+          if (g.ops.includes('security_compute_sid') && g.invalids.length) items.push({ id: `v${i}`, kind: 'valid', ctx: g.invalids[0] });
+        });
+        if (errs.some(g => g.reasons.includes('bounds'))) items.push({ id: 'b', kind: 'bounds' });
+        const r = items.length ? await policyQuery.request({ op: 'logincontexts', bin, items, bools }) : { answers: {} };
+        if (r.error) notes.push(`Policy query failed: ${r.error}`);
+        const a = r.answers || {};
+        errs.forEach((g, i) => {
+          const bounds = ((a.b || {}).bounds || []).find(x => x.child === g.source) || null;
+          te.set(g.key, { err: { nnp: a[`n${i}`] || null, valid: a[`v${i}`] || null, bounds } });
+        });
+      }
     }
   }
   const out = groups.map(g => {
@@ -3693,6 +3711,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
   });
   // suggest: false = none; { verdicts, max } widens it (the benchmark asks for allowed accesses too).
   if (suggest !== false) await suggestInterfaces(out, usedBin, notes, (suggest && suggest.verdicts) || ['missing'], (suggest && suggest.max) || 25, (suggest && suggest.limit) || 5);
+  if (suggest !== false && usedBin) await suggestForErrors(out, usedBin, notes);
   return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: fcFile || pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
 });
 
@@ -3856,13 +3875,186 @@ async function loginContextReport(lp) {
   if (!cfg) return { error: 'No login configuration found for this policy.' };
   const f = (p) => ({ path: p, text: cfg.read(p) });
   const bools = lp.pol.active ? runningBooleans() : {};
-  const report = await loginctx.analyze({ seusers: f(cfg.seusers), defaults: f(cfg.defaults), userFile: (u) => (/^\w+$/.test(u) ? f(cfg.userFile(u)) : null), failsafe: f(cfg.failsafe) },
-    async (items) => {
-      const r = await policyQuery.request({ op: 'logincontexts', bin: lp.bin, items, bools });
-      if (r.error) throw new Error(`Policy query failed: ${r.error}`);
-      return r.answers;
-    });
+  const ask = async (items) => {
+    const r = await policyQuery.request({ op: 'logincontexts', bin: lp.bin, items, bools });
+    if (r.error) throw new Error(`Policy query failed: ${r.error}`);
+    return r.answers;
+  };
+  const report = await loginctx.analyze({ seusers: f(cfg.seusers), defaults: f(cfg.defaults), userFile: (u) => (/^\w+$/.test(u) ? f(cfg.userFile(u)) : null), failsafe: f(cfg.failsafe) }, ask);
+  if (report && !report.error) {
+    // Then the start of each session that gets a context: what the kernel checks after that.
+    const s = await sessions.analyze(report, sessionFacts(lp.pol, cfg), ask);
+    report.sessions = s.sessions;
+    report.invalid = s.invalid;
+    report.bounds = s.bounds;
+    report.problems = [...report.problems, ...s.problems].sort((a, b) => loginctx.SEVERITY.indexOf(a.severity) - loginctx.SEVERITY.indexOf(b.severity) || (a.l || 0) - (b.l || 0));
+    if (!cfg.host) report.notes.push('Session starts are checked with /bin/bash as the shell, and with this host\'s libraries, mounts and systemd units.');
+  }
   return { report, cfg };
+}
+
+const sessions = require('./sessions');
+
+/**
+ * Suggestions for SELINUX_ERR verdicts, from this policy: a refused NoNewPrivileges/nosuid change
+ * (interfaces granting process2 nnp_transition, or joining an attribute that has it), a typebounds
+ * mask (the parent's access), an invalid computed context (the target's *_run-style interfaces,
+ * which authorize the role along with the transition).
+ */
+async function suggestForErrors(groups, bin, notes) {
+  for (const g of groups) {
+    const v = g.v;
+    if (v.need && (v.verdict === 'nnp' || v.verdict === 'bounds')) {
+      const sg = { kind: 'deny', source: v.need.source, target: v.need.target, tclass: v.need.tclass, perms: v.need.perms, v: { verdict: 'missing', needed: v.needed } };
+      await suggestInterfaces([sg], bin, notes, ['missing'], 1, 5);
+      g.suggest = sg.suggest || null;
+      const map = attributeInterfaces();
+      const joins = (v.attrs || []).flatMap(a => (map.get(a) || []).slice(0, 2).map(x => ({ ...x, attr: a, call: `${x.name}(${g.target})`, domain: g.target })));
+      if (joins.length) g.joins = joins;
+    } else if (v.verdict === 'invalid' && v.role) {
+      const list = roleInterfaces(v.role.type).map(x => ({ ...x, call: `${x.name}(${g.source}, ${v.role.role})`, covers: true }));
+      g.suggest = list.length ? { list: list.slice(0, 5), note: null, roleCalls: true }
+        : { list: [], note: `No interface of this policy authorizes a role for ${v.role.type}; add role ${v.role.role} types ${v.role.type}; to the module of ${g.source}.` };
+    }
+  }
+}
+
+let roleIfCache = { defs: null, map: new Map() };
+/** Interfaces (domain, role) that authorize a role for type T (role $2 types T), with the transition usually: *_run, *_role. */
+function roleInterfaces(T) {
+  if (roleIfCache.defs !== idx.defs) roleIfCache = { defs: idx.defs, map: new Map() };
+  if (roleIfCache.map.has(T)) return roleIfCache.map.get(T);
+  const out = [];
+  const re = new RegExp(`\\brole\\s+\\$2\\s+types\\s+(?:\\{[^}]*\\b${T}\\b[^}]*\\}|${T}\\b)`);
+  for (const list of idx.defs.values()) {
+    for (const d of list) {
+      if (d.kind !== 'interface' || d.maxArg !== 2 || !d.bodyEnd || !/\.if$/.test(d.path || '')) continue;
+      const text = (readSource(d.path) || '').split('\n').slice(d.bodyStart.l, d.bodyEnd.l + 1).join('\n');
+      if (!re.test(text)) continue;
+      const f = idx.files.get(d.path);
+      out.push({ name: d.name, module: f ? f.module : null, summary: (d.doc && d.doc.summary) || '', loc: { p: d.path, l: d.l, c: d.c } });
+    }
+  }
+  // *_run first (transition + role), then *_role, then by name.
+  const rank = (n) => (/_run(_|$)/.test(n) ? 0 : /_role$/.test(n) ? 1 : 2);
+  out.sort((a, b) => rank(a.name) - rank(b.name) || a.name.length - b.name.length || a.name.localeCompare(b.name));
+  roleIfCache.map.set(T, out);
+  return out;
+}
+
+let joinCache = { defs: null, map: null };
+/**
+ * Interfaces of one argument that put it into an attribute (typeattribute $1 A): attribute → [{ name,
+ * pure (nothing else in the body), loc, summary }], pure ones first. RHEL's userdom_login_userdomain
+ * puts a domain into login_userdomain, which login programs may start under NoNewPrivileges.
+ */
+function attributeInterfaces() {
+  if (joinCache.defs === idx.defs) return joinCache.map;
+  const map = new Map();
+  for (const list of idx.defs.values()) {
+    for (const d of Array.isArray(list) ? list : [list]) {
+      if (d.kind !== 'interface' || d.maxArg !== 1 || !d.bodyEnd || !/\.if$/.test(d.path || '')) continue;
+      const text = (readSource(d.path) || '').split('\n').slice(d.bodyStart.l, d.bodyEnd.l + 1).join('\n')
+        .replace(/^[^`]*`/, '').replace(/gen_require\(`[^']*'\)/g, '').replace(/#.*$/gm, '');
+      const adds = [...text.matchAll(/\btypeattribute\s+\$1\s+([\w\s,]+);/g)].flatMap(m => m[1].split(/[\s,]+/).filter(Boolean));
+      if (!adds.length) continue;
+      const rest = text.replace(/\btypeattribute\s+\$1\s+[\w\s,]+;/g, '').replace(/'\)\s*$/, '').trim();
+      for (const a of adds) {
+        if (!map.has(a)) map.set(a, []);
+        map.get(a).push({ name: d.name, pure: !rest, loc: { p: d.path, l: d.l, c: d.c }, summary: (d.doc && d.doc.summary) || '' });
+      }
+    }
+  }
+  for (const l of map.values()) l.sort((a, b) => (b.pure - a.pure) || a.name.length - b.name.length || a.name.localeCompare(b.name));
+  joinCache = { defs: idx.defs, map };
+  return map;
+}
+
+/**
+ * Fixes for a session-start problem, from the policy being worked on: { against, need: { source,
+ * target, tclass, perms }, attrs } → { suggest (interfaces that grant it, narrowest first, as the
+ * denial assistant ranks them), joins (interfaces that put the target into an attribute that
+ * already has the rule), rule, notes }.
+ */
+connection.onRequest('selinux/sessionFix', async ({ against, need, attrs } = {}) => {
+  await indexing;
+  const ok = (n) => /^[A-Za-z_]\w*$/.test(n || '');
+  if (!need || !ok(need.source) || !ok(need.target) || !ok(need.tclass) || !(need.perms || []).every(ok)) return { error: 'Nothing to fix.' };
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const notes = [];
+  const rule = `allow ${need.source} ${need.target}:${need.tclass} { ${need.perms.join(' ')} };`;
+  const g = { kind: 'deny', source: need.source, target: need.target, tclass: need.tclass, perms: need.perms, v: { verdict: 'missing', needed: rule } };
+  await suggestInterfaces([g], lp.bin, notes, ['missing'], 1, 8);
+  const joins = [];
+  const map = attributeInterfaces();
+  for (const a of (attrs || []).filter(ok)) for (const x of (map.get(a) || []).slice(0, 3)) joins.push({ ...x, attr: a, call: `${x.name}(${need.target})`, domain: need.target });
+  return { rule, suggest: g.suggest || null, joins, notes, canEdit: !lp.pol.active || !!lp.pol.build };
+});
+let hostFactCache = { at: 0, ldd: new Map(), units: new Map(), mounts: null };
+/**
+ * What this host says about a session start (server/sessions.js facts): the logins' shells (host
+ * policies only), a program's libraries (ldd), the nosuid mount holding a path, and whether a login
+ * program's systemd unit sets NoNewPrivileges. Cached for 30 s.
+ */
+function sessionFacts(pol, cfg) {
+  if (Date.now() - hostFactCache.at > 30000) hostFactCache = { at: Date.now(), ldd: new Map(), units: new Map(), mounts: null };
+  const c = hostFactCache;
+  const linux = process.platform !== 'win32';
+  const pw = cfg.host && linux ? logins.parsePasswd(readSource('/etc/passwd')) : [];
+  const run = (cmd, args) => { try { return require('child_process').execFileSync(cmd, args, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { return e.stdout || ''; } };
+  const mounts = () => {
+    if (c.mounts == null) {
+      // /proc/self/mountinfo: field 5 = mount point, 6 = per-mount options (octal escapes for spaces).
+      c.mounts = [];
+      for (const line of (readIf('/proc/self/mountinfo') || '').split('\n')) {
+        const f = line.split(' ');
+        if (f.length > 6) c.mounts.push({ at: f[4].replace(/\\(\d{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8))), nosuid: f[5].split(',').includes('nosuid') });
+      }
+      c.mounts.sort((a, b) => b.at.length - a.at.length);
+    }
+    return c.mounts;
+  };
+  const UNITS = { sshd_t: ['sshd.service'], sshd_session_t: ['sshd.service'], local_login_t: ['getty@tty1.service', 'serial-getty@ttyS0.service'],
+    xdm_t: ['display-manager.service', 'gdm.service'], crond_t: ['crond.service', 'cron.service'], init_t: ['user@1000.service'] };
+  return {
+    host: !!cfg.host,
+    shellOf: (login) => { const p = pw.find(x => x.name === login); return p && p.shell && !logins.NO_LOGIN.test(p.shell) ? p.shell : null; },
+    libsOf: (p) => {
+      if (!linux) return [];
+      if (!c.ldd.has(p)) {
+        // "libtinfo.so.6 => /lib64/libtinfo.so.6 (0x…)" and the loader "/lib64/ld-linux-x86-64.so.2 (0x…)".
+        const out = [];
+        for (const m of run('ldd', [p]).matchAll(/(?:=>\s*)?(\/\S+)\s+\(0x/g)) if (!out.includes(m[1])) out.push(m[1]);
+        if (out.length && fs.existsSync('/etc/ld.so.cache')) out.push('/etc/ld.so.cache');
+        c.ldd.set(p, out);
+      }
+      return c.ldd.get(p);
+    },
+    labels: (paths, mode) => expectedContexts(pol, paths, mode),
+    realpath: (p) => { try { return linux ? fs.realpathSync(p) : p; } catch { return p; } },
+    nosuidMount: (p) => {
+      if (!linux) return null;
+      let real = p;
+      try { real = fs.realpathSync(p); } catch { /* not on this host */ }
+      const m = mounts().find(x => real === x.at || real.startsWith(x.at === '/' ? '/' : `${x.at}/`));
+      return m && m.nosuid ? m.at : null;
+    },
+    nnpUnit: (S) => {
+      if (!linux || !UNITS[S]) return null;
+      if (!c.units.has(S)) {
+        let hit = null;
+        for (const u of UNITS[S]) {
+          const out = run('systemctl', ['show', '-p', 'LoadState,NoNewPrivileges', u]);
+          if (!/LoadState=loaded/.test(out)) continue;
+          hit = { unit: u, nnp: /NoNewPrivileges=yes/.test(out) };
+          if (hit.nnp) break;
+        }
+        c.units.set(S, hit);
+      }
+      return c.units.get(S);
+    },
+  };
 }
 
 connection.onRequest('selinux/loginContexts', async ({ against } = {}) => {
