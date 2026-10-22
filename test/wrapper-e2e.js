@@ -57,7 +57,7 @@ const check = (cond, what, extra) => {
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + (typeof extra === 'string' ? extra : JSON.stringify(extra, null, 1)).slice(0, 3000).replace(/\n/g, '\n     ')); }
 };
 // Build errors (the checks file and the login context diagnostics report on their own, looked at separately).
-const errors = () => Object.entries(diags).filter(([u]) => !u.endsWith('selinux.checks')).flatMap(([u, ds]) => ds.filter(d => d.severity === 1 && d.source !== 'selinux-logins').map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
+const errors = () => Object.entries(diags).filter(([u]) => !u.endsWith('selinux.checks')).flatMap(([u, ds]) => ds.filter(d => d.severity === 1 && !/^selinux-(logins|contexts)$/.test(d.source)).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
 const blocking = (p) => (p.problems || []).filter(x => !x.startsWith('Note:'));
 const write = async (plan) => {
   for (const f of plan.files) if (f.changed) { fs.mkdirSync(path.dirname(f.path), { recursive: true }); fs.writeFileSync(f.path, f.text); }

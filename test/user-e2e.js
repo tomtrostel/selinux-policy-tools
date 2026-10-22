@@ -46,7 +46,7 @@ const check = (cond, what, extra) => {
   console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`);
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + (typeof extra === 'string' ? extra : JSON.stringify(extra, null, 1)).slice(0, 2500).replace(/\n/g, '\n     ')); }
 };
-const errors = () => Object.entries(diags).flatMap(([u, ds]) => ds.filter(d => d.severity === 1).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
+const errors = () => Object.entries(diags).flatMap(([u, ds]) => ds.filter(d => d.severity === 1 && !/^selinux-(logins|contexts)$/.test(d.source)).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
 const blocking = (p) => (p.problems || []).filter(x => !x.startsWith('Note:'));
 const write = async (plan) => {
   for (const f of plan.files) if (f.changed) { fs.mkdirSync(path.dirname(f.path), { recursive: true }); fs.writeFileSync(f.path, f.text); }

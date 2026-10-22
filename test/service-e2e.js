@@ -54,7 +54,7 @@ const norm = (m) => JSON.stringify([m.files.map(f => [f.kind, f.type, f.access, 
   (m.helpers || []).map(h => [h.domain || `${((h.name || '').trim() || '%_helper').replace(/%/g, m.name)}_t`, !!h.signal, (h.exec || []).map(p => p.replace(/%/g, m.name)).sort(),
     (h.files || []).map(x => `${x.type}:${x.access}`).sort(), gnorm(h)]).sort()]);
 const portsNorm = (m) => JSON.stringify((m.ports || []).map(p => [(p.name || '').trim() || m.name, (p.nums || []).filter(x => x.port).map(x => `${x.proto} ${x.port}`)]));
-const errors = (r) => Object.entries(diags).flatMap(([u, ds]) => ds.filter(d => d.severity === 1).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
+const errors = (r) => Object.entries(diags).flatMap(([u, ds]) => ds.filter(d => d.severity === 1 && !/^selinux-(logins|contexts)$/.test(d.source)).map(d => `${path.basename(URI.parse(u).fsPath)}:${d.range.start.line + 1} ${d.message}`));
 const write = async (plan) => {
   for (const f of plan.files) if (f.changed) fs.writeFileSync(f.path, f.text);
   indexed = new Promise(r => (doneIndex = r));

@@ -33,7 +33,9 @@ It works at two levels:
   changed on a host against your policy, and writes the changes that
   belong into its source. *Check Login Contexts* finds the logins that
   would fail with "Unable to get valid context" even though the policy
-  compiles.
+  compiles, and *Check Context Files* the contexts in `file_contexts`
+  (home directories and `.local` too) and the other context files that the
+  policy would reject.
 * **Writing and fixing policy.**
   * A service editor that writes and edits a daemon's module from a form,
     and a user editor for SELinux users, their logins and ways in.
@@ -908,6 +910,60 @@ except one note: `initrc_t` (`runuser` in init scripts) can't start an
 `unconfined_u` session. For what it finds in CLIP, see
 [Findings](#login-contexts-in-clip).
 
+
+**Context files** (*SELinux: Check Context Files…*; after every tree build
+as diagnostics; Linux)
+
+Besides the logins, a policy's configuration names contexts in many other
+places, and each reader fails in its own way when the policy rejects one.
+This check reads them all against the compiled policy:
+
+* **`file_contexts`:** an invalid context, or two lines for the same path
+  and file kind. `make validate` and semodule both run `setfiles -c` and
+  refuse the whole policy. The problem lands on the module's `.fc` line, so
+  a failed `make validate` points at the cause.
+* **`file_contexts.local`** (this host's, when it has a policy of the
+  build's name): libsemanage validates it on every commit. One line naming
+  a type the new policy dropped makes every `semodule` and `semanage`
+  change fail until it is removed.
+* **Home directories, as `genhomedircon` writes them.** The modules' home
+  lines (`HOME_DIR`, `HOME_ROOT`, `%{USERNAME}`, `%{USERID}`, `USER`,
+  `ROLE`) are written once per seusers user: the context's user set to it,
+  its level to the user's default level, `ROLE` to the user's prefix, and
+  the role to the prefix when the prefix is one of the user's roles. A line
+  whose context isn't valid then is silently left out, so the user's files
+  get a more general label. The check does the same per user (prefixes from
+  the build's `users_extra`) and reports the left-out lines on the login's
+  seusers line.
+* **Types restorecon can't apply:** a file-context type no rule lets be
+  associated with a filesystem (it isn't a file type). setxattr is denied,
+  so the files keep their old label.
+* **The other context files** in `contexts/`, each with what its reader
+  does with a bad entry:
+
+  | File | Read by | A bad entry |
+  |---|---|---|
+  | `default_type` | newrole, sudo | `newrole -r` / `ROLE=` without a type fails for that role |
+  | `failsafe_context` | login programs | no failsafe when every listed context fails |
+  | `initrc_context` | run_init | can't start init scripts |
+  | `userhelper_context` | userhelper | can't run programs |
+  | `virtual_domain_context`, `virtual_image_context`, `lxc_contexts` | libvirt, container runtimes | can't start or label guests and containers |
+  | `x_contexts` | the X server | can't label those objects; clients' requests fail |
+  | `dbus_contexts` | dbus-daemon | warns, name keeps the default context |
+  | `openssh_contexts` | sshd | the pre-authentication process stays in `sshd_t` (also checks `system_r` and the `setcon` permissions) |
+  | `sepgsql_contexts`, `systemd_contexts`, `snapperd_contexts`, `removable_context`, `media` | their programs | that label can't be used |
+  | `securetty_types`, `customizable_types`, `openrc_contexts` | newrole, restorecon, OpenRC | the line has no effect (information) |
+
+  A file whose program the policy doesn't have at all (no `xserver_t`, no
+  `container_t`, …) is never read; its problems become one note. So are a
+  D-Bus name of a service the policy lacks and a `default_type` line for a
+  role no user has.
+* **Where the results appear:** like login contexts. For a tree build they
+  are diagnostics on the lines (`.fc` source lines, `config/appconfig-<TYPE>`
+  files, seusers). Editing a context file updates them without a rebuild.
+  The panel checks the build or any installed policy: the problems, each
+  file-context set, each user's home lines, and every context file with its
+  reader and result.
 **User editor** (*SELinux: New User…*, or *New User…* in Logins and Users;
 full trees)
 
@@ -1683,6 +1739,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   the files are edited on disk, and go away when they are restored.
   `test/loginctx-survey.js` runs the check over installed policies and CLIP
   builds (see Findings).
+* Context files (test/ctxfiles-test.js with a fake policy; test/ctxfiles-e2e.js
+  on Rocky 9.8 with CLIP RHEL 9 and on Rocky 8.10 with CLIP RHEL 8): the
+  installed targeted policies (6,752 and 6,500 file-context lines, 17
+  context files) have no errors or warnings. After a CLIP build, an invalid
+  context and a duplicate path added to `logging.fc` fail `make validate`,
+  and both are reported on their `.fc` lines. An `x_contexts` entry edited on
+  disk is flagged without a rebuild. A user whose prefix is one of its roles
+  loses its home lines, reported on the login's seusers line. Everything
+  clears when restored. `test/ctxfiles-survey.js` runs the check over
+  installed policies and tree builds.
 * Logins and Users (test/logins-e2e.js on Rocky 9.8): the running targeted
   policy maps `root` and `__default__` to `unconfined_u` (noted; it runs
   unconfined and can load a policy); `staff_u` over ssh lands in `staff_t`
@@ -1861,6 +1927,32 @@ console, graphical and systemd user sessions work for every mapped login.
   `unconfined` module is off. Nothing maps a login to `unconfined_u`, so it
   doesn't matter until someone does.
 
+### Context files in CLIP
+
+Found with *Check Context Files* on builds made with CLIP's own make
+arguments (2026-10-22).
+
+* **CLIP RHEL 8: 13 home-directory types can't be applied.** `gnome` and
+  `telepathy` are built (they are in the separately packaged modules), and
+  `xserver` is on. But their cache, config and data types
+  (`gnome_xdg_cache_t`, `telepathy_xdg_data_t`, `user_fonts_cache_t`,
+  `mesa_shader_cache_t`, …) become file types only through
+  `xdg_cache_content()` and its siblings, which these modules call inside
+  `optional_policy` blocks. The `xdg` module is off, so the blocks are
+  dropped and the types are plain types, which no rule lets be associated
+  with a filesystem. Their lines (`~/.cache/dconf`, `~/.cache/fontconfig`,
+  `~/.local/share/keyrings`, …) are in the policy, but restorecon can't
+  apply them ("Permission denied"), and files created there by
+  type transition can't be created either. CLIP RHEL 9 doesn't have this.
+  Turning `xdg` on, or giving those types `files_type()` outside the
+  optional blocks, would fix it. Not yet confirmed on a running CLIP host.
+* **Both branches:** `default_type` names `unconfined_r:unconfined_t`, and
+  the `unconfined` module is off. `unconfined_u` still has `unconfined_r`,
+  so `newrole -r unconfined_r` would fail, but no login is mapped to
+  `unconfined_u`. The context files for programs CLIP leaves out
+  (`lxc_contexts`, `virtual_*_context`, `userhelper_context`) and two D-Bus
+  names of services it doesn't have (tuned, timedated) are never read.
+
 ## Limitations
 
 **Wrapped programs**
@@ -1910,6 +2002,25 @@ console, graphical and systemd user sessions work for every mapped login.
   `semanage login` and `semanage user` changes of each host are not known
   (*Compare Host's Local Changes* shows them).
 
+
+**Context files**
+
+* The home-directory lines are written for each SELinux user that seusers
+  maps a login to, as genhomedircon does. Which logins exist and where their
+  homes are (passwd, `/etc/default/useradd`) only changes the paths, not
+  whether a context is valid, so it isn't modelled. Users' prefixes come
+  from the build's `users_extra`; for an installed policy the templates and
+  prefixes are root's only, so its `file_contexts.homedirs` is checked as
+  written instead.
+* The associate check looks for any `filesystem associate` rule for the
+  type (or one of its attributes), not for the filesystem the path will
+  really be on.
+* For a tree build, only the context files in `config/appconfig-<TYPE>` are
+  checked. A RHEL spec that installs extra files from its own sources
+  (`customizable_types`, `securetty_types-*`) isn't read.
+* Readers are described from their current upstream behaviour (libselinux
+  3.6, dbus, sshd, the X server). Older versions may be stricter or more
+  lenient about a bad entry.
 **Logins and Users**
 
 * Reach is what the policy permits, not what each program will do: a
@@ -2183,6 +2294,7 @@ and exits non-zero on a failure.
 | `client-test.js` | The All Features menu, *Add check*, the Configure from Spec items (stand-in `vscode`) |
 | `localmods-test.js` | Host Changes: the `semanage export` parser, the comparison, every fix, the panel |
 | `loginctx-test.js` | Login contexts: libselinux 3.x and 2.x context selection over seusers and the contexts files, every kind of problem, the panel |
+| `ctxfiles-test.js` | Context files: every context file's format, file_contexts / .local / home lines as genhomedircon writes them, every kind of problem, the panel |
 | `walkthrough-test.js` | The tutorials: pages, buttons, every contributed command registered |
 
 **End-to-end tests** need Linux with the SELinux toolchain and real trees
@@ -2210,6 +2322,7 @@ npm run test:package      # standalone modules packaged as RPMs
 npm run test:denials-e2e  # denial assistant on the running policy and a build
 npm run test:logins-e2e   # Logins and Users
 npm run test:loginctx-e2e # login contexts: running policy, then a CLIP build with seusers / contexts edits
+npm run test:ctxfiles-e2e # context files: running policy, then a CLIP build with .fc / x_contexts / users edits
 npm run test:filelabel-e2e  # File Labels vs matchpathcon
 npm run test:levels-e2e   # Levels and Categories, level and isolation checks
 npm run test:hostmods-e2e # a host's local changes: compare, write into a tree, rebuild

@@ -19,6 +19,22 @@
   * Found in CLIP: users' crontabs can't run in CLIP RHEL 9, and in CLIP
     RHEL 8 they would stop working after an upgrade to RHEL 9 (README,
     Findings).
+* **Check Context Files** (*SELinux: Check Context Files…*, and
+  diagnostics after every tree build, also one where `make validate`
+  failed): every other place the configuration names a context.
+  * `file_contexts`: invalid contexts and duplicate paths, on the module's
+    `.fc` line (both make `make validate` and semodule fail).
+  * `file_contexts.local` of this host: a stale line makes every semodule
+    and semanage change fail.
+  * Home directories as genhomedircon writes them per user (prefix, role,
+    level): the lines it would silently leave out.
+  * File-context types restorecon can't apply (not file types).
+  * `default_type`, `failsafe_context`, `initrc_context`, `x_contexts`,
+    `dbus_contexts`, `lxc_contexts`, `openssh_contexts` and the other
+    context files, each with what its reader does with a bad entry.
+  * Found in CLIP RHEL 8: 13 home-directory types of `gnome` and
+    `telepathy` are file types only through the `xdg` module, which is off,
+    so restorecon can't apply them (README, Findings).
 
 **Changed**
 

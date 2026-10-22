@@ -670,14 +670,29 @@ class Index:
     def canon_range(self, text):
         """A range as written in seusers or a contexts file, m4 macros resolved (s0-mcs_systemhigh),
         in setools' form; raises ValueError when the policy doesn't accept it."""
+        # Thousands of file contexts share a few levels: each text is resolved once.
+        memo = self.__dict__.setdefault("_ranges", {})
+        if text not in memo:
+            try:
+                memo[text] = self._canon_range(text)
+            except ValueError as e:
+                memo[text] = e
+        if isinstance(memo[text], ValueError):
+            raise memo[text]
+        return memo[text]
+
+    def _canon_range(self, text):
         p = self.policy
-        # Refpolicy names them s0..sN and c0..cN (mls_num_sens / mls_num_cats).
-        num = lambda x: int(re.sub(r"\D", "", str(x)) or 0)
-        sens = sorted(p.sensitivities(), key=num)
-        cats = sorted(p.categories(), key=num)
-        low = str(sens[0]) if sens else "s0"
-        allcats = ("%s.%s" % (cats[0], cats[-1]) if len(cats) > 1 else str(cats[0])) if cats else ""
-        high = "%s:%s" % (sens[-1], allcats) if allcats else (str(sens[-1]) if sens else "s0")
+        if not hasattr(self, "_extremes"):
+            # Refpolicy names them s0..sN and c0..cN (mls_num_sens / mls_num_cats).
+            num = lambda x: int(re.sub(r"\D", "", str(x)) or 0)
+            sens = sorted(p.sensitivities(), key=num)
+            cats = sorted(p.categories(), key=num)
+            low = str(sens[0]) if sens else "s0"
+            allcats = ("%s.%s" % (cats[0], cats[-1]) if len(cats) > 1 else str(cats[0])) if cats else ""
+            high = "%s:%s" % (sens[-1], allcats) if allcats else (str(sens[-1]) if sens else "s0")
+            self._extremes = (low, allcats, high)
+        low, allcats, high = self._extremes
         out = text.strip()
         for name, val in (("mls_systemhigh", high), ("mcs_systemhigh", high), ("mls_systemlow", low), ("mcs_systemlow", low),
                           ("mcs_allcats", allcats), ("mls_allcats", allcats)):
@@ -704,7 +719,8 @@ class Index:
             reasons.append({"kind": "user", "text": "there is no SELinux user %s" % u})
         if r not in self.role_types:
             reasons.append({"kind": "role", "text": "there is no role %s" % r})
-        elif u in self.user_roles and r not in self.user_roles[u]:
+        elif u in self.user_roles and r != "object_r" and r not in self.user_roles[u]:
+            # Every user has object_r (setools leaves it out of a user's roles).
             reasons.append({"kind": "userrole", "text": "%s doesn't have role %s (its roles: %s)" % (u, r, " ".join(sorted(self.user_roles[u])))})
         if t not in self.attrs:
             reasons.append({"kind": "type", "text": "%s is an attribute, not a type" % t if t in self.members else "there is no type %s" % t})
@@ -781,6 +797,55 @@ class Index:
                     cons = self.constraints(it["from"], it["to"], "process", {"transition"}) if "unknown" not in te else []
                     a = {"te": per.get("status"), "options": per.get("options"), "rules": per.get("rules"),
                          "constraints": cons, "ok": per.get("status") == "allowed" and not cons}
+                elif k == "types":
+                    # What each name is: type | alias (→ its type) | attribute | None.
+                    a = {"kinds": {n: ("type" if n in self.attrs else "alias" if n in self.aliases else "attribute" if n in self.members else None)
+                                   for n in it.get("names") or []}}
+                elif k == "roletype":
+                    r, t = it["role"], self.aliases.get(it["type"], it["type"])
+                    reasons = []
+                    if r not in self.role_types:
+                        reasons.append({"kind": "role", "text": "there is no role %s" % r})
+                    if t not in self.attrs:
+                        reasons.append({"kind": "type", "text": "%s is an attribute, not a type" % t if t in self.members else "there is no type %s" % t})
+                    elif r in self.role_types and r != "object_r" and t not in self.role_types[r]:
+                        reasons.append({"kind": "roletype", "text": "role %s isn't authorized for %s" % (r, t)})
+                    a = {"ok": not reasons, "reasons": reasons}
+                elif k == "associate":
+                    # Types no rule lets be associated with any filesystem: setxattr of a file to
+                    # one fails (filesystem associate), so restorecon can't apply it.
+                    without = []
+                    for n in it.get("types") or []:
+                        t = self.aliases.get(n, n)
+                        if t not in self.attrs:
+                            continue
+                        ok = False
+                        for s in [t] + self.attrs[t]:
+                            for i in self.by_src.get(s, ()):
+                                r = self.rules[i]
+                                if r["rt"] == "allow" and r["c"] == "filesystem" and "associate" in r["perms"] and i not in self.conds:
+                                    ok = True
+                                    break
+                            if ok:
+                                break
+                        if not ok:
+                            without.append(n)
+                    a = {"without": without}
+                elif k == "dyntrans":
+                    # setcon() from one domain to another: dyntransition to it, setcurrent on itself.
+                    f, t = self.aliases.get(it["from"], it["from"]), self.aliases.get(it["to"], it["to"])
+                    res = self.avc([{"s": f, "t": t, "c": "process", "perms": ["dyntransition"]},
+                                    {"s": f, "t": f, "c": "process", "perms": ["setcurrent"]}], bools)
+                    if any("unknown" in x for x in res):
+                        a = {"ok": False, "unknown": sorted({n for x in res for n in x.get("unknown", [])})}
+                    else:
+                        st = lambda x, p: ((x.get("perms") or {}).get(p) or {}).get("status") or "missing"
+                        miss = []
+                        if st(res[0], "dyntransition") != "allowed":
+                            miss.append("allow %s %s:process dyntransition;" % (f, t))
+                        if st(res[1], "setcurrent") != "allowed":
+                            miss.append("allow %s self:process setcurrent;" % f)
+                        a = {"ok": not miss, "missing": miss}
                 else:
                     a = {"error": "unknown question %s" % k}
             except (ValueError, KeyError) as e:

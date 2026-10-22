@@ -1210,6 +1210,47 @@ so far covered by the e2e tests only.
    (logincontexts), test/loginctx-e2e.js (melody CLIP 9 + ricardo CLIP 8;
    in test:clip-all as `loginctx`), test/loginctx-survey.js (installed /
    tree / build <tree>: prints every problem).
+   Phase 2, context files (done, unreleased; "ok lets do phase 2"):
+   libsemanage/libselinux 3.6 source read: semodule runs setfiles -c on
+   file_contexts only (invalid context or "Multiple different/same
+   specifications" → refused); semanage_fcontext_validate_local on every
+   commit (stale .local line → every commit fails); genhomedircon
+   (homedir_template = lines starting HOME_DIR/HOME_ROOT or containing ROLE
+   or USER; per seusers user: ROLE → prefix (users_extra, default "user"),
+   context user → sename, level → user's default level (MLS/MCS), role →
+   prefix when it is object_r or one of the user's roles; check_line drops
+   invalid lines silently; fallback from __default__ else user_u); .local
+   and .homedirs are not validated by setfiles at install (lookup →
+   setfilecon EINVAL). server/ctxfiles.js (pure, analyze(cfg, ask)): FILES
+   catalog (format context | partial | roletype | keyed | typekey | labels |
+   x | dbus | types; owners = the reader's domains, none present → problems
+   collapsed to one info `unused`; sev; effect); parseFile, parseUsersExtra,
+   templateKind, homeUsers. Kinds: invalid, format, notype, nodyntrans
+   (openssh: system_r role + sshd_t dyntransition + setcurrent), fc-main,
+   fc-duplicate, fc-local, fc-homedirs, fc-associate, homedir (on the
+   login's seusers line, related = template lines; prefix-is-a-role hint),
+   unused. default_type severity: role of a mapped user → error, of any
+   user → warning, else info; dbus name whose type is missing → info.
+   policy_query logincontexts kinds types / roletype / associate (any
+   unconditional allow T|attr *:filesystem associate) / dyntrans;
+   context_valid no longer requires the user to have object_r (setools
+   leaves it out of user.roles). Server: reportDiags (source → path →
+   diagnostics, merged into publish() and publishBuild; publishLoginContexts
+   uses it too), contextFilesConfig(pol) (tree: appconfig files, base.fc +
+   tmp/*.mod.fc, tmp/users_extra, host .local when an installed policy has
+   the build's NAME; module: its .mod.fc + host files; installed:
+   contexts/, contexts/files/media, file_contexts(.homedirs, .local)),
+   `selinux/contextFiles` {against}, publishContextFiles() after every tree
+   build whose policy.bin is fresh (res.startedAt; also when validate's
+   setfiles failed), CONTEXT_FILES watched (client glob). Client
+   showReport(viewType) shared by both panels (reportPanels),
+   selinux.checkContextFiles, media/ctxfiles.js. Findings: targeted RHEL 8/9
+   clean; CLIP RHEL 8: 13 gnome/telepathy/xserver home types not file types
+   (xdg_*_content in optional_policy, xdg off) → not associable; both CLIP:
+   default_type unconfined_r:unconfined_t (warning). Tests:
+   test/ctxfiles-test.js (npm test), policy_query_test.py, test/ctxfiles-e2e.js
+   (melody CLIP 9 + ricardo CLIP 8; clip-all `ctxfiles`),
+   test/ctxfiles-survey.js (installed | tree <copy> [TYPE] | build <tree>).
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
@@ -1396,6 +1437,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   paths); `media/logins.js` its webview.
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
 - `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview.
+- `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
 - `media/levels.js`: Levels and Categories webview (context check, who
@@ -1510,6 +1552,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/loginctx-test.js` (in `npm test`), `test/loginctx-e2e.js`
   (`npm run test:loginctx-e2e`, melody/ricardo; optional tree arg, default
   CLIP RHEL 9) and `test/loginctx-survey.js` (installed | tree | build).
+- `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
+  (`npm run test:ctxfiles-e2e`, melody/ricardo; optional tree arg) and
+  `test/ctxfiles-survey.js` (installed | tree | build).
 - `test/localmods-test.js` (in `npm test`) and `test/hostmods-e2e.js`
   (`npm run test:hostmods-e2e`, melody; optional tree arg, default CLIP).
 - `test/levels-test.js` (in `npm test`) and `test/levels-e2e.js`
@@ -1525,7 +1570,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   service-e2e).
 - `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
   tree-based e2e test (build-tree checks diff preview filelabel logins
-  loginctx denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  loginctx ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
   and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);

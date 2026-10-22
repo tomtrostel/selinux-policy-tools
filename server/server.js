@@ -222,9 +222,12 @@ connection.onDidChangeWatchedFiles((ev) => {
     const p = toPath(ch.uri);
     if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
     // The login configuration of the tree (seusers, contexts files): checked again without a rebuild.
-    if (LOGIN_FILES.test(path.basename(p))) {
+    if (LOGIN_FILES.test(path.basename(p)) || CONTEXT_FILES.test(path.basename(p))) {
       clearTimeout(loginCtxTimer);
-      loginCtxTimer = setTimeout(() => publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`)), 500);
+      loginCtxTimer = setTimeout(() => {
+        publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`));
+        publishContextFiles().catch(err => log(`context files failed: ${err.message}`));
+      }, 500);
       continue;
     }
     // modules.conf (or a spec module list): which modules are built changed; re-read on the rebuild below.
@@ -258,7 +261,7 @@ function publish(doc) {
     message: d.msg,
     data: d.data,
   }));
-  connection.sendDiagnostics({ uri: doc.uri, diagnostics: diags.concat(buildDiagnosticsFor(p, doc.getText(), diags)) });
+  connection.sendDiagnostics({ uri: doc.uri, diagnostics: diags.concat(buildDiagnosticsFor(p, doc.getText(), diags), reportDiagnosticsFor(p)) });
 }
 
 /* ---------------- real builds (m4 + checkmodule) ---------------- */
@@ -427,6 +430,7 @@ function runBuild(key, pkg = false, trigger = null) {
     if (!res.tree && res.ok) lastModule = key;
     if (res.ok && (res.tree || (usingDevel && checksPath() && fs.existsSync(checksPath())))) runChecks().catch(err => log(`checks failed: ${err.message}`));
     if (res.tree && res.ok) publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`));
+    if (res.tree) publishContextFiles().catch(err => log(`context files failed: ${err.message}`));
     connection.sendNotification('selinux/build', { state: 'done', ...summary });
     return summary;
   })();
@@ -543,7 +547,7 @@ function publishBuild(res) {
     if (doc) { publish(doc); continue; }
     const diags = buildDiagnosticsFor(p, readSource(p) || '', []);
     if (diags.length) buildDiagUris.add(toUri(p));
-    connection.sendDiagnostics({ uri: toUri(p), diagnostics: diags });
+    connection.sendDiagnostics({ uri: toUri(p), diagnostics: diags.concat(reportDiagnosticsFor(p)) });
   }
 }
 
@@ -3880,32 +3884,154 @@ connection.onRequest('selinux/loginContexts', async ({ against } = {}) => {
  * After a good tree build: the login context problems as diagnostics on the seusers and contexts
  * file lines that cause them (config/appconfig-<TYPE>), replacing the previous ones.
  */
-let loginCtxUris = new Set(), loginCtxTimer = null;
+let loginCtxTimer = null;
 const LOGIN_FILES = /^(seusers|default_contexts|failsafe_context|\w+_default_contexts)$/;
 async function publishLoginContexts() {
   const res = treeRoot && lastBuild.get(treeRoot);
-  const now = new Map();
+  let problems = [];
   if (res && res.ok && res.policyBin && fs.existsSync(res.policyBin) && !usingDevel) {
     const pol = denialPolicies().find(p => p.build);
     if (pol) {
       const { report } = await loginContextReport({ pol, bin: res.policyBin });
-      const sev = { error: DiagnosticSeverity.Error, warning: DiagnosticSeverity.Warning, info: DiagnosticSeverity.Information };
-      for (const p of (report && report.problems) || []) {
-        if (!p.file) continue;
-        const text = readSource(p.file) || '';
-        const line = text.split('\n')[p.l] || '';
-        const d = { range: range(p.l, 0, Math.max(1, line.length)), severity: sev[p.severity], source: 'selinux-logins', code: p.kind, message: p.text };
-        const rel = (p.related || []).filter(x => x.file && !(x.file === p.file && x.l === p.l)).map(x => ({ location: { uri: toUri(x.file), range: range(x.l, 0, 1) }, message: x.text }));
-        if (rel.length) d.relatedInformation = rel.slice(0, 8);
-        const u = toUri(p.file);
-        if (!now.has(u)) now.set(u, []);
-        now.get(u).push(d);
-      }
+      problems = (report && report.problems) || [];
     }
   }
-  for (const u of loginCtxUris) if (!now.has(u)) connection.sendDiagnostics({ uri: u, diagnostics: [] });
-  for (const [u, ds] of now) connection.sendDiagnostics({ uri: u, diagnostics: ds });
-  loginCtxUris = new Set(now.keys());
+  setReportDiagnostics('selinux-logins', problems);
+}
+
+/*
+ * Diagnostics from whole-policy reports (login contexts, context files), by source: they go on
+ * files that also get editor and build diagnostics (.fc lines), so every publish merges them.
+ */
+const reportDiags = new Map(); // source → Map<path, Diagnostic[]>
+function reportDiagnosticsFor(p) {
+  const out = [];
+  for (const m of reportDiags.values()) out.push(...(m.get(p) || []));
+  return out;
+}
+/** Problems ({ severity, kind, file, l, c?, len?, text, related? }) as one source's diagnostics, replacing its previous ones. */
+function setReportDiagnostics(source, problems) {
+  const sev = { error: DiagnosticSeverity.Error, warning: DiagnosticSeverity.Warning, info: DiagnosticSeverity.Information };
+  const now = new Map();
+  const texts = new Map();
+  const lineOf = (f, l) => { if (!texts.has(f)) texts.set(f, (readSource(f) || '').split('\n')); return texts.get(f)[l] || ''; };
+  for (const p of problems) {
+    if (!p.file) continue;
+    const line = lineOf(p.file, p.l);
+    const c = p.c != null ? p.c : Math.max(line.search(/\S/), 0);
+    const len = p.len != null ? p.len : Math.max(1, line.trimEnd().length - c);
+    const d = { range: range(p.l, c, Math.max(1, len)), severity: sev[p.severity], source, code: p.kind, message: p.text };
+    const rel = (p.related || []).filter(x => x.file && !(x.file === p.file && x.l === p.l)).map(x => ({ location: { uri: toUri(x.file), range: range(x.l, 0, 1) }, message: x.text }));
+    if (rel.length) d.relatedInformation = rel.slice(0, 8);
+    if (!now.has(p.file)) now.set(p.file, []);
+    now.get(p.file).push(d);
+  }
+  const before = reportDiags.get(source) || new Map();
+  reportDiags.set(source, now);
+  for (const p of new Set([...before.keys(), ...now.keys()])) {
+    const doc = documents.get(toUri(p));
+    if (doc) { publish(doc); continue; }
+    connection.sendDiagnostics({ uri: toUri(p), diagnostics: buildDiagnosticsFor(p, readSource(p) || '', []).concat(reportDiagnosticsFor(p)) });
+  }
+}
+
+/* ---------------- context files: contexts the configuration names that the policy rejects ---------------- */
+
+const ctxfiles = require('./ctxfiles');
+const CONTEXT_FILES = new RegExp(`^(${ctxfiles.FILES.map(f => f.name).join('|')})$`);
+
+/**
+ * What the context-file check reads for a policy (a denialPolicies entry): its application context
+ * files and file contexts. A tree build: config/appconfig-<TYPE> (editor contents win), the
+ * build's base.fc + module .fc (home-directory templates among them), tmp/users_extra, and this
+ * host's file_contexts.local when it has a policy of the build's name (installing the build there
+ * keeps it). A standalone module: this host's policy files and the module's .fc. An installed
+ * policy: /etc/selinux/<name> (the home-directory templates are root's only, so the
+ * file_contexts.homedirs genhomedircon wrote stands in).
+ */
+function contextFilesConfig(pol) {
+  const notes = [];
+  const appFiles = (fileOf) => ctxfiles.FILES.map(def => { const p = fileOf(def); return { def, path: p, text: readSource(p) }; });
+  const installedFile = (name) => (def) => path.join('/etc/selinux', name, 'contexts', def.where === 'files' ? 'files' : '', def.name);
+  if (pol.build && !usingDevel && treeRoot) {
+    const res = lastBuild.get(treeRoot);
+    if (!res || !res.workDir) return { error: 'Build the tree first.' };
+    const dir = appconfigDir(treeRoot);
+    const main = treeFcFiles(res).flatMap(x => filelabel.parseSpecs(readIf(x.p), x.p, x.module));
+    const name = buildName(treeRoot);
+    const inst = build.installedPolicies().find(p => p.name === name);
+    let local = null, localLabel = null;
+    if (inst) { local = installedFc(name).local; localLabel = `file_contexts.local of this host's ${name} policy`; }
+    else notes.push(`This host has no ${name} policy, so no file_contexts.local was checked against the build.`);
+    const usersExtra = readIf(path.join(res.workDir, 'tmp', 'users_extra'));
+    return { dir, notes, files: appFiles((def) => path.join(dir, def.name)), seusers: path.join(dir, 'seusers'), usersExtra,
+      fc: { main, templates: main.filter(s => ctxfiles.templateKind(s)), local, localLabel, build: true, label: 'file_contexts (this build)' } };
+  }
+  const active = build.installedPolicies().find(p => p.active);
+  if (pol.build) {
+    const res = lastModule && lastBuild.get(lastModule);
+    if (!res || !res.workDir || !active) return { error: 'Build the module first (on a host running SELinux).' };
+    const own = path.join(res.workDir, 'tmp', `${res.module}.mod.fc`);
+    const main = filelabel.parseSpecs(readIf(own), own, res.module);
+    notes.push(`The module's file contexts are checked; the application files and file_contexts.local are this host's ${active.name} policy's. Users' prefixes (users_extra) are root's only here, so every user is taken to have prefix "user".`);
+    return { dir: path.join('/etc/selinux', active.name), notes, files: appFiles(installedFile(active.name)), seusers: path.join('/etc/selinux', active.name, 'seusers'), usersExtra: '',
+      fc: { main, templates: main.filter(s => ctxfiles.templateKind(s)), local: installedFc(active.name).local, localLabel: `file_contexts.local of this host's ${active.name} policy`, build: true, label: `${res.module}.fc` } };
+  }
+  const name = pol.name;
+  const i = installedFc(name);
+  notes.push(`The home-directory templates are readable by root only (/var/lib/selinux/${name}/active/homedir_template); the file_contexts.homedirs genhomedircon wrote is checked instead.`);
+  return { dir: path.join('/etc/selinux', name), notes, files: appFiles(installedFile(name)), seusers: path.join('/etc/selinux', name, 'seusers'), usersExtra: null,
+    fc: { main: i.main, homedirs: i.homedirs, local: i.local, label: 'file_contexts' } };
+}
+
+/** The context-file report for a loginPolicy() result: { report, cfg } or { error }. */
+async function contextFilesReport(lp) {
+  const cfg = contextFilesConfig(lp.pol);
+  if (cfg.error) return { error: cfg.error };
+  const bools = lp.pol.active ? runningBooleans() : {};
+  const sourceOf = (x) => { const s = fcSourceOf(x); return s ? { file: s.p, l: s.l } : null; };
+  const report = await ctxfiles.analyze({ files: cfg.files, fc: cfg.fc, sourceOf, seusers: { path: cfg.seusers, text: readSource(cfg.seusers) }, usersExtra: cfg.usersExtra },
+    async (items) => {
+      const r = await policyQuery.request({ op: 'logincontexts', bin: lp.bin, items, bools });
+      if (r.error) throw new Error(`Policy query failed: ${r.error}`);
+      return r.answers;
+    });
+  if (report.notes) report.notes.unshift(...cfg.notes);
+  return { report, cfg };
+}
+
+connection.onRequest('selinux/contextFiles', async ({ against } = {}) => {
+  await indexing;
+  const lp = await loginPolicy(against);
+  const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
+  const policy = lp.pol ? { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active } : null;
+  if (lp.error) return { error: lp.error, policies, policy };
+  try {
+    const { report, cfg, error } = await contextFilesReport(lp);
+    if (error) return { error, policies, policy };
+    return { policies, policy: { ...policy, configDir: cfg.dir }, ...report };
+  } catch (e) {
+    return { error: e.message, policies, policy };
+  }
+});
+
+/**
+ * After a tree build that wrote a policy (also one that `make validate` then failed: an invalid
+ * file context is one way it fails): the context-file problems as diagnostics on the lines that
+ * cause them (appconfig files, the modules' .fc lines, seusers).
+ */
+async function publishContextFiles() {
+  const res = treeRoot && lastBuild.get(treeRoot);
+  let problems = [];
+  const fresh = res && res.policyBin && fs.existsSync(res.policyBin) && (!res.startedAt || fs.statSync(res.policyBin).mtimeMs >= res.startedAt - 1000);
+  if (fresh && !usingDevel) {
+    const pol = denialPolicies().find(p => p.build);
+    if (pol) {
+      const { report } = await contextFilesReport({ pol, bin: res.policyBin });
+      problems = (report && report.problems) || [];
+    }
+  }
+  setReportDiagnostics('selinux-contexts', problems);
 }
 
 /** Every domain a user's sessions can reach, nearest first, with the path to each. */

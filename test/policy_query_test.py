@@ -198,7 +198,7 @@ TYPES = [
     FType("container_exec_t", ["file_type"]), FType("setrans_exec_t", ["file_type"]),
 ]
 CLASSES = [FClass("file", ["read", "write", "open", "getattr", "execute", "entrypoint", "create", "append"]), FClass("dir", ["search", "read", "write"]),
-           FClass("process", ["transition", "signal"]), FClass("unix_stream_socket", ["connectto", "read", "write"]),
+           FClass("process", ["transition", "signal", "dyntransition", "setcurrent"]), FClass("unix_stream_socket", ["connectto", "read", "write"]),
            FClass("shm", ["read", "write"]), FClass("msg", ["send", "receive"])]
 RULES = [
     FRule("allow", "container_t", "container_file_t", "file", ["read", "write", "open", "create"]),
@@ -211,6 +211,8 @@ RULES = [
     FRule("allow", "init_t", "setrans_exec_t", "file", ["execute"]), FRule("allow", "setrans_t", "setrans_exec_t", "file", ["entrypoint"]),
     FRule("allow", "init_t", "setrans_t", "process", ["transition"]), FRule("type_transition", "init_t", "setrans_exec_t", "process", default="setrans_t"),
     FRule("allow", "staff_t", "etc_t", "file", ["read"]),
+    FRule("allow", "file_type", "fs_t", "filesystem", ["associate"]),
+    FRule("allow", "init_t", "setrans_t", "process", ["dyntransition"]), FRule("allow", "init_t", "self", "process", ["setcurrent"]),
 ]
 CONSTRAINTS = [
     FConstraint("mlsconstrain", "file", ["open", "create"], Expr("( h1 dom h2 ) or ( t1 != mcs_constrained_type )", NOT_MCS)),
@@ -420,6 +422,24 @@ check(not lc["9"]["ok"] and lc["9"]["te"] == "missing", "no allow rule: no trans
 check(not lc["10"]["ok"] and lc["10"]["te"] == "missing" and lc["10"]["constraints"] and lc["10"]["constraints"][0]["kind"] == "mlsconstrain", "a held domain going up in level: the MLS constraint (h1 dom h2) is reported with the missing rule", lc["10"])
 check(lc["11"]["range"] == "s0-s0:c0.c1023" and lc["12"]["range"] == "s0", "the kernel's session range: the user's range within the caller's", (lc["11"], lc["12"]))
 check("unknown question" in lc["13"]["error"], "an unknown question is an error")
+cf = idx.login_contexts([
+    {"id": 1, "kind": "valid", "ctx": "staff_u:object_r:etc_t:s0"},
+    {"id": 2, "kind": "valid", "ctx": "staff_u:object_r:etc_alias_t:s9"},
+    {"id": 3, "kind": "types", "names": ["etc_t", "etc_alias_t", "domain", "nosuch_t"]},
+    {"id": 4, "kind": "roletype", "role": "system_r", "type": "init_t"},
+    {"id": 5, "kind": "roletype", "role": "staff_r", "type": "init_t"},
+    {"id": 6, "kind": "roletype", "role": "nosuch_r", "type": "nosuch_t"},
+    {"id": 7, "kind": "associate", "types": ["etc_alias_t", "container_file_t", "staff_t", "nosuch_t"]},
+    {"id": 8, "kind": "dyntrans", "from": "init_t", "to": "setrans_t"},
+    {"id": 9, "kind": "dyntrans", "from": "staff_t", "to": "setrans_t"},
+    {"id": 10, "kind": "dyntrans", "from": "init_t", "to": "nosuch_t"},
+], {})
+check(cf["1"] == {"ok": True, "reasons": []} and [r["kind"] for r in cf["2"]["reasons"]] == ["range"], "object contexts: object_r needs no role of the user and no user range; the level must exist", (cf["1"], cf["2"]))
+check(cf["3"]["kinds"] == {"etc_t": "type", "etc_alias_t": "alias", "domain": "attribute", "nosuch_t": None}, "types: type, alias, attribute, missing", cf["3"])
+check(cf["4"]["ok"] and [r["kind"] for r in cf["5"]["reasons"]] == ["roletype"] and sorted(r["kind"] for r in cf["6"]["reasons"]) == ["role", "type"], "roletype: authorized; not authorized; neither exists", (cf["5"], cf["6"]))
+check(cf["7"]["without"] == ["staff_t"], "associate: file types (via an attribute, through an alias) may be on a filesystem; a domain may not; unknown names skipped", cf["7"])
+check(cf["8"]["ok"] and cf["9"]["missing"] == ["allow staff_t setrans_t:process dyntransition;", "allow staff_t self:process setcurrent;"] and cf["10"]["unknown"] == ["nosuch_t"],
+      "dyntrans: dyntransition to it and setcurrent on itself; what is missing; unknown types", (cf["9"], cf["10"]))
 
 # ---------- facts for comparing a host's local changes ----------
 hf = idx.hostfacts()

@@ -769,7 +769,7 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
     .find(p => fs.existsSync(p)) || null;
   return {
     ok: result.code === 0, timedOut: result.killed, tree: true, module: path.basename(root), root, workDir: work,
-    ms: Date.now() - t0, synced, log: result.out, diagnostics, resolveFile, monolithic, policyBin,
+    startedAt: t0, ms: Date.now() - t0, synced, log: result.out, diagnostics, resolveFile, monolithic, policyBin,
     packages: monolithic ? 0 : fs.readdirSync(work).filter(n => n.endsWith('.pp')).length,
   };
 }

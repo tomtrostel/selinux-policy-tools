@@ -170,7 +170,7 @@ function activate(context) {
     documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }, { scheme: 'file', language: 'selinux-checks' }],
     synchronize: {
       configurationSection: 'selinux',
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst,seusers,default_contexts,failsafe_context,*_default_contexts}'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst,seusers,default_contexts,failsafe_context,*_default_contexts,*_context,*_contexts,default_type,media,securetty_types,customizable_types}'),
     },
     initializationOptions: {
       extraIncludePaths: cfg().get('extraIncludePaths'),
@@ -282,7 +282,7 @@ function activate(context) {
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (levelsPanel) levelsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
-      if (loginCtxPanel) loginCtxPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      for (const rp of reportPanels.values()) rp.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (hostPanel) hostPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
     });
   });
@@ -442,6 +442,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.newWrapper', () => showWrapperEditor(context)),
     vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
     vscode.commands.registerCommand('selinux.checkLoginContexts', () => showLoginContexts(context)),
+    vscode.commands.registerCommand('selinux.checkContextFiles', () => showContextFiles(context)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1927,6 +1928,7 @@ const FEATURES = [
   ['Fix problems', [
     ['selinux.analyzeDenials', 'shield', 'Analyze Denials…', 'From AVC denials to the smallest correct fix'],
     ['selinux.checkLoginContexts', 'key', 'Check Login Contexts…', 'Does every login get a valid context for ssh, console, cron, … ("Unable to get valid context"), on RHEL 8 and on RHEL 9 and later'],
+    ['selinux.checkContextFiles', 'file-symlink-file', 'Check Context Files…', 'Does every context in file_contexts (home directories and .local too) and the other context files load in the policy'],
   ]],
   ['Build and install', [
     ['selinux.buildModule', 'tools', 'Build', 'Compile the module or tree, with errors in the editor'],
@@ -2170,15 +2172,24 @@ function showHostChanges(context) {
   panel.onDidDispose(() => { stopWatch(); hostPanel = null; }, undefined, context.subscriptions);
 }
 
-let loginCtxPanel = null;
+/** Report panels by view type (Login Contexts, Context Files): reloaded after builds. */
+const reportPanels = new Map();
+const REPORTS = {
+  selinuxLoginContexts: { title: 'Login Contexts', script: 'loginctx.js', request: 'selinux/loginContexts' },
+  selinuxContextFiles: { title: 'Context Files', script: 'ctxfiles.js', request: 'selinux/contextFiles' },
+};
 /** Login Contexts: does every login get a valid context for each way in (server/loginctx.js). */
-function showLoginContexts(context) {
-  if (loginCtxPanel) { loginCtxPanel.reveal(); return; }
-  const panel = vscode.window.createWebviewPanel('selinuxLoginContexts', 'Login Contexts', vscode.ViewColumn.Active,
+function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'); }
+/** Context Files: do the contexts in file_contexts and the other context files load (server/ctxfiles.js). */
+function showContextFiles(context) { showReport(context, 'selinuxContextFiles'); }
+function showReport(context, viewType) {
+  const def = REPORTS[viewType];
+  if (reportPanels.has(viewType)) { reportPanels.get(viewType).reveal(); return; }
+  const panel = vscode.window.createWebviewPanel(viewType, def.title, vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
-  loginCtxPanel = panel;
+  reportPanels.set(viewType, panel);
   const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
-  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'loginctx.js'));
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', def.script));
   panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
@@ -2216,7 +2227,7 @@ function showLoginContexts(context) {
   .small { font-size: .92em; }
 </style></head><body>
 <div id="bar">
-  <span id="title">Login Contexts</span>
+  <span id="title">${def.title}</span>
   <label>Policy <select id="against"></select></label>
   <button id="refresh" title="Check again">Refresh</button>
   <span id="status"></span>
@@ -2227,7 +2238,7 @@ function showLoginContexts(context) {
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
       if (m.cmd === 'load') {
-        panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/loginContexts', { against: m.against }) });
+        panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest(def.request, { against: m.against }) });
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
       }
@@ -2235,7 +2246,7 @@ function showLoginContexts(context) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });
     }
   }, undefined, context.subscriptions);
-  panel.onDidDispose(() => { loginCtxPanel = null; }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { reportPanels.delete(viewType); }, undefined, context.subscriptions);
 }
 
 let levelsPanel = null;
