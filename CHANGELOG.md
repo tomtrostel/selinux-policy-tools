@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 (2026-10-22)
 
 **Added**
 
@@ -38,6 +38,7 @@
 
 **Changed**
 
+* Tutorials: a lockdown step "Contexts that won't load" for both checks.
 * User editor: an existing user's kind can be changed (for example from
   restricted desktop user to restricted terminal user). Only its template
   call is replaced.

@@ -142,8 +142,9 @@ in the Policy Explorer title bar), or from *Help → Welcome → Walkthroughs*:
   tags or two refs, module previews, the transition graph, property checks
   (including logins and levels), comparing with the installed policy,
   users, roles and who can log in as what (and the user editor), levels
-  and categories, programs users may run only through wrappers, and a
-  lockdown routine.
+  and categories, programs users may run only through wrappers, comparing
+  with a host's local changes, contexts that won't load (logins and
+  context files), and a lockdown routine.
 
 **SELinux: Create Practice Module…** copies a small daemon policy
 (`notesd`) with four deliberate mistakes and a `selinux.checks` file into a

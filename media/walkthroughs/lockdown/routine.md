@@ -16,7 +16,10 @@ Putting it together, a repeatable way to shrink and harden a policy:
 6. **Compare with the installed policy** on a representative host, and with
    **its local changes** (*Compare Host's Local Changes…*): write the ones
    that belong into the policy, so hosts stop depending on them.
-7. **Build** with `selinux.build.tree.outputDir` set to keep the packages,
+7. **Check the contexts** (*Check Login Contexts…*, *Check Context
+   Files…*): their problems are diagnostics after each build, but RHEL 8
+   and RHEL 9 differ, so read the panel before shipping to either.
+8. **Build** with `selinux.build.tree.outputDir` set to keep the packages,
    `policy.bin` and a `build-info.json` record of exactly what was built.
 
 Commit the `modules.conf` change and the checks file together. The checks

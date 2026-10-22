@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-14: **v0.16.0 released** (GitHub release `v0.16.0`;
+Status as of 2026-10-22: **v0.17.0 prepared** (package.json, CHANGELOG; release `v0.17.0` once the user says go; v0.16.0 is the latest GitHub release;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -51,6 +51,9 @@ changes (step 13), the booleans.conf incremental-build fix, the
 `except through` fix, unit tests for the core pieces and test:clip-all;
 the user tried the new panels before the release ("it looks like things
 work").
+0.17.0: contexts that won't load (step 14: login contexts, context files),
+RHEL 8 hosts (ricardo: fc order, matchpathcon -f), user editor kind
+changes, a lockdown tutorial step; not yet tried interactively.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -566,7 +569,7 @@ so far covered by the e2e tests only.
    them into the vsix … how to use the add-on and how it can help them
    making and maintaining SELinux policies"). package.json
    `contributes.walkthroughs`: getStarted (8 steps), services (10; webapps added in 0.11.0), denials
-   (4), lockdown (9: levels + wrappers added 2026-10-13); pages in media/walkthroughs/<wt>/<step>.md; step
+   (4), lockdown (11: levels + wrappers added 2026-10-13, hostchanges, contexts 2026-10-22); pages in media/walkthroughs/<wt>/<step>.md; step
    buttons are `command:` links (openTutorials takes a walkthrough id as
    URL-encoded JSON arg). Client `registerTutorials()`: selinux.openTutorials
    (quick pick or id → workbench.action.openWalkthrough

@@ -2,7 +2,7 @@
   "name": "selinux-policy-tools",
   "displayName": "SELinux Policy Tools",
   "description": "Navigation and authoring help for refpolicy-style SELinux policy source (RHEL/Fedora selinux-policy, CLIP-style locked-down policies).",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -1018,6 +1018,18 @@
             },
             "completionEvents": [
               "onCommand:selinux.compareHostChanges"
+            ]
+          },
+          {
+            "id": "contexts",
+            "title": "Contexts that won't load",
+            "description": "Logins that would fail with \"Unable to get valid context\", and contexts in file_contexts and the other context files that the policy rejects.\n[Check Login Contexts…](command:selinux.checkLoginContexts)\n[Check Context Files…](command:selinux.checkContextFiles)",
+            "media": {
+              "markdown": "media/walkthroughs/lockdown/contexts.md"
+            },
+            "completionEvents": [
+              "onCommand:selinux.checkLoginContexts",
+              "onCommand:selinux.checkContextFiles"
             ]
           },
           {
