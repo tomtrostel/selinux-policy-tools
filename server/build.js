@@ -488,7 +488,7 @@ function treeSources(root) {
  * Only files whose content differs are rewritten, so make's incremental
  * rebuild sees exactly what changed.
  */
-function syncTree(root, work, readText, overlays = new Map()) {
+function syncTree(root, work, readText, overlays = new Map(), changed = null) {
   const want = new Set();
   let written = 0;
   for (const rel of new Set([...treeSources(root), ...overlays.keys()])) {
@@ -511,10 +511,11 @@ function syncTree(root, work, readText, overlays = new Map()) {
     fs.writeFileSync(dst, buf, exec ? { mode: 0o755 } : undefined);
     if (exec) fs.chmodSync(dst, 0o755); // writeFileSync's mode only applies to new files
     written++;
+    if (changed) changed.push(rel);
   }
   // Drop files deleted from the tree (build outputs are left alone, and so is
   // the configuration `make conf` generated when the tree has none).
-  for (const rel of treeSources(work)) if (!want.has(rel) && !CONF_OUTPUTS.includes(rel)) { fs.rmSync(path.join(work, rel), { force: true }); written++; }
+  for (const rel of treeSources(work)) if (!want.has(rel) && !CONF_OUTPUTS.includes(rel)) { fs.rmSync(path.join(work, rel), { force: true }); written++; if (changed) changed.push(rel); }
   return written;
 }
 
@@ -737,7 +738,9 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
       diagnostics: msgs.map(msg => ({ file: null, l: 0, severity: 'error', tool: 'settings', msg })),
       resolveFile: () => null, monolithic: false, policyBin: null, packages: 0 };
   }
-  const synced = sync ? syncTree(root, work, readText, overlays) : 0;
+  // The tree-relative files this build rewrote (what changed since the last build of this copy).
+  const changed = [];
+  const synced = sync ? syncTree(root, work, readText, overlays, changed) : 0;
   if (sync) { forgetStaleModuleSet(work, makeArgs); forgetStaleDefinitions(work, makeArgs); }
   const monolithic = (treeOption(root, makeArgs, 'MONOLITHIC') || 'n').toLowerCase() === 'y';
   if (!targets || !targets.length) targets = monolithic ? ['policy'] : ['base.pp', 'modules', 'validate'];
@@ -769,7 +772,7 @@ async function buildTree(root, readText, { makeArgs = [], targets, files = {}, j
     .find(p => fs.existsSync(p)) || null;
   return {
     ok: result.code === 0, timedOut: result.killed, tree: true, module: path.basename(root), root, workDir: work,
-    startedAt: t0, ms: Date.now() - t0, synced, log: result.out, diagnostics, resolveFile, monolithic, policyBin,
+    startedAt: t0, ms: Date.now() - t0, synced, changed, log: result.out, diagnostics, resolveFile, monolithic, policyBin,
     packages: monolithic ? 0 : fs.readdirSync(work).filter(n => n.endsWith('.pp')).length,
   };
 }

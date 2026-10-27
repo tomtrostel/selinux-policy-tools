@@ -28,6 +28,7 @@ function policy(over = {}) {
     'type_change|staff_t|tty_device_t|chr_file': 'user_tty_device_t', ...(over.computed || {}) };
   const nnp = over.nnp || {};
   const asked = [];
+  const runsAsked = [];
   const ask = async (items) => {
     asked.push(...items);
     const out = {};
@@ -35,19 +36,33 @@ function policy(over = {}) {
       let a;
       if (it.kind === 'avc') {
         const perms = {};
-        for (const p of it.perms) perms[p] = { status: allow.has(`${it.s}|${it.t}|${it.c}|${p}`) ? 'allowed' : (over.bool && over.bool[`${it.s}|${it.t}|${it.c}|${p}`]) ? 'boolean' : 'missing', options: over.bool ? [over.bool[`${it.s}|${it.t}|${it.c}|${p}`]].filter(Boolean) : undefined };
+        for (const p of it.perms) {
+          const k = `${it.s}|${it.t}|${it.c}|${p}`;
+          perms[p] = { status: allow.has(k) ? 'allowed' : (over.bool && over.bool[k]) ? 'boolean' : 'missing', options: over.bool ? [over.bool[k]].filter(Boolean) : undefined };
+          // dontaudit "s|t|class|perm" → the rule that hides the refusal.
+          if (!allow.has(k) && (over.dontaudit || []).includes(k)) perms[p].dontaudit = [{ rt: 'dontaudit', s: it.s, t: it.t, c: it.c, perms: [p], cond: '' }];
+        }
         a = { perms };
-      } else if (it.kind === 'computed') a = { type: computed[`${it.rt}|${it.s}|${it.t}|${it.c}`] || null };
+      } else if (it.kind === 'computed') {
+        const ty = computed[`${it.rt}|${it.s}|${it.t}|${it.c}`] || null;
+        a = { type: ty, rule: ty ? { rt: it.rt, s: it.s, t: it.t, c: it.c, perms: [ty], cond: '' } : null };
+      }
       else if (it.kind === 'nnp') {
         const n = nnp[`${it.from}>${it.to}`] || {};
         a = { process2: true, cap: true, bounded: !!n.bounded, nnp_transition: { status: n.nnp ? 'allowed' : 'missing' }, nosuid_transition: { status: n.nosuid ? 'allowed' : 'missing' }, nnpTo: n.nnpTo || [], attrs: n.attrs || [] };
-      } else if (it.kind === 'autoinvalid') a = { items: (over.invalid || {})[it.user] || [], more: false };
+      } else if (it.kind === 'runs') {
+        // over.invalid: [{ depth, domain, entry, target, reason, rule }] as exec_check results; over.runs: raw items.
+        const inv = ((over.invalid || {})[it.user] || []).map(x => ({ s: x.domain, e: x.entry, to: x.target, rule: x.rule || null, depth: x.depth, state: `r:${x.domain}`,
+          fails: [{ kind: 'invalid', reason: x.reason, text: `the computed context is invalid: ${x.reason}`, selinuxErr: 'security_compute_sid', rule: x.rule || null, role: { role: 'staff_r', type: x.target }, dontaudit: [] }] }));
+        a = { items: inv.concat((over.runs || {})[it.user] || []), more: false, reached: (over.reached || {})[it.user] != null ? over.reached[it.user] : 30, checked: 5 };
+        runsAsked.push(it);
+      } else if (it.kind === 'exec') a = (over.exec || {})[it.e] || { s: it.s, e: it.e, to: it.s, fails: [], ok: true };
       else if (it.kind === 'bounds') a = { bounds: over.bounds || [] };
       out[it.id] = a;
     }
     return out;
   };
-  return { ask, asked };
+  return { ask, asked, runsAsked };
 }
 
 const facts = (over = {}) => ({
@@ -157,6 +172,88 @@ const kinds = (r) => r.problems.map(p => `${p.severity}:${p.kind}`).sort();
   e = r.problems.find(x => x.kind === 'session-invalid');
   check(e && e.severity === 'info' && /can't run 4 program types/.test(e.text) && /sysadm_t running 3 program types/.test(e.text) && /passwd_t/.test(e.text) && !/deeper/.test(e.text) && e.items.length === 2, 'invalid computed contexts: info, grouped by target, only programs the session runs itself', e);
 
+  // What a host logs: an AVC, nothing (dontaudit), or SELINUX_ERR.
+  p = policy({ remove: ['staff_t|sshd_t|fd|use'] });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), p.ask);
+  e = r.problems.find(x => x.kind === 'session-fd');
+  check(e && e.trace && e.trace.record === 'avc' && /AVC denial is logged/.test(e.trace.text), 'a refusal no dontaudit covers: an AVC is logged', e && e.trace);
+  p = policy({ remove: ['staff_t|sshd_t|fd|use'], dontaudit: ['staff_t|sshd_t|fd|use'] });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), p.ask);
+  e = r.problems.find(x => x.kind === 'session-fd');
+  check(e && e.trace.record === 'none' && e.trace.hidden.length === 1 && /dontaudit staff_t sshd_t:fd use;/.test(e.trace.text) && /semodule -DB/.test(e.trace.text), 'covered by dontaudit: no AVC, the rule that hides it and how to see it', e && e.trace);
+  const tty = r.sessions[0].checks.find(c => c.id === 'tty');
+  check(tty.ok === false && /no AVC: dontaudit hides it/.test(tty.text) && tty.trace.record === 'none', 'the failed check says so too', tty);
+  // Only some refused permissions hidden: the others still make an AVC.
+  p = policy({ remove: ['staff_t|user_devpts_t|chr_file|write', 'staff_t|user_devpts_t|chr_file|ioctl'], dontaudit: ['staff_t|user_devpts_t|chr_file|ioctl'] });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), p.ask);
+  e = r.problems.find(x => x.kind === 'session-tty');
+  check(e && e.trace.record === 'avc', 'write refused and logged, ioctl hidden: still an AVC (for write)', e && e.trace);
+  check(e && e.causes.length === 1 && e.causes[0].rule.rt === 'type_change' && e.causes[0].rule.perms[0] === 'user_devpts_t' && /gives staff_t's terminal the type user_devpts_t/.test(e.causes[0].what),
+    "the terminal problem's cause: the type_change that gives the session its terminal type", e && e.causes);
+  // NoNewPrivileges and invalid contexts: SELINUX_ERR, with the rule that makes the invalid one.
+  p = policy({ remove: [] });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts({ units: { sshd_t: { unit: 'sshd.service', nnp: true } } }), p.ask);
+  e = r.problems.find(x => x.kind === 'session-nnp');
+  check(e && e.trace.record === 'selinux_err' && /security_bounded_transition/.test(e.trace.text) && /ausearch -m SELINUX_ERR/.test(e.trace.text), 'NoNewPrivileges refusal: SELINUX_ERR', e && e.trace);
+  const tt = { rt: 'type_transition', s: 'staff_t', t: 'hostname_exec_t', c: 'process', perms: ['hostname_t'], cond: '' };
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), policy({ invalid: { staff_u: [{ depth: 0, domain: 'staff_t', entry: 'hostname_exec_t', target: 'hostname_t', reason: "role staff_r isn't authorized for hostname_t", rule: tt }] } }).ask);
+  e = r.problems.find(x => x.kind === 'session-invalid');
+  check(e && e.trace.record === 'selinux_err' && e.causes.length === 1 && e.causes[0].rule === tt && /makes staff_t run hostname_exec_t in hostname_t, but role staff_r isn't authorized/.test(e.causes[0].what),
+    'invalid context: SELINUX_ERR, caused by the type_transition', e && { trace: e.trace, causes: e.causes });
+
+  // What a restricted user runs: wrappers and what they start (warnings), a non-restricted one: notes.
+  const wrapTT = { rt: 'type_transition', s: 'staff_t', t: 'wrap_exec_t', c: 'process', perms: ['wrap_t'], cond: '' };
+  const runItems = [
+    { s: 'staff_t', e: 'wrap_exec_t', to: 'wrap_t', rule: wrapTT, depth: 0, state: 'staff_r:staff_t',
+      fails: [{ kind: 'terminal', text: "wrap_t may not use sshd_t's descriptors (the terminal), so it runs without the terminal (stdin/stdout become /dev/null)", need: { source: 'wrap_t', target: 'sshd_t', tclass: 'fd', perms: ['use'] }, dontaudit: [], rule: wrapTT }] },
+    { s: 'wrap_t', e: 'rpm_exec_t', to: 'rpm_t', rule: { ...wrapTT, s: 'wrap_t', t: 'rpm_exec_t', perms: ['rpm_t'] }, depth: 1, state: 'staff_r:wrap_t',
+      fails: [{ kind: 'transition', text: 'the automatic transition to rpm_t is refused: wrap_t may not transition to it', need: { source: 'wrap_t', target: 'rpm_t', tclass: 'process', perms: ['transition'] },
+        dontaudit: [{ rt: 'dontaudit', s: 'wrap_t', t: 'rpm_t', c: 'process', perms: ['transition'], cond: '' }], rule: { ...wrapTT, s: 'wrap_t', t: 'rpm_exec_t', perms: ['rpm_t'] } }] },
+  ];
+  p = policy({ runs: { staff_u: runItems }, reached: { staff_u: 4 } });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF), way('local_login_t', 'console login', STAFF)]), facts(), p.ask);
+  const rq = p.runsAsked[0];
+  check(rq && rq.depth === S.RUN_DEPTH && rq.terms.some(t => t.opener === 'sshd_t' && t.tty === 'user_devpts_t') && rq.terms.some(t => t.opener === 'local_login_t' && t.tty === 'user_tty_device_t'),
+    'runs is asked with the terminals the logins hand over', rq);
+  const rt = r.problems.find(x => x.kind === 'run-terminal');
+  check(rt && rt.severity === 'warning' && /alice \(staff_u\): wrap_t, which staff_t runs through wrap_exec_t, may not use sshd_t's descriptors/.test(rt.text) && rt.need.target === 'sshd_t' && rt.causes[0].rule === wrapTT,
+    'restricted user: a wrapper that loses the terminal is a warning, with the need and the type_transition as cause', rt);
+  const rf = r.problems.find(x => x.kind === 'run-fails');
+  check(rf && rf.severity === 'warning' && /wrap_t can't run rpm_exec_t \(into rpm_t\) \(reached directly: wrap_t\)/.test(rf.text) && rf.trace.record === 'none' && /dontaudit wrap_t rpm_t:process transition;/.test(rf.trace.text),
+    'restricted user: what a wrapper starts fails silently (dontaudit) — warning, no AVC', rf);
+  check(r.runs[0].restricted && r.runs[0].items.length === 2, 'the report lists the runs per user', r.runs);
+  p = policy({ runs: { staff_u: runItems }, reached: { staff_u: 40 } });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), p.ask);
+  check(!r.problems.some(x => /^run-/.test(x.kind)) && r.runs[0].items.length === 1 && r.runs[0].items[0].depth === 0 && !r.runs[0].restricted,
+    'a user reaching many domains: only its own domain\'s programs, listed in the report, not as problems', { problems: r.problems.map(x => `${x.severity}:${x.kind}`), runs: r.runs });
+  p = policy({ invalid: { staff_u: [{ depth: 0, domain: 'staff_t', entry: 'wrap_exec_t', target: 'wrap_t', reason: "role staff_r isn't authorized for wrap_t", rule: wrapTT }] }, reached: { staff_u: 3 } });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), p.ask);
+  e = r.problems.find(x => x.kind === 'session-invalid');
+  check(e && e.severity === 'warning' && e.roleFix && e.roleFix.role === 'staff_r' && e.roleFix.type === 'wrap_t' && e.roleFix.domain === 'staff_t', 'restricted user: an invalid computed context is a warning with the role to authorize', e);
+
+  // The login path: a forced command, a chroot, the startup scripts.
+  const execs = {
+    rosh_exec_t: { s: 'staff_t', e: 'rosh_exec_t', to: 'rosh_t', ok: false, fails: [{ kind: 'invalid', text: "the computed context staff_u:staff_r:rosh_t:s0 is invalid: role staff_r isn't authorized for rosh_t", reason: "role staff_r isn't authorized for rosh_t", selinuxErr: 'security_compute_sid', role: { role: 'staff_r', type: 'rosh_t' }, dontaudit: [] }] },
+    hostname_exec_t: { s: 'staff_t', e: 'hostname_exec_t', to: 'hostname_t', ok: false, fails: [{ kind: 'entrypoint', text: 'hostname_t may not be entered through hostname_exec_t', need: { source: 'hostname_t', target: 'hostname_exec_t', tclass: 'file', perms: ['entrypoint'] }, dontaudit: [] }] },
+  };
+  const lab = facts().labels;
+  const fx2 = { ...facts(), setupOf: (m) => (m.login === 'alice' ? { command: '/usr/bin/rosh', chroot: '/r', from: 'setting' } : {}),
+    startupPrograms: (chroot) => [{ path: '/usr/bin/hostname', script: `${chroot || ''}/etc/profile` }, { path: '/usr/bin/id', script: `${chroot || ''}/etc/profile.d/x.sh` }],
+    labels: async (paths, m) => { const out = await lab(paths, m); for (const q3 of paths) { if (/rosh$/.test(q3)) out.set(q3, 'system_u:object_r:rosh_exec_t:s0'); if (/hostname$/.test(q3)) out.set(q3, 'system_u:object_r:hostname_exec_t:s0'); } return out; },
+    realpath: (q3) => q3 };
+  p = policy({ exec: execs });
+  r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), fx2, p.ask);
+  const ses2 = r.sessions[0];
+  check(ses2.program === '/bin/bash' && p.asked.some(q3 => q3.kind === 'exec' && q3.e === 'rosh_exec_t' && q3.terms[0].opener === 'sshd_t'), 'the forced command is checked from the session domain, with the terminal', p.asked.filter(q3 => q3.kind === 'exec'));
+  e = r.problems.find(x => x.kind === 'session-command');
+  check(e && e.severity === 'error' && /alice \(staff_u\) can't use ssh: the session runs \/usr\/bin\/rosh \(rosh_exec_t\) and that program would run in rosh_t, but the computed context/.test(e.text) && e.trace.record === 'selinux_err' && e.roleFix && e.roleFix.type === 'rosh_t',
+    'a forced command into a domain the role can\'t have: error (the session ends), SELINUX_ERR, the role to authorize', e);
+  check(/\/r\/usr\/bin\/rosh|rosh_exec_t/.test(ses2.checks.find(c => c.id === 'command').text), 'the command is looked up in the chroot', ses2.checks);
+  e = r.problems.find(x => x.kind === 'session-startup');
+  check(e && e.severity === 'warning' && /\/r\/etc\/profile runs \/usr\/bin\/hostname \(hostname_exec_t\) at every login, and that fails: hostname_t may not be entered/.test(e.text) && e.need.target === 'hostname_exec_t',
+    'a startup script program that can\'t run: warning (the login goes on with an error)', e);
+  check(ses2.checks.find(c => c.id === 'startup' && c.ok === false), 'the startup check fails in the session list', ses2.checks);
+
   // typebounds: masked permissions.
   r = await S.analyze(report([way('sshd_t', 'ssh', STAFF)]), facts(), policy({ bounds: [{ child: 'web_t', parent: 'httpd_t', count: 1, masked: [{ t: 'shadow_t', c: 'file', perms: ['read'] }] }] }).ask);
   e = r.problems.find(x => x.kind === 'bounds');
@@ -223,6 +320,22 @@ const kinds = (r) => r.problems.map(p => `${p.severity}:${p.kind}`).sort();
   check(/✓ added to staff\.te; building/.test(byId.main.textContent), 'webview: applied, building');
   send({ cmd: 'built', ok: true });
   check(posted[posted.length - 1].cmd === 'load', 'webview: the build checks again');
+  // A problem the last build added, that leaves no AVC, with the line that causes it.
+  p = policy({ remove: ['staff_t|sshd_t|fd|use'], dontaudit: ['staff_t|sshd_t|fd|use'] });
+  r = await S.analyze(rep, facts(), p.ask);
+  const fd = r.problems.find(x => x.kind === 'session-fd');
+  fd.isNew = true; fd.since = ['policy/modules/roles/ro.te'];
+  fd.trace.hidden[0].origin = { path: '/t/userdomain.if', line: 41, via: 'userdom_restricted_user_template' };
+  fd.causes = [{ rule: { rt: 'typeattribute' }, what: 'puts staff_t into x', origin: { path: '/t/ro.te', line: 11, via: 'ro_thing(staff_t)' } }];
+  const ld = posted[posted.length - 1];
+  send({ cmd: 'result', key: ld.key, result: { ...rep, problems: r.problems, sessions: r.sessions, notes: [], policies, policy: policies[0],
+    runs: [{ user: 'staff_u', login: 'alice', restricted: true, reached: 4, checked: 6, more: false, items: [{ s: 'staff_t', e: 'wrap_exec_t', to: 'wrap_t', fails: [{ kind: 'terminal' }] }] }] } });
+  page = byId.main.textContent;
+  check(/new with this build/.test(page) && /no AVC: dontaudit/.test(page) && /Caused by ro\.te:12 ro_thing\(staff_t\) puts staff_t into x/.test(page) && /Hidden by userdomain\.if:42 \(userdom_restricted_user_template\)/.test(page) && /✗ tty \(no AVC\)/.test(page),
+    'webview: new with this build, no AVC (and where the dontaudit comes from), the line that causes it', page.slice(0, 1500));
+  check(/Programs the sessions run/.test(page) && /restricted: 4 domains reached/.test(page), 'webview: the programs the sessions run, per user', page.slice(-600));
+  const newBadge = byId.main.all(e => e.attrs.class === 'badge new')[0];
+  check(newBadge && /ro\.te/.test(newBadge.attrs.title), 'webview: the badge names the files changed since the previous build', newBadge && newBadge.attrs);
 
   console.log(failures ? `\n${failures} check(s) failed` : '\nall session start checks passed');
   process.exit(failures ? 1 : 0);

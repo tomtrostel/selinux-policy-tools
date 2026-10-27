@@ -650,6 +650,19 @@
           "default": "selinux.checks",
           "markdownDescription": "Property checks file, relative to the policy tree root (for a standalone module: the workspace folder; it is checked against the module linked with the installed policy). Each line is an assertion about the compiled policy (`only X may write T`, `never X may read T`, `never X reaches Y`, `never T flows to U`, `require X may append T:file`), checked after every build and whenever the file is saved. See the README."
         },
+        "selinux.logins.sessions": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "shell": { "type": "string", "description": "The login shell, if not the one in this host's /etc/passwd." },
+              "command": { "type": "string", "description": "A command sshd runs instead of the shell (ForceCommand)." },
+              "chroot": { "type": "string", "description": "The directory the session is chrooted to (ChrootDirectory); paths are looked up inside it." }
+            }
+          },
+          "markdownDescription": "How logins' sessions are set up where the policy check can't see it (`sshd_config` is readable by root only), keyed by Linux login, `%group` or SELinux user: `{ \"shell\": \"/usr/bin/rbash\", \"command\": \"/opt/bin/menu\", \"chroot\": \"/var/chroot/ro\" }`. *Check Login Contexts* then checks that program, in that chroot, as the session's first program. Users of a wrapper module's role get its chroot without this."
+        },
         "selinux.packaging.license": {
           "type": "string",
           "default": "MIT",
@@ -1097,6 +1110,7 @@
     "test:loginctx-e2e": "node test/loginctx-e2e.js",
     "test:ctxfiles-e2e": "node test/ctxfiles-e2e.js",
     "test:sessions-e2e": "node test/sessions-e2e.js",
+    "test:restricted-e2e": "node test/restricted-e2e.js",
     "test:user-e2e": "node test/user-e2e.js",
     "test:denials-e2e": "node test/denials-e2e.js",
     "test:denials-bench": "node test/denials-bench.js \"\" 1500 90 80",

@@ -242,6 +242,8 @@ function activate(context) {
       checksStatus.tooltip = 'SELinux property checks (selinux.checks) against the last build. Click to open.';
       checksStatus.show();
     });
+    // A build that stops a login from working (or makes it work again): say so right away.
+    client.onNotification('selinux/loginsChanged', (p) => loginsChanged(context, p));
     client.onNotification('selinux/indexing', (p) => {
       if (p.state === 'start') status.text = '$(sync~spin) SELinux: indexing…';
       else {
@@ -1769,7 +1771,10 @@ function showDenials(context, text, against = null) {
         const since = /^[\w-]+$/.test(m.since || '') ? m.since : 'recent';
         const t = denialTerminal();
         t.show();
-        t.sendText(`sudo ausearch -m avc,user_avc,selinux_err -ts ${since} --raw > '${out}.part'; mv -f '${out}.part' '${out}'`);
+        // The login programs' own refusals ("Unable to get valid context") never reach the audit log.
+        const jsince = { recent: '-10min', 'this-hour': '-1h', boot: '-b', today: 'today', yesterday: 'yesterday', 'this-week': '-7d', 'this-month': '-31d', 'this-year': '-366d' }[since];
+        const journal = jsince ? `sudo journalctl -q ${jsince === '-b' ? '-b' : `--since ${jsince}`} | grep -E 'pam_selinux|ssh_selinux|SELinux (security )?context' >> '${out}.part'; ` : '';
+        t.sendText(`sudo ausearch -m avc,user_avc,selinux_err -ts ${since} --raw > '${out}.part'; ${journal}mv -f '${out}.part' '${out}'`);
         panel.webview.postMessage({ cmd: 'status', text: 'Waiting for ausearch in the terminal (enter your sudo password there)…' });
         watcher = out;
         fs.watchFile(out, { interval: 700 }, (cur) => {
@@ -1790,6 +1795,8 @@ function showDenials(context, text, against = null) {
       } else if (m.cmd === 'copy') {
         await vscode.env.clipboard.writeText(m.text);
         vscode.window.setStatusBarMessage('Copied', 2000);
+      } else if (m.cmd === 'command' && m.id === 'selinux.checkLoginContexts') {
+        showLoginContexts(context);
       } else if (m.cmd === 'levels') {
         showLevels(context, m.state);
       } else if (m.cmd === 'newService') {
@@ -2180,6 +2187,30 @@ const REPORTS = {
 };
 /** Login Contexts: does every login get a valid context for each way in (server/loginctx.js). */
 function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'); }
+
+/**
+ * After a tree build: logins it broke ({ broken, fixed, changed } from the server's comparison with
+ * the previous build). A broken login is a warning with the line that causes it when known.
+ */
+function loginsChanged(context, p) {
+  const who = (x) => [x.login, x.way].filter(Boolean).join(' by ') || x.kind;
+  const broken = (p.broken || []).filter(x => x.severity === 'error');
+  const show = 'Show Login Contexts';
+  if (broken.length) {
+    const first = broken[0];
+    const at = first.cause ? ` (caused by ${path.basename(first.cause.path)}:${first.cause.line + 1})` : (p.changed || []).length ? ` (changed: ${p.changed.slice(0, 2).join(', ')})` : '';
+    const more = broken.length > 1 ? ` and ${broken.length - 1} more` : '';
+    const btns = first.cause ? [show, 'Go to the Line'] : [show];
+    vscode.window.showWarningMessage(`This build breaks a login: ${who(first)}${more}${at}.`, ...btns).then((b) => {
+      if (b === show) showLoginContexts(context);
+      else if (b === 'Go to the Line') vscode.window.showTextDocument(vscode.Uri.file(first.cause.path), { selection: new vscode.Range(first.cause.line, 0, first.cause.line, 0) });
+    });
+  } else if ((p.broken || []).length) {
+    vscode.window.setStatusBarMessage(`SELinux: this build adds ${p.broken.length} login warning${p.broken.length > 1 ? 's' : ''} (see Problems)`, 8000);
+  }
+  const fixed = (p.fixed || []).filter(x => x.severity === 'error');
+  if (fixed.length && !broken.length) vscode.window.showInformationMessage(`This build fixes ${fixed.length > 1 ? `${fixed.length} login problems` : 'a login problem'}: ${fixed.slice(0, 2).map(who).join('; ')}.`);
+}
 /** Context Files: do the contexts in file_contexts and the other context files load (server/ctxfiles.js). */
 function showContextFiles(context) { showReport(context, 'selinuxContextFiles'); }
 function showReport(context, viewType) {
@@ -2228,6 +2259,10 @@ function showReport(context, viewType) {
   .fix { margin: 6px 0 2px; }
   .fix .sub { font-weight: 600; margin: 6px 0 2px; }
   button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; }
+  .badge { font-size: .85em; padding: 0 5px; border-radius: 3px; border: 1px solid var(--vscode-panel-border); white-space: nowrap; }
+  .badge.new { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+  .badge.quiet { border-color: var(--vscode-editorWarning-foreground); color: var(--vscode-editorWarning-foreground); }
+  .cause { margin: 3px 0; }
 </style></head><body>
 <div id="bar">
   <span id="title">${def.title}</span>
@@ -2245,7 +2280,7 @@ function showReport(context, viewType) {
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
       } else if (m.cmd === 'sessionFix') {
-        panel.webview.postMessage({ cmd: 'sessionFix', key: m.key, result: await client.sendRequest('selinux/sessionFix', { against: m.against, need: m.need, attrs: m.attrs }) });
+        panel.webview.postMessage({ cmd: 'sessionFix', key: m.key, result: await client.sendRequest('selinux/sessionFix', { against: m.against, need: m.need, attrs: m.attrs, role: m.role }) });
       } else if (m.cmd === 'fix') {
         panel.webview.postMessage({ cmd: 'fixPlan', key: m.key, plan: await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, rule: m.rule }) });
       } else if (m.cmd === 'applyFix') {

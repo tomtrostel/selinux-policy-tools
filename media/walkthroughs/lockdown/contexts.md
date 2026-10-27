@@ -24,6 +24,16 @@ sessions), as libselinux does when a session starts:
   ("security_bounded_transition"). **How to fix** lists the interfaces of
   your policy that grant exactly what is missing, narrowest first, and
   writes the one you pick into the domain's module.
+* what a restricted user then runs: wrappers and the programs they start,
+  a command sshd forces, the startup scripts' programs. A `*_domtrans`
+  call without the role for the new domain makes the exec fail with no
+  AVC; a wrapper without the login program's descriptors runs without the
+  terminal.
+
+Each problem says what a host would log for it: an AVC, nothing (a
+`dontaudit` rule hides it), `SELINUX_ERR`, or only "Unable to get valid
+context" in sshd's log. After each build, problems the build added are marked
+new, with the files you changed and the line that causes them.
 
 **SELinux: Check Context Files…** covers every other place a context is
 named:

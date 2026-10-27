@@ -45,20 +45,31 @@
       ? h('details', { class: 'rel' }, h('summary', { class: 'muted small' }, `${p.related.length} line${p.related.length > 1 ? 's' : ''} involved`),
         h('ul', {}, p.related.map(x => h('li', {}, loc(x.file, x.l), ' ', h('code', {}, x.text)))))
       : null;
+    const tr = p.trace;
+    const causes = (p.causes || []).filter(c => c.origin);
     return h('div', { class: `problem ${cls}`, 'data-i': i },
-      h('div', {}, h('span', { class: `sev ${cls}`, title: word }, icon), ' ', h('span', { class: 'ptext' }, p.text)),
+      h('div', {}, h('span', { class: `sev ${cls}`, title: word }, icon), ' ',
+        p.isNew ? h('span', { class: 'badge new', title: (p.since || []).length ? `Files changed since the previous build: ${p.since.join(', ')}` : 'Not there in the previous build' }, 'new with this build') : null, p.isNew ? ' ' : null,
+        tr && tr.record !== 'avc' ? h('span', { class: 'badge quiet', title: tr.text }, TRACE_BADGE[tr.record]) : null, tr && tr.record !== 'avc' ? ' ' : null,
+        h('span', { class: 'ptext' }, p.text.replace(/^New (with this build|since the last check)[^:]*: /, ''))),
       h('div', { class: 'where small' }, loc(p.file, p.l), p.source ? h('span', { class: 'muted' }, ` · from ${p.source}`) : null),
-      rel, p.need ? fixBox(p) : null);
+      causes.length ? h('div', { class: 'small cause' }, causes.map(c => h('div', {}, 'Caused by ', loc(c.origin.path, c.origin.line), ' ', h('code', {}, c.origin.via || c.origin.text || ''), ` ${c.what}.`))) : null,
+      tr && tr.record !== 'avc' ? h('div', { class: 'small muted' }, tr.text, (tr.hidden || []).filter(x => x.origin).map(x => h('span', {}, ' Hidden by ', loc(x.origin.path, x.origin.line), x.origin.via ? ` (${x.origin.via})` : '', '.'))) : null,
+      rel, p.need || p.roleFix ? fixBox(p) : null);
   }
+  /** What a host logs instead of an AVC denial. */
+  const TRACE_BADGE = { none: 'no AVC: dontaudit', selinux_err: 'SELINUX_ERR, not AVC', log: 'no audit record' };
 
   /** How to fix a session-start problem: interfaces of this policy that grant the missing rule, narrowest first. */
   function fixBox(p) {
     const id = p.text;
     const f = fixes.get(id);
-    const need = p.need;
+    // A missing rule (need), or a role to authorize for a domain (roleFix: invalid computed context).
+    const rf = p.need ? null : p.roleFix;
+    const need = p.need || { source: rf.domain, target: rf.type, tclass: 'process', perms: [] };
     if (!f) {
-      return h('div', { class: 'fix small' }, h('button', { title: `Find interfaces in this policy that allow ${need.source} ${need.target}:${need.tclass} { ${need.perms.join(' ')} }`,
-        onclick: () => { fixes.set(id, { state: 'loading', plans: new Map() }); fixWait.set(++fixKey, { id }); vscode.postMessage({ cmd: 'sessionFix', key: fixKey, against, need, attrs: p.attrs || [] }); render(); } }, 'How to fix'));
+      return h('div', { class: 'fix small' }, h('button', { title: rf ? `Find interfaces in this policy that authorize ${rf.role} for ${rf.type}` : `Find interfaces in this policy that allow ${need.source} ${need.target}:${need.tclass} { ${need.perms.join(' ')} }`,
+        onclick: () => { fixes.set(id, { state: 'loading', plans: new Map() }); fixWait.set(++fixKey, { id }); vscode.postMessage({ cmd: 'sessionFix', key: fixKey, against, need: p.need || null, attrs: p.attrs || [], role: rf || null }); render(); } }, 'How to fix'));
     }
     if (f.state === 'loading') return h('div', { class: 'fix small muted' }, "Looking for interfaces that grant it… (the first time, the tree's interfaces are expanded with m4)");
     const r = f.result || {};
@@ -82,7 +93,7 @@
     if (s && s.own) {
       rows.push(h('div', {}, 'Both types belong to ', h('code', {}, s.module || 'one module'), ': add the rule there. ', h('code', {}, r.rule), ' ', addBtn(need.source, null, r.rule)));
     } else if (s && (s.list || []).length) {
-      rows.push(h('div', { class: 'sub' }, s.partial ? 'No interface grants all of it; the closest:' : 'Interfaces in this policy that grant it (narrowest first):'));
+      rows.push(h('div', { class: 'sub' }, s.roleCalls ? `Interfaces in this policy that authorize ${rf.role} for ${rf.type} (with the transition):` : s.partial ? 'No interface grants all of it; the closest:' : 'Interfaces in this policy that grant it (narrowest first):'));
       rows.push(h('table', {}, s.list.map((x, n) => h('tr', {},
         h('td', {}, h('button', { class: 'link', title: x.summary || `Open ${x.name}`, onclick: () => vscode.postMessage({ cmd: 'open', loc: x.loc }) }, x.call)),
         h('td', { class: 'muted' }, [n === 0 && !s.partial ? 'narrowest' : null, x.owner ? 'owner module' : null, x.off ? 'module off' : null, x.writes ? 'writes' : null, x.attrs && x.attrs.length ? `adds ${x.attrs.join(', ')}` : null].filter(Boolean).join(' · ')),
@@ -96,7 +107,8 @@
         h('td', { class: 'muted' }, `puts it in ${x.attr}${x.pure ? '' : ' (and more)'}`),
         h('td', {}, addBtn(x.domain, x.call))))));
     }
-    rows.push(h('div', { class: 'muted' }, 'The rule itself: ', h('code', {}, r.rule), s && s.list && s.list.length ? ' (an interface keeps it in the module that owns the type)' : ''));
+    if (s && s.roleCalls) rows.push(h('div', {}, 'Or authorize the role only (the transition is already there): ', h('code', {}, r.rule), ' ', addBtn(need.source, null, r.rule)));
+    else rows.push(h('div', { class: 'muted' }, 'The rule itself: ', h('code', {}, r.rule), s && s.list && s.list.length ? ' (an interface keeps it in the module that owns the type)' : ''));
     for (const n of r.notes || []) rows.push(h('div', { class: 'muted' }, n));
     return h('div', { class: 'fix small' }, rows);
   }
@@ -113,8 +125,24 @@
           h('td', {}, x.group ? `%${x.login}` : x.login),
           h('td', {}, x.way, x.on && x.on !== 'both' ? h('span', { class: 'muted' }, ` (${x.on})`) : null),
           h('td', {}, h('code', {}, x.ctx)),
-          h('td', {}, x.checks.map(c => { const [m, cl] = MARK[String(c.ok)]; return h('span', { class: cl, title: c.text, style: 'margin-right:10px' }, `${m} ${c.id}`); }))))),
+          h('td', {}, x.checks.map(c => { const [m, cl] = MARK[String(c.ok)]; const q = c.ok === false && c.trace && c.trace.record === 'none'; return h('span', { class: cl, title: q ? `${c.text}\n${c.trace.text}` : c.text, style: 'margin-right:10px' }, `${m} ${c.id}${q ? ' (no AVC)' : ''}`); }))))),
     ], failing > 0);
+  }
+
+  /** What each user's sessions run: checked per user, restricted ones further (wrappers and what they start). */
+  function runsCard() {
+    const list = result.runs || [];
+    if (!list.length) return null;
+    const failing = list.reduce((n, x) => n + x.items.length, 0);
+    return card('runs', 'Programs the sessions run', `${list.length} user${list.length > 1 ? 's' : ''}${failing ? ` · ${failing} failing` : ''}`, [
+      h('div', { class: 'small muted' }, 'Every program the users\' domains run with an automatic transition is checked as the kernel does at exec: the computed context must be valid for the role (else SELINUX_ERR, no AVC), the transition and entrypoint allowed, and the new domain must keep the terminal and the pipes it inherits. A restricted user (one that reaches few domains) is followed further, through wrappers to what they start, and its failures are warnings.'),
+      h('table', {}, h('tr', {}, h('th', {}, 'User'), h('th', {}, 'Login'), h('th', {}, 'Followed'), h('th', {}, 'Checked'), h('th', {}, 'Failing')),
+        list.map(x => h('tr', {},
+          h('td', {}, x.user), h('td', {}, x.login),
+          h('td', {}, x.restricted ? `restricted: ${x.reached} domains reached` : 'its own domain only'),
+          h('td', {}, String(x.checked || 0)),
+          h('td', {}, x.items.length ? h('span', { class: x.restricted ? 'warn' : 'muted', title: x.items.map(i => `${i.s} → ${i.e} → ${i.to}: ${i.fails.map(f => f.kind).join(', ')}`).join('\n') }, `${x.items.length}${x.more ? '+' : ''}`) : h('span', { class: 'ok' }, '✓'))))),
+    ], failing > 0 && list.some(x => x.restricted && x.items.length));
   }
 
   function wayRow(m, w) {
@@ -168,6 +196,8 @@
     main.append(card('logins', 'Logins and their ways in', `${result.mappings.length} seusers line${result.mappings.length === 1 ? '' : 's'}`, result.mappings.map(mappingCard), true));
     const sc = sessionsCard();
     if (sc) main.append(sc);
+    const rc = runsCard();
+    if (rc) main.append(rc);
     if ((result.notes || []).length) main.append(h('div', { class: 'notes' }, result.notes.map(n => h('div', { class: 'note muted' }, n))));
   }
 

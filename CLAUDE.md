@@ -56,8 +56,9 @@ RHEL 8 hosts (ricardo: fc order, matchpathcon -f), user editor kind
 changes, a lockdown tutorial step; the user tried it before the release
 ("It looks like it works").
 Unreleased: step 15 (logins that bounce: session starts, fixes from the
-tree's interfaces, SELINUX_ERR verdicts in the denial assistant); not yet
-tried interactively.
+tree's interfaces, SELINUX_ERR verdicts in the denial assistant) and step 16
+(restricted logins: what they run, silent failures, which edit broke it);
+neither tried interactively yet.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1340,6 +1341,97 @@ so far covered by the e2e tests only.
    ro_u_default_contexts has only a console line, so ro logins over ssh
    would get no context.
 
+16. **Restricted logins** (done, unreleased; user 2026-10-26: "detect and
+   fix issues which arrive from role transitions and permissions …
+   restricted user login transitions, roles associated with the domains,
+   domain transfers, processes allowed to run, and then later in a file any
+   new domains … some of these additional allow statements prevent the
+   restricted user from logging in but the policy will compile and install
+   … do not appear to leave any trace in the AVC denials"; no sample
+   available; plan agreed, "go ahead in the order specified": 1 silent
+   failures, 3 which edit broke it, 2 what they run, 4 fixes checked by a
+   rebuild). Found on melody's ro_user + rpmwrap (the user's uncommitted CLIP
+   9 work, built in a copy ~/sepol-test/exp-ro with a login rouser): the
+   restricted template gives ro_user_t 71 dontaudit rules (exec_type execute,
+   default_t reads, init_t/initrc_t/xdm_t fd use); rpmwrap_rpm_t has the
+   user terminals but not fd use on sshd_t/local_login_t, so the wrapper
+   prints nothing (README Findings; wrapper.DEFAULT_IFACES now adds
+   domain_use_interactive_fds for new programs).
+   1. server/audittrace.js (pure): trace { record avc | none (dontaudit,
+   hidden rules) | selinux_err | log, text } — avcTrace (AVC unless every
+   refused perm is dontaudited), transitionTrace, selinuxErrTrace, logTrace
+   (pam_selinux / sshd messages per login program, LOGS). policy_query avc()
+   returns per refused perm `dontaudit` (active rules); logincontexts
+   transition carries it; computed returns the rule. loginctx nocontext*
+   get traces (RHEL 9 chosen-but-unreachable → AVC at exec, else log; RHEL 8
+   always log). sessions.js every problem/check has trace; checks append
+   "(no AVC: dontaudit hides it)". denials.loginRefusals(text): pam_selinux /
+   sshd / crond lines (audit records skipped) → { program, source, login,
+   kind, count }; server explainRefusals() runs the login check and attaches
+   the problems of that login's seusers line (logins.resolveLogins); webview
+   refusal cards ("no audit record", Open Check Login Contexts); client
+   ausearch also greps the journal (pam_selinux|ssh_selinux|SELinux context).
+   3. build.syncTree(…, changed) → res.changed (tree-relative); server
+   loginPending (+ watched login files), traceLoginProblems (explainRule on
+   currentSide for trace.hidden and causes → origin + related lines "Causes
+   it" / "Keeps the denial out of the audit log"), compareWithLastBuild
+   (loginBaseline keys kind|login|way|source|domain|need|on of error/
+   warning problems; new → isNew, since, text "New with this build (changed:
+   …)" / "New since the last check"; notification selinux/loginsChanged
+   {broken, fixed, changed}; client loginsChanged(): warning with *Show
+   Login Contexts* / *Go to the Line*, info when fixed), causeDiagnostics
+   (code `<kind>-cause` on the causing line: "This line (via) <what>: …").
+   Causes: session-invalid / run-* (type_transition), session-tty (the
+   type_change / pty type_transition). loginContexts request marks isNew from
+   the baseline too. Fixed: sessions.js q2 ids repeated across follow-up
+   batches (answers merged into one map).
+   2. policy_query exec_check(user, role, s, e, states, uroles, terms,
+   origin): execute; no transition → execute_no_trans; computed role
+   (role_transition) → invalid (SELINUX_ERR, reason, role), role allow
+   (roleallow), process transition (AVC/dontaudit), proc_ok constraints,
+   entrypoint; inherited terminal (fd use on the opener, chr_file rw) and the
+   session's pipes (fd use + fifo_file on origin; origin False = skip) only
+   when T may read/write one of the terminals (interactive; chkpwd etc. are
+   not). runs(user, starts, states, roles, depth=2, terms) over reach()
+   states: every type_transition on an executable type, pipes only for depth
+   0. logincontexts kinds exec / runs. sessions.js: per user runs (terms =
+   its logins' (opener, tty)), RESTRICTED_REACH 12 (reached in 2 steps,
+   not hypothetical) → run-fails / run-terminal warnings + session-invalid
+   warning with roleFix; others: report.runs only (no problems), invalid as
+   before (info, depth 0). Login path: facts.setupOf(m, role) (settings
+   `selinux.logins.sessions` {login|%group|user: {shell, command, chroot}},
+   else wrapperChroots() by wrapper-user role), FORCED_COMMAND (sshd only)
+   → session-command(-tty) error, startupPrograms(chroot) (server: first
+   words of commands in /etc/profile, /etc/bashrc, /etc/profile.d/*.sh on
+   PATH, not builtins/functions) → session-startup warning; chrooted
+   programs/libraries looked up inside the chroot; shellOf for tree builds
+   when the login exists in this host's passwd. Webview: badges (new with
+   this build, no AVC / SELINUX_ERR / no audit record), Caused by / Hidden by
+   lines, *Programs the sessions run* card, command/startup checks.
+   4. sessionFix {role: {role, type, domain}} → roleInterfaces calls (domain,
+   role) + `role R types T;` (Add… → denialFix rule; insertFix knows role
+   statements are already there). Settings change re-publishes.
+   Tests: sessions-test (traces, causes, runs, restricted vs not, forced
+   command, chroot, startup, webview badges/cards), loginctx-test (traces),
+   denials-test (loginRefusals + card), policy_query_test (avc dontaudit,
+   computed rule, exec_check, runs), test/restricted-e2e.js (melody CLIP 9;
+   restricted user rt with login rtuser: works; domtrans to rtw_t without
+   the role → SELINUX_ERR, cause rt.te line diagnostic, denial verdict, fixed;
+   base template → new errors with rt.te as change + notification, back →
+   fixed; rtw_t without sshd fds → run-terminal, domain_use_interactive_fds
+   suggested/applied; forced command /usr/bin/rtw without the role → error,
+   role fix written, gone; in clip-all as `restricted`). Survey: stock RHEL 9
+   targeted unchanged (session-invalid notes only); exp-ro: the 2 rpmwrap
+   warnings.
+   Speed (found by the full regression: build-rhel's first rule query
+   waited 65 s behind the after-build login check, which took 83 s on RHEL 9
+   targeted): runs `restrict` (sessions.js passes RESTRICTED_REACH, -1 for
+   hypothetical logins) checks only depth 0 for wide users and caps reach()
+   (`cap`: stops after that many states); exec_check results memoized per
+   user/role/s/e/terms/origin/booleans; avc() keeps each (source, class)'s
+   allow/dontaudit rule list (`_avc_src`). Now 2.3 s (0.4 s before step 16),
+   same findings. loginctx-survey VERBOSE=1 prints questions per kind.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1525,7 +1617,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   paths); `media/logins.js` its webview.
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
 - `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview (also session starts and How to fix).
-- `server/sessions.js`: session starts after the context is picked (entrypoint, libraries, inherited terminal, NoNewPrivileges/nosuid, invalid automatic transitions, typebounds).
+- `server/sessions.js`: session starts after the context is picked (entrypoint, libraries, inherited terminal, NoNewPrivileges/nosuid, forced command, startup scripts, what the sessions run, typebounds).
+- `server/audittrace.js`: what a host logs for a refusal (AVC, hidden by dontaudit, SELINUX_ERR, the login program's log only).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1644,6 +1737,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/sessions-test.js` (in `npm test`) and `test/sessions-e2e.js`
   (`npm run test:sessions-e2e`, melody/ricardo; optional tree arg; in
   clip-all as `sessions`).
+- `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
+  optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
   (`npm run test:ctxfiles-e2e`, melody/ricardo; optional tree arg) and
   `test/ctxfiles-survey.js` (installed | tree | build).
@@ -1662,7 +1757,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   service-e2e).
 - `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
   tree-based e2e test (build-tree checks diff preview filelabel logins
-  loginctx sessions ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  loginctx sessions restricted ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
   and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);

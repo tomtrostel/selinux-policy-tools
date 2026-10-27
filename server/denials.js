@@ -142,6 +142,49 @@ function parseDenials(text) {
   return out;
 }
 
+/*
+ * The login programs' own messages: when libselinux finds no context for a login, or the program
+ * can't set it, nothing reaches the audit log (RHEL 8's kernel computes the contexts without
+ * auditing); only sshd, login, crond or systemd say so in the journal / /var/log/secure.
+ */
+const LOGIN_LOG = [
+  // pam_selinux (sshd, login, systemd-user, gdm…): "pam_selinux(sshd:session): Unable to get valid context for alice"
+  { re: /pam_selinux\((\S+?):\w+\):\s+Unable to get valid context for (\S+)/, kind: 'nocontext', svc: 1, login: 2 },
+  { re: /pam_selinux\((\S+?):\w+\):\s+(?:Security context \S+ is not allowed for|Error getting default context for) (\S+)/, kind: 'nocontext', svc: 1, login: 2 },
+  { re: /pam_selinux\((\S+?):\w+\):\s+(?:Could not set|Unable to set) (?:executable )?(?:context|exec context)[^\n]*?(?: for (\S+))?\s*$/, kind: 'setexec', svc: 1, login: 2 },
+  // sshd's own SELinux code.
+  { re: /(sshd)(?:-session)?\[\d+\]:.*ssh_selinux_getctxbyname: Failed to get default SELinux security context for (\S+)/, kind: 'nocontext', svc: 1, login: 2 },
+  { re: /(sshd)(?:-session)?\[\d+\]:.*ssh_selinux_setup_exec_context: (?:Failed to set SELinux exec context for (\S+)|.*)/, kind: 'setexec', svc: 1, login: 2 },
+  { re: /(sshd)(?:-session)?\[\d+\]:.*ssh_selinux_setup_pty: (?:security_compute_relabel|setfilecon)[^\n]*/, kind: 'pty', svc: 1 },
+  // cronie.
+  { re: /(crond)\[\d+\]: \((\S+)\) ERROR \((?:failed to change SELinux context|failed to get security context|No SELinux security context)\)/, kind: 'nocontext', svc: 1, login: 2 },
+  { re: /(crond)\[\d+\]: (?:No SELinux security context|NULL security context for user) \(?(\S+?)\)?$/, kind: 'nocontext', svc: 1, login: 2 },
+];
+const SERVICE_SOURCE = { sshd: 'sshd_t', login: 'local_login_t', remote: 'remote_login_t', crond: 'crond_t', 'systemd-user': 'init_t', gdm: 'xdm_t', 'gdm-password': 'xdm_t', lightdm: 'xdm_t', su: null, sudo: null };
+
+/**
+ * Login refusals in a log text: [{ program (login program's PAM service or name), source (its domain,
+ * when known), login, kind: 'nocontext' | 'setexec' | 'pty', count, text (one line) }] grouped by
+ * program, login and kind.
+ */
+function loginRefusals(text) {
+  const map = new Map();
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/\btype=[A-Z_0-9]+\b.*\bmsg=audit\(/.test(line)) continue;
+    for (const p of LOGIN_LOG) {
+      const m = p.re.exec(line);
+      if (!m) continue;
+      const program = m[p.svc];
+      const login = p.login && m[p.login] ? m[p.login].replace(/[.,)]+$/, '') : null;
+      const k = `${program}|${login}|${p.kind}`;
+      if (!map.has(k)) map.set(k, { program, source: Object.prototype.hasOwnProperty.call(SERVICE_SOURCE, program) ? SERVICE_SOURCE[program] : null, login, kind: p.kind, count: 0, text: line.trim().slice(0, 300) });
+      map.get(k).count++;
+      break;
+    }
+  }
+  return [...map.values()];
+}
+
 const groupKey = (d) => `${d.kind === 'error' ? 'error' : 'deny'}|${d.scontext.type}|${d.tcontext.type}|${d.tclass}`;
 
 /**
@@ -620,6 +663,9 @@ function insertFix(text, { domain, call, rule, optional, module }) {
   const afterPredecessor = (list) => { const p = list.filter(x => x.name < name).sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : b.endL - a.endL))[0]; return p ? p.endL + 1 : null; };
   let at, insert;
   if (rule) {
+    // A role statement: already there when the module says it (as written).
+    const rr = /^role\s+(\w+)\s+types\s+(\w+)\s*;$/.exec(rule.trim());
+    if (rr && new RegExp(`^\\s*role\\s+${rr[1]}\\s+types\\s+(\\{[^}]*\\b${rr[2]}\\b[^}]*\\}|${rr[2]})\\s*;`, 'm').test(src)) return { already: true };
     const m = /^allow\s+(\S+)\s+(\S+):(\S+)\s+\{?\s*([^};]*?)\s*\}?\s*;$/.exec(rule.trim());
     const want = m ? m[4].split(/\s+/) : [];
     if (m && sc.stmts.some(s => s.kind === 'allow' && !s.bool && s.src === m[1] && s.tgt === m[2] && s.cls === m[3] && want.every(p => s.perms.includes(p)))) return { already: true };
@@ -687,4 +733,4 @@ ${call}
 
 const shellQuote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-module.exports = { permWeight, parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, newInterfaceText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };
+module.exports = { loginRefusals, permWeight, parseDenials, groupDenials, verdict, probeStatements, parseStatements, rankInterfaces, insertFix, localModuleText, newInterfaceText, records, fields, parseContext, FILE_MODES, GENERIC_TYPES, shellQuote };

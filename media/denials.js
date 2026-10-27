@@ -184,14 +184,33 @@
     const list = $('list');
     list.replaceChildren();
     const n = r.groups.length;
-    $('status').textContent = n ? `${r.count} denial${r.count === 1 ? '' : 's'} in ${n} group${n === 1 ? '' : 's'}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : 'No denials found in the text.';
+    const refusals = r.refusals || [];
+    const rn = refusals.length ? `${refusals.length} login refusal${refusals.length > 1 ? 's' : ''}` : '';
+    $('status').textContent = n ? `${r.count} denial${r.count === 1 ? '' : 's'} in ${n} group${n === 1 ? '' : 's'}${rn ? ` and ${rn}` : ''}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : rn ? `${rn}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : 'No denials found in the text.';
     $('status').setAttribute('title', r.policy ? `Rules from ${r.policy.label}; expected file labels from ${r.policy.fileContexts}` : '');
     if (r.notes && r.notes.length) list.append(h('ul', { class: 'notes top' }, r.notes.map(x => h('li', {}, x))));
     const order = ['transition', 'label', 'boolean', 'constraint', 'generic', 'missing', 'allowed', 'unknown', 'error'];
     const counts = {};
     for (const g of r.groups) counts[g.v.verdict] = (counts[g.v.verdict] || 0) + 1;
     if (n > 1) list.append(h('div', { class: 'summary muted' }, order.filter(k => counts[k]).map(k => `${counts[k]} ${({ transition: 'not in its domain', label: 'wrong label', boolean: 'boolean', constraint: 'constraint', generic: 'generic label', missing: 'missing rule', allowed: 'already allowed', unknown: 'not in this policy', error: 'error' })[k]}`).join(' · ')));
+    refusals.forEach((x) => list.append(refusalCard(x)));
     r.groups.forEach((g, i) => list.append(card(g, i)));
+  }
+
+  /** A login program's own "Unable to get valid context" (no audit record): what the login check says. */
+  const KIND_WORDS = { nocontext: 'found no valid context for', setexec: "couldn't set the session context for", pty: "couldn't label the terminal for" };
+  function refusalCard(x) {
+    const loc = (file, l) => (file ? h('button', { class: 'link', onclick: () => vscode.postMessage({ cmd: 'open', loc: { p: file, l, c: 0 } }) }, `${file.split('/').pop()}:${l + 1}`) : null);
+    return h('details', { class: 'group error', open: true },
+      h('summary', {}, h('span', { class: 'badge' }, 'no audit record'), ' ', `${x.program} ${KIND_WORDS[x.kind] || 'refused'} ${x.login || 'a login'}`, x.count > 1 ? h('span', { class: 'muted' }, ` ×${x.count}`) : null),
+      h('div', { class: 'body' },
+        h('div', { class: 'muted small' }, h('code', {}, x.text)),
+        h('p', {}, 'Nothing about this reaches the audit log: libselinux found no context for the login (RHEL 8 computes them in the kernel without auditing), so ausearch shows no AVC.',
+          x.mapped ? ` ${x.login} uses the seusers line of ${x.mapped.login} (${x.mapped.user}).` : ''),
+        (x.problems || []).length
+          ? h('div', {}, h('div', { class: 'lbl' }, 'What the login check finds'), h('ul', {}, x.problems.map(p => h('li', {}, h('span', { class: p.severity === 'error' ? 'bad' : 'muted' }, p.severity), ' ', p.text, ' ', loc(p.file, p.l)))))
+          : x.verdict ? h('p', { class: 'muted' }, x.verdict) : null,
+        h('div', {}, h('button', { onclick: () => vscode.postMessage({ cmd: 'command', id: 'selinux.checkLoginContexts' }) }, 'Open Check Login Contexts'))));
   }
 
   function setPolicies(policies, selected) {

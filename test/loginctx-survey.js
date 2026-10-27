@@ -84,7 +84,16 @@ const req = (o) => new Promise((res) => { const id = ++n; waiting.set(id, res); 
     },
   };
   const t1 = Date.now();
-  const s = await S.analyze(r, facts, async (items) => { const x = await req({ op: 'logincontexts', items }); if (x.error) throw new Error(x.error); return x.answers; });
+  const kinds = {};
+  const s = await S.analyze(r, facts, async (items) => {
+    const t = Date.now();
+    const x = await req({ op: 'logincontexts', items });
+    if (x.error) throw new Error(x.error);
+    const per = (Date.now() - t) / items.length;
+    for (const it of items) { const k = kinds[it.kind] || (kinds[it.kind] = { n: 0, ms: 0 }); k.n++; k.ms += per; }
+    return x.answers;
+  });
+  if (process.env.VERBOSE) console.log('questions:', Object.entries(kinds).map(([k, v]) => `${k} ${v.n} (~${Math.round(v.ms)} ms)`).join(', '));
   console.log(`sessions: ${s.sessions.length} checked in ${Date.now() - t1} ms`);
   for (const x of s.sessions) console.log(`  ${x.login} ${x.way} ${x.ctx}: ${x.checks.map(c => `${c.id}=${c.ok === null ? '?' : c.ok ? 'ok' : 'FAIL'}`).join(' ')}`);
   for (const p of s.problems) console.log(`${p.severity.toUpperCase().padEnd(7)} ${p.file ? `${path.basename(p.file)}:${p.l + 1}` : '-'} ${p.text}`);

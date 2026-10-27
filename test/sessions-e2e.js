@@ -105,7 +105,8 @@ function start(ws, initOptions = {}) {
   const mine = (rep.problems || []).filter(p => p.login === 'brk' && p.source === 'sshd_t');
   for (const p of mine) console.log(`     ${p.severity} ${p.kind}: ${p.text.slice(0, 220)}`);
   const kinds = new Set(mine.map(p => p.kind));
-  check(['session-entry', 'session-fd', 'session-tty'].every(k => kinds.has(k)) && mine.every(p => p.severity === 'error' && p.file === seusersPath && p.l === brkL),
+  // (brk_t can't run the startup scripts' programs either: warnings, the login would go on.)
+  check(['session-entry', 'session-fd', 'session-tty'].every(k => kinds.has(k)) && mine.every(p => (p.kind === 'session-startup' ? p.severity === 'warning' : p.severity === 'error') && p.file === seusersPath && p.l === brkL),
     `but the session can't start: ${[...kinds].join(', ')} — errors on brk's seusers line`, mine.map(p => p.kind));
   await until(() => (b.diags[seUri] || []).some(d => d.code === 'session-entry'));
   const d = (b.diags[seUri] || []).find(x => x.code === 'session-entry' && x.range.start.line === brkL);

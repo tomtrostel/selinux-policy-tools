@@ -30,7 +30,7 @@ const NAME_RE = /^[a-z][a-z0-9_]*$/;
 const FILE_RE = /^[A-Za-z0-9._+-]+$/;
 const PATH_RE = /^\/[^\s'"`$\\]*$/;
 /** What every wrapper domain needs for an execve hop (where the tree has them). */
-const DEFAULT_IFACES = ['libs_use_ld_so', 'libs_use_shared_libs', 'miscfiles_read_localization', 'userdom_use_user_terminals'];
+const DEFAULT_IFACES = ['libs_use_ld_so', 'libs_use_shared_libs', 'miscfiles_read_localization', 'userdom_use_user_terminals', 'domain_use_interactive_fds'];
 const LOCAL_HEADER = '# Local additions (kept by the wrapper editor)';
 
 function newModel() {

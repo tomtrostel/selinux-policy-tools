@@ -451,6 +451,7 @@ check(hf["netifs"] == {"lo": "lo_netif_t"} and hf["nodes"] == [{"addr": "127.0.0
 # ---------- session starts: computed types, NoNewPrivileges/nosuid, invalid automatic transitions, typebounds ----------
 CLASSES.append(FClass("process2", ["nnp_transition", "nosuid_transition"]))
 CLASSES.append(FClass("chr_file", ["read", "write", "relabelfrom", "relabelto"]))
+CLASSES.append(FClass("fd", ["use"]))
 TYPES.extend([FType("devpts_t", ["file_type"]), FType("staff_devpts_t", ["file_type"]), FType("sshd_devpts_t", ["file_type"])])
 RULES.extend([
     FRule("type_transition", "init_t", "devpts_t", "chr_file", default="sshd_devpts_t"),
@@ -459,10 +460,23 @@ RULES.extend([
     # staff_t may run container_exec_t, and a type_transition puts it in container_t, which staff_r may not have.
     FRule("allow", "staff_t", "container_exec_t", "file", ["execute"]),
     FRule("type_transition", "staff_t", "container_exec_t", "process", default="container_t"),
+    # A refusal the audit log never shows.
+    FRule("dontaudit", "staff_t", "init_t", "fd", ["use"]),
 ])
 SELinuxPolicy.bounds = lambda self: [types.SimpleNamespace(ruletype=Named("typebounds"), parent=Named("init_t"), child=Named("container_t"))]
 SELinuxPolicy.polcaps = lambda self: [Named("nnp_nosuid_transition")]
 fake.RBACRuleQuery = lambda policy, ruletype=None: types.SimpleNamespace(results=lambda: [])  # no role allow / role_transition
+# A wrapper staff_r may run: it keeps the pty (user_devpts_t) but not sshd's descriptors.
+TYPES.extend([FType("wrap_t", ["domain"]), FType("wrap_exec_t", ["file_type"]), FType("user_devpts_t", ["file_type"]), FType("sshd_t", ["domain"])])
+RULES.extend([
+    FRule("allow", "staff_t", "wrap_exec_t", "file", ["execute"]),
+    FRule("type_transition", "staff_t", "wrap_exec_t", "process", default="wrap_t"),
+    FRule("allow", "staff_t", "wrap_t", "process", ["transition"]),
+    FRule("allow", "wrap_t", "wrap_exec_t", "file", ["entrypoint"]),
+    FRule("allow", "wrap_t", "user_devpts_t", "chr_file", ["read", "write"]),
+    FRule("allow", "wrap_t", "staff_t", "fd", ["use"]),
+])
+SELinuxPolicy.roles = lambda self: [FRole("system_r", ["init_t", "container_t", "svirt_t", "setrans_t"]), FRole("staff_r", ["staff_t", "wrap_t"]), FRole("object_r", [])]
 idx2 = policy_query.Index(path)
 check(idx2.computed_type("type_transition", "init_t", "devpts_t", "chr_file", {}) == "sshd_devpts_t" and idx2.computed_type("type_change", "staff_t", "sshd_devpts_t", "chr_file", {}) == "staff_devpts_t"
       and idx2.computed_type("type_change", "init_t", "sshd_devpts_t", "chr_file", {}) is None, "computed types: type_transition and type_change; none without a rule")
@@ -478,6 +492,26 @@ check(len(bm) == 1 and bm[0]["child"] == "container_t" and bm[0]["parent"] == "i
       "typebounds: what container_t has and init_t lacks is masked", bm)
 lc2 = idx2.login_contexts([{"id": 1, "kind": "avc", "s": "staff_t", "t": "etc_t", "c": "file", "perms": ["read", "map"]}, {"id": 2, "kind": "autoinvalid", "user": "staff_u", "starts": [{"role": "staff_r", "type": "staff_t"}], "depth": 0}], {})
 check(list(lc2["1"]["perms"]) == ["read"] and lc2["1"]["perms"]["read"]["status"] == "allowed" and len(lc2["2"]["items"]) == 1, "logincontexts avc: permissions the class lacks (map) aren't asked; autoinvalid by question", lc2)
+da = idx2.avc([{"s": "staff_t", "t": "init_t", "c": "fd", "perms": ["use"]}, {"s": "staff_t", "t": "container_t", "c": "fd", "perms": ["use"]}], {})
+check(da[0]["perms"]["use"]["status"] == "missing" and da[0]["perms"]["use"]["dontaudit"][0]["rt"] == "dontaudit" and "dontaudit" not in da[1]["perms"]["use"],
+      "avc: a refused permission under dontaudit carries the rule (no AVC on a host); others don't", da)
+terms = [{"opener": "sshd_t", "tty": "user_devpts_t"}]
+ec = idx2.exec_check("staff_u", "staff_r", "staff_t", "wrap_exec_t", {}, None, terms)
+kinds = sorted(f["kind"] for f in ec["fails"])
+check(ec["to"] == "wrap_t" and ec["ok"] and kinds == ["pipes", "terminal"] and any(f["need"] == {"source": "wrap_t", "target": "sshd_t", "tclass": "fd", "perms": ["use"]} for f in ec["fails"])
+      and ec["rule"]["rt"] == "type_transition", "exec_check: the wrapper starts (transition, entrypoint, role) but loses sshd's descriptors and the caller's pipes", ec)
+ec2 = idx2.exec_check("staff_u", "staff_r", "staff_t", "container_exec_t", {}, None, terms)
+check(not ec2["ok"] and ec2["fails"][0]["kind"] == "invalid" and ec2["fails"][0]["selinuxErr"] == "security_compute_sid" and ec2["fails"][0]["role"] == {"role": "staff_r", "type": "container_t"},
+      "exec_check: an invalid computed context stops there (SELINUX_ERR), with the role to authorize", ec2)
+ec3 = idx2.exec_check("staff_u", "staff_r", "staff_t", "wrap_exec_t", {}, None, [])
+check(ec3["ok"] and not ec3["fails"], "exec_check: with no terminal to go by (cron), a domain isn't held to the caller's pipes", ec3)
+rn = idx2.runs("staff_u", [{"role": "staff_r", "type": "staff_t"}], {}, depth=2, terms=terms)
+check(rn["checked"] == 2 and sorted(x["e"] for x in rn["items"]) == ["container_exec_t", "wrap_exec_t"] and rn["reached"] == 2, "runs: both programs staff_t runs automatically, the failing ones listed; wrap_t reached", rn)
+rw = idx2.runs("staff_u", [{"role": "staff_r", "type": "staff_t"}], {}, depth=2, terms=terms, restrict=1)
+rk = idx2.runs("staff_u", [{"role": "staff_r", "type": "staff_t"}], {}, depth=2, terms=terms, restrict=2)
+check(rw["reached"] == 2 and all(x["depth"] == 0 for x in rw["items"]) and rk["checked"] == rn["checked"], "runs restrict: a user reaching more states checks only its own domains' programs", (rw, rk))
+lc3 = idx2.login_contexts([{"id": 1, "kind": "computed", "rt": "type_change", "s": "staff_t", "t": "sshd_devpts_t", "c": "chr_file"}], {})
+check(lc3["1"]["type"] == "staff_devpts_t" and lc3["1"]["rule"]["rt"] == "type_change" and lc3["1"]["rule"]["s"] == "staff_t", "logincontexts computed: the type and the rule that gives it", lc3)
 
 os.remove(path)
 print("\n%d check(s) failed" % failures if failures else "\nall policy_query checks passed")

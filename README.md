@@ -945,14 +945,55 @@ checks:
   The report flags it when this host's unit sets NoNewPrivileges or the
   program sits on a nosuid mount. It warns when the policy allows it for
   other users' sessions (RHEL: `login_userdomain`) but not this one.
-* **Programs the session can't run:** a `type_transition` from the
-  session's domain to a type its role isn't authorized for. The kernel
-  computes an invalid context and refuses the exec
-  (`security_compute_sid: invalid context`). These are notes per user,
-  grouped by target. Usually the program's `*_run` interface is wanted
-  instead of `*_domtrans`.
+* **The login path:** a command sshd forces instead of the shell
+  (ForceCommand) is the session itself: if it can't start, the login
+  bounces (an error). The programs the startup scripts run (`/etc/profile`,
+  `/etc/bashrc`, `/etc/profile.d/*.sh`) are checked as the user's domain
+  runs them (a warning: the login goes on with an error printed). In a
+  chroot, the programs and libraries are the chroot's. `sshd_config` is
+  readable by root only, so the forced command and the chroot come from the
+  `selinux.logins.sessions` setting; users of a wrapper module's
+  role get its chroot without it. A build uses this host's `/etc/passwd`
+  for the shell when the login exists here.
+* **What the sessions run:** every program a user's domain runs with an
+  automatic transition is checked as the kernel checks the exec. The
+  computed context must be valid for the role (a `type_transition` into a
+  domain the role isn't authorized for makes the exec fail with
+  `security_compute_sid: invalid context`, no AVC), and the role change,
+  process transition, constraints and entrypoint must be allowed. A domain
+  meant to be interactive (it may use one of the terminals) must also keep
+  the terminal and descriptors the login program handed over, and the
+  shell's pipes; otherwise it runs with `/dev/null` instead and prints
+  nothing. A **restricted** user (one that reaches at most 12 domains in two
+  steps) is followed through wrappers to what they start, and its failures
+  are warnings. Other users get the list in the panel's *Programs the
+  sessions run* card only. Usually the program's `*_run` interface (it
+  authorizes the role too) is wanted instead of `*_domtrans`.
 * **typebounds:** a bounded domain gets only what its parent has, and the
   rest is masked at run time (`reason=bounds`).
+
+**Logins that leave no AVC.** Each problem says what a host logs for it.
+It may be an AVC. It may be nothing, because a `dontaudit` rule hides the
+denial: the restricted user templates hide `exec_type` execute, `default_t`
+reads and `fd use` on init, among others. The report names the rule and the
+line it comes from; `semodule -DB` turns dontaudit rules off on a host to see
+them (`semodule -B` restores them). It may be `SELINUX_ERR` only (an invalid
+computed context, a refused NoNewPrivileges change: `ausearch -m
+SELINUX_ERR`). Or no audit record at all: when libselinux finds no context,
+only the login program's own log says "Unable to get valid context" (on RHEL
+8 the kernel computes the contexts without auditing). The denial assistant
+reads those log lines too, and *Read from this host* collects them from the
+journal.
+
+**Which edit broke it.** After each tree build the login problems are
+compared with the previous build's. New ones start with "New with this
+build" and the files changed in between, and a notification names the login
+(*Go to the Line* opens the cause). Logins that work again are reported as
+well. The rules behind a problem (the `type_transition` into a domain the
+role can't have, the `type_change` that gives a terminal its type) are traced
+to their source lines, and that line gets a diagnostic of its own: "This line
+makes rt_t run rtw_exec_t in rtw_t, but role rt_r isn't authorized for
+rtw_t".
 
 **How to fix** (on each problem in the panel) lists the interfaces of the
 policy you are working on that grant exactly what is missing, narrowest
@@ -966,7 +1007,9 @@ a domain given to staff_r by hand failed three ways over ssh (no
 The fixes suggested were `corecmd_shell_entry_type`,
 `domain_use_interactive_fds` and `term_use_all_ptys`, and after the rebuild
 the session starts. For the pty, a type of the user's own that sshd
-relabels to (the userdom templates set that up) is the narrower design.
+relabels to (the userdom templates set that up) is the narrower design. For
+an invalid computed context it offers the tree's `*_run` / `*_role`
+interfaces for that domain, or `role R types T;` on its own.
 
 The denial assistant reads the records such a bounce leaves.
 `security_bounded_transition` is reported as a NoNewPrivileges/nosuid
@@ -1531,6 +1574,7 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 | `selinux.build.trees` | `{}` | Build settings per tree when the workspace has several: `{ "rhel10": { "makeArgs": [...], "files": {...} } }` (key: path relative to the workspace folder, or absolute); overrides `selinux.build.tree.*` for that tree |
 | `selinux.tree.autoSwitch` | `true` | With several trees, switch to the tree of the file you open |
 | `selinux.checks.file` | `selinux.checks` | Property checks file, relative to the tree root (standalone modules: the workspace folder) |
+| `selinux.logins.sessions` | `{}` | How logins' sessions are set up where the check can't see it (`sshd_config` is root's), by login, `%group` or SELinux user: `{ "rouser": { "shell": "/usr/bin/rbash", "command": "/opt/bin/menu", "chroot": "/var/chroot/ro" } }`; *Check Login Contexts* checks that shell or forced command, in that chroot |
 | `selinux.packaging.license` | `MIT` | The license the service editor starts with for a standalone module's RPM spec (SPDX expression); existing specs are left alone |
 | `selinux.packaging.customLicenses` | `[]` | Your own licenses, offered in the service editor's License picker next to the common ones (filled by *Save to my list*) |
 
@@ -2011,6 +2055,14 @@ console, graphical and systemd user sessions work for every mapped login.
   (shell entrypoint, libraries, terminal) on both branches. One note:
   `sysadm_t` can't run `rpc.nfsd` directly (`nfsd_t` isn't authorized for
   `sysadm_r`, so the computed context is invalid).
+* A restricted user with a wrapper module made by the wrapper editor (an
+  `rpm` wrapper for a read-only user, on CLIP RHEL 9): the login works, but
+  the wrapper domain may read and write the user's terminals
+  (`userdom_use_user_terminals`) and not use the descriptors sshd or login
+  hand over. Run over ssh or on the console, the wrapper and the rpm it
+  starts get `/dev/null` instead of the terminal and print nothing (an AVC
+  is logged). `domain_use_interactive_fds` on the wrapper domain fixes it;
+  the wrapper editor now adds it to new programs.
 
 ### Context files in CLIP
 

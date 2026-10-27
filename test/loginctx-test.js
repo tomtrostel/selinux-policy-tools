@@ -97,6 +97,15 @@ const kinds = (r) => r.problems.map(p => `${p.kind}:${p.login}${p.source ? `@${p
     'a seusers range beyond the user\'s: fails on RHEL 9 (libselinux uses the login\'s range), works on RHEL 8 (the kernel clips it)', b);
   const c = P('nocontext', 'carol');
   check(c && /no rule lets sshd_t transition to nl_t/.test(c.text), 'a valid context the caller may not transition to: the session can\'t start on either', c);
+  // What the host logs: no context at all → only the login program's log; a chosen context the caller
+  // can't reach → an AVC at exec on RHEL 9, nothing but the log on RHEL 8.
+  check(a.trace && a.trace.record === 'log' && /Unable to get valid context/.test(a.trace.text) && /journalctl -u sshd/.test(a.trace.text), 'no context at all: no audit record, only sshd\'s log', a.trace);
+  check(c.trace && c.trace.record === 'avc' && /On RHEL 9 and later: An AVC denial for process transition/.test(c.trace.text) && /On RHEL 8: No audit record/.test(c.trace.text), 'an unreachable context: an AVC on RHEL 9, the log on RHEL 8', c.trace);
+  check(b.trace && b.trace.record === 'log', 'nothing valid on RHEL 9: the log only', b.trace);
+  const hid = L.transitionOf({ ok: false, te: 'missing', constraints: [], dontaudit: [{ rt: 'dontaudit', s: 'sshd_t', t: 'nl_t', c: 'process', perms: ['transition'], cond: '' }] }, 'sshd_t', 'nl_t');
+  const AT = require('../server/audittrace');
+  const ht = AT.transitionTrace(hid);
+  check(ht.record === 'none' && /dontaudit sshd_t nl_t:process transition;/.test(ht.text), 'a transition refusal under dontaudit: no AVC', ht);
   const d = r.problems.find(p => p.kind === 'failsafe' && p.login === 'dave');
   check(d && d.severity === 'warning' && /only through the failsafe context fs_u:unconfined_r:unconfined_t:s0/.test(d.text), 'only the failsafe works: a warning', d);
   const e = P('skipped', 'erin');

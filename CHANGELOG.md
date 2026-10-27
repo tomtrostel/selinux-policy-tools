@@ -34,6 +34,57 @@
   that lacks the access. Each comes with the rule and the interfaces of the
   policy, and shows as resolved once the build allows it. The fix planner
   takes two-argument calls such as `passwd_run(staff_t, staff_r)`.
+* **Restricted logins: what they run.** Every program a user's domain runs
+  with an automatic transition is checked the way the kernel checks the
+  exec: the computed context must be valid for the role (otherwise
+  `SELINUX_ERR`, no AVC), the role change, process transition, constraints
+  and entrypoint allowed, and the new domain must keep the terminal and the
+  shell's pipes it inherits (only for domains meant to be interactive). A
+  restricted user (one that reaches few domains) is followed further,
+  through wrappers to what they start, and its failures are warnings with
+  the source line that makes the transition. Other users get a list in the
+  panel only.
+* **The login path:** the shell from this host's `/etc/passwd` now counts
+  for tree builds too, when the login exists here. A new setting,
+  `selinux.logins.sessions`, gives a login's shell, a forced command
+  (sshd's ForceCommand, checked as the session itself: an error when it
+  can't start) and its chroot (users of a wrapper module's role get its
+  chroot without it). The programs `/etc/profile`, `/etc/bashrc` and
+  `/etc/profile.d/*.sh` run are checked too (a warning: the login goes on
+  with an error).
+* **No AVC? Says why.** Every login problem says what a host logs for it: an
+  AVC, nothing because a `dontaudit` rule hides it (with the rule, the line
+  it comes from, and `semodule -DB` to see it), `SELINUX_ERR` only, or no
+  audit record at all (libselinux found no context; only sshd's or login's
+  own log says "Unable to get valid context"). Restricted user templates
+  hide many of these: `exec_type` execute, `default_t` reads, `fd use` on
+  init.
+* **Which edit broke the login.** Each tree build's login problems are
+  compared with the previous build's: new ones say "New with this build"
+  with the files changed in between, and a notification names the login
+  and the line that causes it (*Go to the Line*). Logins that work again
+  are reported too. The rules behind a problem (the `type_transition` into
+  a domain the role can't have, the `type_change` that gives a terminal its
+  type) and the `dontaudit` rules that hide it are traced to their source
+  lines, and the causing line gets a diagnostic of its own.
+* **How to fix** also offers the role to authorize for an invalid computed
+  context: the tree's `*_run` / `*_role` interfaces or `role R types T;`,
+  written by *Add…*.
+* **Denial assistant:** reads the login programs' own messages, which never
+  reach the audit log (pam_selinux "Unable to get valid context for X",
+  sshd's "Failed to get default SELinux security context", crond's "failed
+  to change SELinux context"), and shows what the login check finds for that
+  login. *Read from this host* now also collects them from the journal.
+
+* **Wrapper editor:** new wrapped programs also get
+  `domain_use_interactive_fds`, so the wrapper keeps the terminal sshd or
+  login hand over (without it the wrapper and what it starts print nothing).
+
+**Fixed**
+
+* Session start checks reused question ids across follow-up batches, so a
+  later answer could overwrite an earlier one (no wrong result was seen;
+  found when reading the terminal type's rule).
 
 ## 0.17.0 (2026-10-22)
 

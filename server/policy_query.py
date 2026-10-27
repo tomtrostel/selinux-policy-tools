@@ -209,7 +209,7 @@ class Index:
         vals = {"u1": u, "r1": r1, "t1": t1, "u2": u, "r2": r2, "t2": t2}
         return all(self.eval_constraint(e, vals, []) for e in self._proc_cons.get(perm, ()))
 
-    def reach(self, user, starts, limit=12, roles=None, avoid=frozenset()):
+    def reach(self, user, starts, limit=12, roles=None, avoid=frozenset(), cap=None):
         """What a session of `user` can reach: BFS over (role, domain) states from
         the start contexts. A domain transition s → t needs the transition rule
         and an entrypoint s may execute (or dyntransition + setcurrent); t must be
@@ -217,7 +217,8 @@ class Index:
         `allow R R2` permits and that may run t) by a role_transition on the
         entrypoint or, when s has setexec, explicitly (newrole, sudo -r); the
         policy's constraints must allow the change. Each reached domain keeps
-        the step that first reached it."""
+        the step that first reached it. With `cap`, the walk stops once more than that many states are
+        reached (enough to tell a restricted user from a wide one)."""
         # roles: the user's roles when the policy has no such user yet (one semanage will create).
         roles = set(roles) if roles else self.user_roles.get(user, set())
         ra, rt = self.rbac()
@@ -288,8 +289,10 @@ class Index:
                         steps[key] = {"depth": depth, "from": "%s:%s" % (role, s), "role": r2, "type": t, "roleChange": how,
                                       "entrypoints": sorted(eps)[:3], "dynamic": not eps, "conditional": conds}
                         reached.setdefault(t, key)
+                if cap is not None and len(steps) > cap:
+                    break
             frontier = nxt
-            if not frontier:
+            if not frontier or (cap is not None and len(steps) > cap):
                 break
         return {"roles": sorted({r for r, _ in seen}), "reached": reached, "steps": steps}
 
@@ -575,16 +578,20 @@ class Index:
                 continue
             tn = set([t] + self.attrs[t])
             hits = {p: [] for p in perms}
-            for n in [s] + self.attrs[s]:
-                for i in self.by_src.get(n, ()):
-                    r = self.rules[i]
-                    if r["rt"] != "allow" or r["c"] != cl:
-                        continue
-                    if not (r["t"] in tn or (r["t"] == "self" and s == t)):
-                        continue
-                    for p in perms:
-                        if p in r["perms"]:
-                            hits[p].append(i)
+            quiet = {p: [] for p in perms}
+            # The source's allow/dontaudit rules of the class, kept: session checks ask hundreds of
+            # questions of one domain (unconfined_t has many thousands of rules through its attributes).
+            sc = self.__dict__.setdefault("_avc_src", {})
+            if (s, cl) not in sc:
+                sc[(s, cl)] = [i for n in [s] + self.attrs[s] for i in self.by_src.get(n, ())
+                               if self.rules[i]["rt"] in ("allow", "dontaudit") and self.rules[i]["c"] == cl]
+            for i in sc[(s, cl)]:
+                r = self.rules[i]
+                if not (r["t"] in tn or (r["t"] == "self" and s == t)):
+                    continue
+                for p in perms:
+                    if p in r["perms"]:
+                        (hits if r["rt"] == "allow" else quiet)[p].append(i)
             per = {}
             for p, idxs in hits.items():
                 plain = [i for i in idxs if i not in self.conds]
@@ -603,6 +610,10 @@ class Index:
                     per[p] = {"status": "boolean", "options": opts[:6], "rules": [self.rules[i] for i in idxs[:3]]}
                 else:
                     per[p] = {"status": "missing"}
+                # A refused permission covered by dontaudit leaves no AVC record.
+                hide = [i for i in quiet[p] if self.rule_active(i, states)]
+                if per[p]["status"] != "allowed" and hide:
+                    per[p]["dontaudit"] = [self.rules[i] for i in hide[:2]]
             res["perms"] = per
             out.append(res)
         return out
@@ -770,18 +781,19 @@ class Index:
     def rule_active(self, i, states):
         return i not in self.conds or self.cond_active(i, states)
 
-    def computed_type(self, rt, s, t, c, states):
-        """The type a type_transition / type_change rule gives (s, t, c), or None (unnamed rules only)."""
+    def computed_type(self, rt, s, t, c, states, rule=False):
+        """The type a type_transition / type_change rule gives (s, t, c), or None (unnamed rules only);
+        rule: (type, the rule) instead."""
         s, t = self.aliases.get(s, s), self.aliases.get(t, t)
         if s not in self.attrs or t not in self.attrs:
-            return None
+            return (None, None) if rule else None
         tn = set([t] + self.attrs[t])
         for n in [s] + self.attrs[s]:
             for i in self.by_src.get(n, ()):
                 r = self.rules[i]
                 if r["rt"] == rt and r["c"] == c and "name" not in r and (r["t"] in tn or (r["t"] == "self" and s == t)) and self.rule_active(i, states):
-                    return r["perms"][0]
-        return None
+                    return (r["perms"][0], r) if rule else r["perms"][0]
+        return (None, None) if rule else None
 
     def bounds_of(self):
         """typebounds as {child: parent}."""
@@ -877,6 +889,153 @@ class Index:
                             return {"items": out, "more": True, "reached": len(rr["reached"])}
         return {"items": out, "more": False, "reached": len(rr["reached"])}
 
+    TTY_PERMS = ["read", "write", "ioctl", "getattr"]
+
+    def _refused(self, src, tgt, cls, perms, states):
+        """The permissions of perms (that the class has) src may not use on tgt, with the dontaudit rules
+        that keep them out of the audit log: None when all are allowed."""
+        perms = [x for x in perms if x in self.classperms.get(cls, ())] or perms
+        a = self.avc([{"s": src, "t": tgt, "c": cls, "perms": perms}], states)[0]
+        if "unknown" in a or "unknownClass" in a:
+            return {"need": {"source": src, "target": tgt, "tclass": cls, "perms": perms}, "unknown": a.get("unknown") or [a.get("unknownClass")], "dontaudit": []}
+        miss = [x for x, v in a["perms"].items() if v["status"] != "allowed"]
+        if not miss:
+            return None
+        hidden = [r for x in miss for r in (a["perms"][x].get("dontaudit") or [])]
+        quiet = all(a["perms"][x].get("dontaudit") for x in miss)
+        opts = [o for x in miss for o in (a["perms"][x].get("options") or [])]
+        return {"need": {"source": src, "target": tgt, "tclass": cls, "perms": miss}, "dontaudit": hidden if quiet else [], "boolean": opts[:2]}
+
+    def exec_check(self, user, role, s, e, states, uroles=None, terms=(), origin=None):
+        """What the kernel checks when user:role:s runs a program of type e (no exec context set):
+        execute on it; the automatic transition type_transition s e:process T (role kept unless a
+        role_transition applies): the computed context must be valid (else SELINUX_ERR, exec fails),
+        the role change allowed, process transition and the constraints, T's entrypoint on e; without
+        a transition, execute_no_trans. Then the files T inherits are checked again: terms =
+        [{opener, tty}] (the terminal a login program opened, and its type): without fd use on the
+        opener and read/write on the terminal, T gets /dev/null instead (the program runs without its
+        terminal), and fd use / pipes of `origin` (the session's domain, which made the pipes; default s).
+        Only a domain meant to be interactive (it may read and write one of the terminals) is held
+        to that: helpers like chkpwd get none on purpose.
+        → { s, e, to, role2, rule, ok, fails: [{ kind, text, need?, dontaudit, rule?, selinuxErr? }] }."""
+        uroles = set(uroles) if uroles else self.user_roles.get(user, set())
+        s, e = self.aliases.get(s, s), self.aliases.get(e, e)
+        out = {"s": s, "e": e, "role": role, "to": s, "role2": role, "rule": None, "fails": []}
+        if s not in self.attrs or e not in self.attrs:
+            out["fails"].append({"kind": "unknown", "text": "%s isn't a type in this policy" % (s if s not in self.attrs else e), "dontaudit": []})
+            out["ok"] = False
+            return out
+        fails = out["fails"]
+        x = self._refused(s, e, "file", ["execute"], states)
+        if x:
+            fails.append(dict(x, kind="execute", text="%s may not execute %s" % (s, e)))
+        T, rule = self.computed_type("type_transition", s, e, "process", states, rule=True)
+        if not T or T == s:
+            x = self._refused(s, e, "file", ["execute_no_trans"], states)
+            if x:
+                fails.append(dict(x, kind="execute_no_trans", text="%s may not run %s in its own domain (no automatic transition, and no execute_no_trans)" % (s, e)))
+            out["ok"] = not fails
+            return out
+        out["to"], out["rule"] = T, rule
+        ra, rt = self.rbac()
+        r2s = sorted(rt.get((role, e), {role}))
+        r2 = r2s[0]
+        out["role2"] = r2
+        bad = None
+        if r2 not in uroles:
+            bad = "%s doesn't have role %s" % (user, r2)
+        elif T not in self.role_types.get(r2, ()):
+            bad = "role %s isn't authorized for %s" % (r2, T)
+        if bad:
+            fails.append({"kind": "invalid", "text": "the computed context %s:%s:%s is invalid: %s" % (user, r2, T, bad), "selinuxErr": "security_compute_sid", "reason": bad,
+                          "rule": rule, "role": {"role": r2, "type": T}, "dontaudit": []})
+            out["ok"] = False
+            return out
+        if r2 != role and r2 not in ra.get(role, ()):
+            fails.append({"kind": "roleallow", "text": "no allow %s %s; for the role change, so process transition is refused" % (role, r2), "dontaudit": [],
+                          "need": None, "roleAllow": [role, r2]})
+        x = self._refused(s, T, "process", ["transition"], states)
+        if x:
+            fails.append(dict(x, kind="transition", text="the automatic transition to %s is refused: %s may not transition to it" % (T, s), rule=rule))
+        elif not self.proc_ok(user, role, s, r2, T, "transition"):
+            fails.append({"kind": "constraint", "text": "a constraint on process transition refuses %s:%s:%s → %s:%s:%s" % (user, role, s, user, r2, T), "dontaudit": [], "rule": rule})
+        x = self._refused(T, e, "file", ["entrypoint"], states)
+        if x:
+            fails.append(dict(x, kind="entrypoint", text="%s may not be entered through %s" % (T, e), rule=rule))
+        # The inherited terminal (a lost terminal doesn't stop the program: it gets /dev/null).
+        o = origin or s
+        inherit = []
+        for term in terms or ():
+            inherit += [(T, term["opener"], "fd", ["use"], "use %s's descriptors (the terminal)" % term["opener"], "terminal"),
+                        (T, term["tty"], "chr_file", self.TTY_PERMS, "read and write the terminal (%s)" % term["tty"], "terminal")]
+        # Pipes and files the session opened (cmd | grep, > file): fd use on it, its pipes (origin False: not checked).
+        if origin is not False:
+            inherit += [(T, o, "fd", ["use"], "use %s's descriptors (its pipes and redirections)" % o, "pipes"),
+                        (T, o, "fifo_file", ["read", "write", "getattr", "ioctl"], "read and write %s's pipes" % o, "pipes")]
+        done, refused, granted = set(), [], False
+        for (src, tgt, cls, perms, what, kind) in inherit:
+            if (tgt, cls) in done:
+                continue
+            done.add((tgt, cls))
+            x = self._refused(src, tgt, cls, perms, states)
+            if x:
+                refused.append(dict(x, kind=kind, text="%s may not %s, so %s" % (T, what, "it runs without the terminal (stdin/stdout become /dev/null)" if kind == "terminal" else "its input or output there is replaced by /dev/null"), rule=rule))
+            elif x is None and cls == "chr_file":
+                granted = True  # it may read and write one of the terminals: meant to be interactive
+        if granted:
+            fails.extend(refused)
+        out["ok"] = not any(f["kind"] not in ("terminal", "pipes") for f in fails)
+        return out
+
+    def runs(self, user, starts, states, roles=None, depth=2, terms=(), limit=80, restrict=None):
+        """The programs a session runs, from its domains and the ones it reaches up to `depth` steps:
+        each automatic transition (type_transition from a state's domain on a program type it may
+        execute) checked with exec_check, the failing ones returned, plus the domains entered at
+        depth >= 1 that lose the terminal. → { items: [exec_check results with state, depth], checked,
+        reached, more }. With `restrict`, a user reaching more than that many states in `depth` steps (or
+        any user, when it is negative) gets only its own domains' programs checked: the rest is noise."""
+        uroles = set(roles) if roles else self.user_roles.get(user, set())
+        cap = restrict if restrict is not None and restrict >= 0 else None
+        rr = self.reach(user, starts, limit=max(depth, 0), roles=roles, cap=cap) if depth and not (restrict is not None and restrict < 0) else {
+            "steps": {"%s:%s" % (st["role"], st["type"]): {"depth": 0, "role": st["role"], "type": st["type"]} for st in starts if st["type"] in self.attrs and st["role"] in uroles},
+            "reached": {}}
+        items, seen, checked = [], set(), 0
+        if restrict is not None and (restrict < 0 or len(rr["steps"]) > restrict):
+            depth = 0
+        for key, st in sorted(rr["steps"].items(), key=lambda kv: (kv[1]["depth"], kv[0])):
+            if st["depth"] > depth:
+                continue
+            role, sdom = st["role"], st["type"]
+            k0 = key
+            while rr["steps"].get(k0, {}).get("from"):
+                k0 = rr["steps"][k0]["from"]
+            origin = rr["steps"].get(k0, {}).get("type", sdom)
+            ex = self.exec_types(sdom)
+            for n in [sdom] + self.attrs.get(sdom, []):
+                for i in self.by_src.get(n, ()):
+                    r = self.rules[i]
+                    if r["rt"] != "type_transition" or r["c"] != "process" or "name" in r or not self.rule_active(i, states):
+                        continue
+                    for e in self.side_types(r, "t", sdom):
+                        if e not in ex or (role, sdom, e) in seen:
+                            continue
+                        seen.add((role, sdom, e))
+                        checked += 1
+                        # Pipes: only what the session runs itself (a helper's own helpers get the helper's pipes).
+                        o = origin if st["depth"] == 0 else False
+                        # Logins of one user with other start sets ask again: same answer.
+                        ck = (user, role, sdom, e, tuple(sorted(uroles)), tuple((x["opener"], x["tty"]) for x in terms or ()), o,
+                              tuple(sorted((states or {}).items())))
+                        memo = self.__dict__.setdefault("_exec_memo", {})
+                        if ck not in memo:
+                            memo[ck] = self.exec_check(user, role, sdom, e, states, uroles, terms, o)
+                        res = memo[ck]
+                        if res["fails"]:
+                            items.append(dict(res, state=key, depth=st["depth"]))
+                            if len(items) >= limit:
+                                return {"items": items, "checked": checked, "reached": len(rr["steps"]), "more": True}
+        return {"items": items, "checked": checked, "reached": len(rr["steps"]), "more": False}
+
     def bounds_masked(self, states, limit=40):
         """Permissions the kernel masks at run time (typebounds: a bounded domain gets only what
         its parent has; logged as SELINUX_ERR op=security_compute_av reason=bounds)."""
@@ -935,12 +1094,15 @@ class Index:
                     cons = self.constraints(it["from"], it["to"], "process", {"transition"}) if "unknown" not in te else []
                     a = {"te": per.get("status"), "options": per.get("options"), "rules": per.get("rules"),
                          "constraints": cons, "ok": per.get("status") == "allowed" and not cons}
+                    if per.get("dontaudit"):
+                        a["dontaudit"] = per["dontaudit"]
                 elif k == "types":
                     # What each name is: type | alias (→ its type) | attribute | None.
                     a = {"kinds": {n: ("type" if n in self.attrs else "alias" if n in self.aliases else "attribute" if n in self.members else None)
                                    for n in it.get("names") or []}}
                 elif k == "computed":
-                    a = {"type": self.computed_type(it["rt"], it["s"], it["t"], it["c"], bools)}
+                    ty, rule = self.computed_type(it["rt"], it["s"], it["t"], it["c"], bools, rule=True)
+                    a = {"type": ty, "rule": rule}
                 elif k == "avc":
                     # Permissions the class lacks here (map before policy 30) aren't checked.
                     perms = [x for x in it["perms"] if x in self.classperms.get(it["c"], ())] or it["perms"]
@@ -951,6 +1113,10 @@ class Index:
                     a = self.auto_invalid(it["user"], it.get("starts") or [], it.get("roles"), bools, maxdepth=it.get("depth"))
                 elif k == "bounds":
                     a = {"bounds": self.bounds_masked(bools)}
+                elif k == "exec":
+                    a = self.exec_check(it["user"], it["role"], it["s"], it["e"], bools, it.get("roles"), it.get("terms") or ())
+                elif k == "runs":
+                    a = self.runs(it["user"], it.get("starts") or [], bools, it.get("roles"), it.get("depth", 2), it.get("terms") or (), it.get("limit", 80), it.get("restrict"))
                 elif k == "roletype":
                     r, t = it["role"], self.aliases.get(it["type"], it["type"])
                     reasons = []

@@ -87,7 +87,7 @@ const sh = (cmd, args, opts = {}) => cp.spawnSync(cmd, args, { encoding: 'utf8',
   // 1. What the form offers.
   const info = await conn.sendRequest('selinux/wrapperInfo', {});
   const ro = info.users.find(u => u.role === 'user_r') || info.users.find(u => u.role === 'staff_r');
-  check(!info.unavailable && ro && !info.users.some(u => u.domain === 'nope_t') && info.defaults.length === 4 && info.layers.includes(info.defaultLayer), `users who may run wrappers: ${info.users.map(u => u.role).join(' ')}; layer ${info.defaultLayer}`, info.unavailable || info);
+  check(!info.unavailable && ro && !info.users.some(u => u.domain === 'nope_t') && info.defaults.length === 5 && info.defaults.includes('domain_use_interactive_fds') && info.layers.includes(info.defaultLayer), `users who may run wrappers: ${info.users.map(u => u.role).join(' ')}; layer ${info.defaultLayer}`, info.unavailable || info);
 
   // 2. The programs: their label, domain, the rules on their own file, what the chroot lacks.
   const look = await conn.sendRequest('selinux/wrapperProgram', { path: PROG, chroot });

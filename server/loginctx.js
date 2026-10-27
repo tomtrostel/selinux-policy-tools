@@ -1,4 +1,5 @@
 'use strict';
+const AT = require('./audittrace');
 /**
  * Login contexts (pure): whether each login of a policy's seusers gets a
  * valid context for each way in, the way libselinux and the kernel decide it
@@ -207,14 +208,18 @@ async function analyze(cfg, ask) {
       // Login programs lock people out; other callers (initrc_t, unconfined_t) are worth knowing only.
       const sev = s.login ? 'error' : 'info';
       const cant = s.login ? `can't log in by ${s.label}` : `gets no session started from ${s.S} (not a login program)`;
+      // What a host logs: a context chosen on RHEL 9 whose transition fails is an AVC at exec
+      // (unless dontaudit); no context at all, and anything on RHEL 8, only the login program's log.
+      const t3 = v3 ? AT.transitionTrace(v3.transition) : AT.logTrace(s.S);
       if (!works3 && !works2) {
-        emit({ severity: sev, kind: 'nocontext', ...here, login: who, way: s.label, source: s.S, related,
+        const trace = v3 ? { ...t3, text: `On RHEL 9 and later: ${t3.text} On RHEL 8: ${AT.logTrace(s.S).text}` } : t3;
+        emit({ severity: sev, kind: 'nocontext', ...here, login: who, way: s.label, source: s.S, related, trace,
           text: `${by} ${cant}: unable to get a valid context from ${s.S}. ${summary(cands, roles, m.user, s, fs, v3)}` });
       } else if (!works3) {
-        emit({ severity: sev, kind: 'nocontext3', ...here, login: who, way: s.label, source: s.S, related,
+        emit({ severity: sev, kind: 'nocontext3', ...here, login: who, way: s.label, source: s.S, related, trace: t3,
           text: `${by} ${cant} on RHEL 9 and later (libselinux 3.x): ${v3 ? `${v3.ctx} is chosen, but ${v3.transition.text}, so the session can't start` : `unable to get a valid context from ${s.S}. ${summary(cands, roles, m.user, s, fs, v3)}`}. On RHEL 8 it gets ${v2.ctx}.` });
       } else if (!works2) {
-        emit({ severity: sev, kind: 'nocontext2', ...here, login: who, way: s.label, source: s.S, related,
+        emit({ severity: sev, kind: 'nocontext2', ...here, login: who, way: s.label, source: s.S, related, trace: AT.logTrace(s.S),
           text: `${by} ${cant} on RHEL 8 (libselinux 2.x, where the kernel computes the contexts): ${s.v2rangeError ? s.v2rangeError : cands.map(c => `${c.ctx2 || c.ctx}: ${whyNot2(c) || 'valid'}`).slice(0, 3).join('; ')}. On RHEL 9 and later it gets ${v3.ctx}.` });
       }
       if ((works3 && v3.how === 'failsafe') || (works2 && v2.how === 'failsafe')) {
@@ -251,7 +256,7 @@ function transitionOf(t, S, T) {
     const bad = (c.leaves || []).filter(x => !x.ok).map(x => (x.b != null ? `${x.text} (${x.a} vs ${x.b})` : `${x.text} (${x.a})`));
     why.push(`a ${c.kind} on process transition fails${bad.length ? ` (${bad.slice(0, 3).join(', ')})` : `: ${c.text}`}`);
   }
-  return { ok: false, te: t.te, constraints: t.constraints || [], text: why.join('; ') || `${S} may not transition to ${T}` };
+  return { ok: false, te: t.te, constraints: t.constraints || [], dontaudit: t.dontaudit || null, text: why.join('; ') || `${S} may not transition to ${T}` };
 }
 
 /** Why libselinux 3.x passes over a candidate ('' when it doesn't). */

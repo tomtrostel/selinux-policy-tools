@@ -27,6 +27,9 @@ let settings = {
   checks: { file: 'selinux.checks' },
   // RPM specs of standalone service modules.
   packaging: { license: 'MIT', customLicenses: [] },
+  // How logins' sessions are set up where the policy can't see it (sshd_config is root's):
+  // login or %group → { shell, command (ForceCommand), chroot }.
+  logins: { sessions: {} },
   build: { enabled: true, onSave: true, develMakefile: '/usr/share/selinux/devel/Makefile',
     tree: { makeArgs: [], targets: [], validate: true, outputDir: '', files: {} },
     // Per-tree overrides of `tree`, keyed by tree path (absolute or relative to a workspace folder).
@@ -78,7 +81,13 @@ connection.onInitialized(() => { reindex(); });
 
 connection.onDidChangeConfiguration((change) => {
   const s = change.settings && change.settings.selinux;
-  if (s) { mergeSettings(s); reindex(); }
+  if (s) {
+    const before = JSON.stringify(settings.logins);
+    mergeSettings(s);
+    reindex();
+    // Session setups changed: the login check runs again on the last build.
+    if (JSON.stringify(settings.logins) !== before) publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`));
+  }
 });
 
 function mergeSettings(s) {
@@ -86,6 +95,7 @@ function mergeSettings(s) {
     ifdef: { ...settings.ifdef, ...(s.ifdef || {}) },
     checks: { ...settings.checks, ...(s.checks || {}) },
     packaging: { ...settings.packaging, ...(s.packaging || {}) },
+    logins: { ...settings.logins, ...(s.logins || {}) },
     build: { ...settings.build, ...(s.build || {}), tree: { ...settings.build.tree, ...((s.build && s.build.tree) || {}) } } };
   toolchain = null;
 }
@@ -223,6 +233,7 @@ connection.onDidChangeWatchedFiles((ev) => {
     if (isChecksFile(p)) { runChecks().catch(err => log(`checks failed: ${err.message}`)); continue; }
     // The login configuration of the tree (seusers, contexts files): checked again without a rebuild.
     if (LOGIN_FILES.test(path.basename(p)) || CONTEXT_FILES.test(path.basename(p))) {
+      if (LOGIN_FILES.test(path.basename(p))) loginPending.add(p);
       clearTimeout(loginCtxTimer);
       loginCtxTimer = setTimeout(() => {
         publishLoginContexts().catch(err => log(`login contexts failed: ${err.message}`));
@@ -418,6 +429,7 @@ function runBuild(key, pkg = false, trigger = null) {
         }
         res.trigger = st.trigger;
         lastBuild.set(key, res);
+        if (res.tree) for (const rel of res.changed || []) loginPending.add(path.join(key, rel));
       } while (st.again);
     } finally {
       st.running = null;
@@ -483,7 +495,7 @@ async function treeBuild(root, st) {
   connection.sendNotification('selinux/build', { state: 'validating', module: name, ms: res.ms });
   const v = await build.buildTree(root, null, { ...opts, targets: ['validate'], sync: false });
   mapLinkDiagnostics(v);
-  return { ...v, diagnostics: res.diagnostics.concat(v.diagnostics), log: `${res.log}\n${v.log}`, ms: res.ms + v.ms, synced: res.synced, packages: res.packages, validated: true };
+  return { ...v, diagnostics: res.diagnostics.concat(v.diagnostics), log: `${res.log}\n${v.log}`, ms: res.ms + v.ms, synced: res.synced, changed: res.changed, packages: res.packages, validated: true };
 }
 
 /** Phase-1 targets: compile everything; MONOLITHIC=y trees build `policy` in one go. */
@@ -3712,8 +3724,38 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
   // suggest: false = none; { verdicts, max } widens it (the benchmark asks for allowed accesses too).
   if (suggest !== false) await suggestInterfaces(out, usedBin, notes, (suggest && suggest.verdicts) || ['missing'], (suggest && suggest.max) || 25, (suggest && suggest.limit) || 5);
   if (suggest !== false && usedBin) await suggestForErrors(out, usedBin, notes);
-  return { groups: out, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: fcFile || pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
+  // Login programs that found no context: what the login check says about those logins.
+  const refusals = denials.loginRefusals(text || '');
+  if (refusals.length && pol) await explainRefusals(refusals, pol, notes);
+  return { groups: out, refusals, count: parsed.length, policy: pol ? { id: pol.id, label: pol.label, fileContexts: fcFile || pol.fc || "the running policy's file contexts" } : null, policies: policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b })), notes };
 });
+
+/**
+ * For "Unable to get valid context" and the like (no audit record): the login check's problems for
+ * that login (its own seusers line, else __default__'s) and that way in, from the same policy.
+ */
+async function explainRefusals(refusals, pol, notes) {
+  let report = null;
+  try {
+    const lp = await loginPolicy(pol.id);
+    if (!lp.error) report = (await loginContextReport(lp)).report;
+  } catch (e) { notes.push(`Login check failed: ${e.message}`); }
+  if (!report || report.error) return;
+  const seusers = (report.mappings || []).map(m => ({ login: m.login, group: m.group, user: m.user, l: m.l }));
+  for (const r of refusals) {
+    if (!r.login) continue;
+    const line = (logins.resolveLogins([r.login], seusers).lines[0] || {}).line;
+    if (!line) { r.verdict = `${r.login} matches no seusers line and there is no __default__ line.`; continue; }
+    r.mapped = { login: line.group ? `%${line.login}` : line.login, user: line.user, l: line.l };
+    const mine = (report.problems || []).filter(p => p.login === r.mapped.login && (!r.source || !p.source || p.source === r.source));
+    r.problems = mine.slice(0, 6).map(p => ({ kind: p.kind, severity: p.severity, text: p.text, file: p.file, l: p.l, trace: p.trace || null }));
+    const m = (report.mappings || []).find(x => x.login === line.login && !!x.group === !!line.group);
+    const way = m && r.source ? (m.ways || []).find(w => w.source === r.source) : null;
+    r.verdict = mine.length ? null : way && way.works3 && way.works2
+      ? `In ${pol.label}, ${r.mapped.login} (${r.mapped.user}) gets ${way.v3.ctx} by ${way.label}: this policy fixes it, or the host runs another policy or configuration.`
+      : `The login check finds nothing wrong for ${r.mapped.login} (${r.mapped.user})${r.source ? ` from ${r.source}` : ''} in ${pol.label}.`;
+  }
+}
 
 /* ---------------- logins: who logs in as what, and what they can reach ---------------- */
 
@@ -3886,9 +3928,12 @@ async function loginContextReport(lp) {
     const s = await sessions.analyze(report, sessionFacts(lp.pol, cfg), ask);
     report.sessions = s.sessions;
     report.invalid = s.invalid;
+    report.runs = s.runs;
     report.bounds = s.bounds;
     report.problems = [...report.problems, ...s.problems].sort((a, b) => loginctx.SEVERITY.indexOf(a.severity) - loginctx.SEVERITY.indexOf(b.severity) || (a.l || 0) - (b.l || 0));
-    if (!cfg.host) report.notes.push('Session starts are checked with /bin/bash as the shell, and with this host\'s libraries, mounts and systemd units.');
+    if (!cfg.host) report.notes.push('Session starts are checked with the shells of this host\'s /etc/passwd (/bin/bash for logins it lacks), and with this host\'s libraries, mounts, systemd units and startup scripts.');
+    const conf = Object.keys((settings.logins && settings.logins.sessions) || {});
+    if (conf.length) report.notes.push(`Session setups from selinux.logins.sessions: ${conf.join(', ')}.`);
   }
   return { report, cfg };
 }
@@ -3976,9 +4021,18 @@ function attributeInterfaces() {
  * denial assistant ranks them), joins (interfaces that put the target into an attribute that
  * already has the rule), rule, notes }.
  */
-connection.onRequest('selinux/sessionFix', async ({ against, need, attrs } = {}) => {
+connection.onRequest('selinux/sessionFix', async ({ against, need, attrs, role } = {}) => {
   await indexing;
   const ok = (n) => /^[A-Za-z_]\w*$/.test(n || '');
+  // An invalid computed context: the role to authorize, by the tree's *_run / *_role interfaces or a role statement.
+  if (role && !need) {
+    if (!ok(role.role) || !ok(role.type) || !ok(role.domain)) return { error: 'Nothing to fix.' };
+    const lp = await loginPolicy(against);
+    if (lp.error) return { error: lp.error };
+    const list = roleInterfaces(role.type).slice(0, 6).map(x => ({ ...x, call: `${x.name}(${role.domain}, ${role.role})`, covers: true }));
+    return { rule: `role ${role.role} types ${role.type};`, suggest: { list, roleCalls: true, note: list.length ? null : `No interface of this policy authorizes a role for ${role.type}.` }, joins: [], notes: [],
+      canEdit: !lp.pol.active || !!lp.pol.build };
+  }
   if (!need || !ok(need.source) || !ok(need.target) || !ok(need.tclass) || !(need.perms || []).every(ok)) return { error: 'Nothing to fix.' };
   const lp = await loginPolicy(against);
   if (lp.error) return { error: lp.error };
@@ -4001,7 +4055,8 @@ function sessionFacts(pol, cfg) {
   if (Date.now() - hostFactCache.at > 30000) hostFactCache = { at: Date.now(), ldd: new Map(), units: new Map(), mounts: null };
   const c = hostFactCache;
   const linux = process.platform !== 'win32';
-  const pw = cfg.host && linux ? logins.parsePasswd(readSource('/etc/passwd')) : [];
+  // This host's accounts: their shells count for its own policies, and for a build when the login exists here.
+  const pw = linux ? logins.parsePasswd(readSource('/etc/passwd')) : [];
   const run = (cmd, args) => { try { return require('child_process').execFileSync(cmd, args, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { return e.stdout || ''; } };
   const mounts = () => {
     if (c.mounts == null) {
@@ -4020,6 +4075,29 @@ function sessionFacts(pol, cfg) {
   return {
     host: !!cfg.host,
     shellOf: (login) => { const p = pw.find(x => x.name === login); return p && p.shell && !logins.NO_LOGIN.test(p.shell) ? p.shell : null; },
+    // A login's session setup: selinux.logins.sessions (login, %group or SELinux user), else the chroot of
+    // a wrapper module whose users have this role.
+    setupOf: (m, role) => {
+      const conf = (settings.logins && settings.logins.sessions) || {};
+      const own = conf[m.group ? `%${m.login}` : m.login] || conf[m.user] || null;
+      const out = {};
+      if (own && typeof own === 'object') {
+        for (const k of ['shell', 'command', 'chroot']) if (typeof own[k] === 'string' && own[k].startsWith('/')) out[k] = own[k];
+        out.from = 'selinux.logins.sessions';
+      }
+      if (!out.chroot) {
+        const w = wrapperChroots().find(x => x.role === role);
+        if (w) { out.chroot = w.chroot; out.from = out.from || `wrapper module ${w.module}`; }
+      }
+      return out;
+    },
+    startupPrograms: (chroot) => {
+      if (!linux) return [];
+      const k = chroot || '/';
+      if (!c.startup) c.startup = new Map();
+      if (!c.startup.has(k)) c.startup.set(k, startupPrograms(chroot));
+      return c.startup.get(k);
+    },
     libsOf: (p) => {
       if (!linux) return [];
       if (!c.ldd.has(p)) {
@@ -4057,6 +4135,52 @@ function sessionFacts(pol, cfg) {
   };
 }
 
+/** Chroots of the wrapper modules (# wrapper-chroot / # wrapper-user headers): [{ module, chroot, role }]. */
+function wrapperChroots() {
+  const out = [];
+  for (const w of wrapperModules()) {
+    const t = readSource(w.files.te) || '';
+    const c = /^# wrapper-chroot: (\S+)/m.exec(t), u = /^# wrapper-user: (\w+)/m.exec(t);
+    if (c && u && c[1].startsWith('/')) out.push({ module: w.module, chroot: c[1], role: u[1] });
+  }
+  return out;
+}
+
+/*
+ * Programs a login shell's startup scripts run (/etc/profile, /etc/bashrc, /etc/profile.d/*.sh,
+ * inside a chroot when there is one): the first word of each command that is a program on PATH,
+ * not a builtin, keyword or function the scripts define. → [{ path, script }].
+ */
+const SHELL_WORDS = new Set(('if then else elif fi for while until do done case esac in function select time ! [ [[ ]] test echo printf read cd pwd set unset ' +
+  'shift return true false alias unalias type hash source . export local declare typeset readonly let eval exec trap umask ulimit shopt ' +
+  'complete compgen builtin command break continue wait getopts : { } ( ) unset enable').split(' '));
+function startupPrograms(chroot) {
+  const C = chroot ? chroot.replace(/\/+$/, '') : '';
+  const scripts = [`${C}/etc/profile`, `${C}/etc/bashrc`];
+  try { for (const n of fs.readdirSync(`${C}/etc/profile.d`).sort()) if (/\.sh$/.test(n)) scripts.push(`${C}/etc/profile.d/${n}`); } catch { /* none */ }
+  const dirs = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/local/sbin', '/usr/sbin'];
+  const isExec = (p) => { try { const st = fs.statSync(p); return st.isFile() && (st.mode & 0o111) !== 0; } catch { return false; } };
+  const out = [];
+  const texts = scripts.map(f => ({ f, t: readIf(f) })).filter(x => x.t);
+  const funcs = new Set();
+  for (const { t } of texts) for (const m of t.matchAll(/^\s*(?:function\s+)?([\w-]+)\s*\(\)/gm)) funcs.add(m[1]);
+  for (const { f, t } of texts) {
+    const body = t.split('\n').map(l => l.replace(/(^|\s)#.*$/, '$1')).join('\n');
+    for (const seg of body.split(/;|&&|\|\||\||\n|\$\(|`|\bthen\b|\bdo\b|\belse\b|\{|\(/)) {
+      const words = seg.trim().split(/\s+/).filter(Boolean);
+      let w = words.shift();
+      while (w && (/^\w+=/.test(w) || ['!', 'if', 'while', 'until', 'exec', 'command', 'time', 'nohup'].includes(w))) w = words.shift();
+      if (!w || SHELL_WORDS.has(w) || funcs.has(w) || !/^[\w./+-]+$/.test(w) || /^[\d.]+$/.test(w)) continue;
+      let p = null;
+      if (w.startsWith('/')) p = isExec(`${C}${w}`) ? w : null;
+      else if (!w.includes('/')) p = dirs.map(d => `${d}/${w}`).find(x => isExec(`${C}${x}`)) || null;
+      if (p && !out.some(x => x.path === p)) out.push({ path: p, script: f });
+      if (out.length >= 60) return out;
+    }
+  }
+  return out;
+}
+
 connection.onRequest('selinux/loginContexts', async ({ against } = {}) => {
   await indexing;
   const lp = await loginPolicy(against);
@@ -4066,6 +4190,12 @@ connection.onRequest('selinux/loginContexts', async ({ against } = {}) => {
   try {
     const { report, cfg, error } = await loginContextReport(lp);
     if (error) return { error, policies, policy };
+    if (report && !report.error && lp.pol.build) {
+      await traceLoginProblems(report.problems || [], lp.pol);
+      // What the last build added, as the diagnostics say it.
+      const b = loginBaseline && loginBaseline.root === treeRoot ? loginBaseline : null;
+      for (const p of report.problems || []) if (b && b.newKeys.has(loginProblemKey(p))) { p.isNew = true; p.since = b.changed.slice(0, 12); }
+    }
     return { policies, policy: { ...policy, configDir: cfg.dir }, ...report };
   } catch (e) {
     return { error: e.message, policies, policy };
@@ -4081,14 +4211,106 @@ const LOGIN_FILES = /^(seusers|default_contexts|failsafe_context|\w+_default_con
 async function publishLoginContexts() {
   const res = treeRoot && lastBuild.get(treeRoot);
   let problems = [];
+  let causes = [];
   if (res && res.ok && res.policyBin && fs.existsSync(res.policyBin) && !usingDevel) {
     const pol = denialPolicies().find(p => p.build);
     if (pol) {
       const { report } = await loginContextReport({ pol, bin: res.policyBin });
-      problems = (report && report.problems) || [];
+      if (report && !report.error) {
+        problems = report.problems || [];
+        await traceLoginProblems(problems, pol);
+        compareWithLastBuild(problems);
+        causes = causeDiagnostics(problems);
+      }
     }
   }
-  setReportDiagnostics('selinux-logins', problems);
+  setReportDiagnostics('selinux-logins', problems.concat(causes));
+}
+
+/*
+ * Which edit broke a login. Each tree build's login problems are compared with the previous
+ * build's: problems that weren't there are new, with the files changed in between; ones that went
+ * away are fixed. The rules behind a problem (an automatic transition into a domain the role can't
+ * have, the type a terminal gets) and the dontaudit rules that keep it out of the audit log are
+ * traced to the source lines that write them, and the causes get a diagnostic of their own there.
+ */
+const loginPending = new Set(); // files changed since the baseline (absolute paths)
+let loginBaseline = null; // { root, keys: Map<key, problem>, newKeys: Set<key> }
+const LOGIN_TRACKED = new Set(['error', 'warning']);
+const AT = require('./audittrace');
+
+function loginProblemKey(p) {
+  return [p.kind, p.login || '', p.way || '', p.source || '', p.domain || '', p.need ? `${p.need.source}>${p.need.target}:${p.need.tclass}` : '', p.on || ''].join('|');
+}
+
+async function traceLoginProblems(problems, pol) {
+  if (!pol || !pol.build || usingDevel) return;
+  if (!problems.some(p => (p.trace && (p.trace.hidden || []).length) || (p.causes || []).length)) return;
+  const side = await currentSide();
+  if (!side) return;
+  const origins = (rule, perms, max = 2) => { try { return explain.explainRule(rule, perms || rule.perms, side, max).origins || []; } catch { return []; } };
+  const where = (o) => `${o.via ? `${o.via}: ` : ''}${o.text || ''}`.trim();
+  for (const p of problems) {
+    const extra = [];
+    for (const r of (p.trace && p.trace.hidden) || []) {
+      const o = origins(r, r.perms)[0];
+      if (!o) continue;
+      r.origin = { path: o.path, line: o.line, via: o.via, text: o.text };
+      extra.push({ file: o.path, l: o.line, text: `Keeps the denial out of the audit log: ${where(o) || AT.ruleText(r)}` });
+    }
+    for (const c of p.causes || []) {
+      const o = origins(c.rule, c.perms)[0];
+      if (!o) continue;
+      c.origin = { path: o.path, line: o.line, via: o.via, text: o.text };
+      extra.push({ file: o.path, l: o.line, text: `Causes it: ${where(o) || AT.ruleText(c.rule)} ${c.what}` });
+    }
+    if (extra.length) p.related = [...extra.filter(x => /^Causes/.test(x.text)), ...(p.related || []), ...extra.filter(x => !/^Causes/.test(x.text))];
+  }
+  explain.releaseTexts();
+}
+
+/** Marks the problems this build added (isNew, since) and tells the client which logins broke or work again. */
+function compareWithLastBuild(problems) {
+  const keys = new Map();
+  for (const p of problems) if (LOGIN_TRACKED.has(p.severity) && !p.hypothetical) keys.set(loginProblemKey(p), p);
+  const changed = [...loginPending].filter(f => treeRoot && !path.relative(treeRoot, f).startsWith('..')).map(f => path.relative(treeRoot, f).replace(/\\/g, '/')).sort();
+  const newKeys = new Set();
+  if (loginBaseline && loginBaseline.root === treeRoot) {
+    const broken = [];
+    for (const [k, p] of keys) {
+      if (loginBaseline.keys.has(k)) continue;
+      newKeys.add(k);
+      p.isNew = true;
+      p.since = changed.slice(0, 12);
+      p.text = `${changed.length ? `New with this build (changed: ${changed.slice(0, 3).join(', ')}${changed.length > 3 ? ', …' : ''})` : 'New since the last check'}: ${p.text}`;
+      broken.push(p);
+    }
+    const fixed = [...loginBaseline.keys].filter(([k]) => !keys.has(k)).map(([, p]) => p);
+    const brief = (p) => ({ kind: p.kind, login: p.login || null, way: p.way || null, severity: p.severity, text: p.text.slice(0, 400), cause: ((p.causes || []).find(c => c.origin) || {}).origin || null });
+    if (broken.length || fixed.length) connection.sendNotification('selinux/loginsChanged', { broken: broken.map(brief), fixed: fixed.map(brief), changed: changed.slice(0, 12) });
+  }
+  loginBaseline = { root: treeRoot, keys, newKeys, changed };
+  loginPending.clear();
+}
+
+/** A diagnostic on each source line that causes a login problem (an error or warning one). */
+function causeDiagnostics(problems) {
+  const out = [];
+  const seen = new Set();
+  for (const p of problems) {
+    if (!LOGIN_TRACKED.has(p.severity) && p.kind !== 'session-invalid') continue;
+    for (const c of p.causes || []) {
+      if (!c.origin || !c.origin.path) continue;
+      const k = `${c.origin.path}:${c.origin.line}:${p.kind}:${p.login}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const who = p.login ? `${p.login}${p.way ? ` (${p.way})` : ''}` : p.user || '';
+      out.push({ severity: p.severity === 'info' ? 'warning' : p.severity, kind: `${p.kind}-cause`, file: c.origin.path, l: c.origin.line,
+        text: `This line ${c.origin.via ? `(${c.origin.via}) ` : ''}${c.what}: ${who ? `${who}: ` : ''}${p.text.replace(/^New (with this build|since the last check)[^:]*: /, '')}`,
+        related: p.file ? [{ file: p.file, l: p.l, text: 'The login it affects' }] : [] });
+    }
+  }
+  return out;
 }
 
 /*

@@ -445,5 +445,27 @@ send({ cmd: 'fixPlan', key: 'p4', plan: { path: '/t/apache.te', exists: true, li
 const p4 = find(e => (e.attrs.class || '').split(' ').includes('group'))[3];
 check(/\/t\/ntp\.if/.test(p4.textContent) && /new interface ntp_read_ntpd_extra_files/.test(p4.textContent) && /and adds to/.test(p4.textContent) && /\/t\/apache\.te/.test(p4.textContent), 'the plan shows both files');
 
+// Login programs' own refusals (no audit record): parsed from journal / secure lines, not from audit records.
+const refs = d.loginRefusals([
+  'Oct 26 10:01:02 ricardo sshd[4242]: pam_selinux(sshd:session): Unable to get valid context for rouser',
+  'Oct 26 10:01:09 ricardo sshd[4250]: pam_selinux(sshd:session): Unable to get valid context for rouser',
+  'Oct 26 10:02:00 ricardo sshd[99]: error: ssh_selinux_getctxbyname: Failed to get default SELinux security context for bob (in enforcing mode)',
+  'Oct 26 10:03:00 ricardo crond[77]: (carol) ERROR (failed to change SELinux context)',
+  'Oct 26 10:04:00 ricardo login[5]: pam_selinux(login:session): Unable to get valid context for dave',
+  'Oct 26 10:05:00 ricardo systemd[1]: pam_selinux(systemd-user:session): Unable to get valid context for erin',
+  'type=USER_AVC msg=audit(1729000000.1:5): pid=1 msg=\'pam_selinux(sshd:session): Unable to get valid context for nobody\'',
+].join('\n'));
+const R = (login) => refs.find(x => x.login === login) || {};
+check(refs.length === 5 && R('rouser').count === 2 && R('rouser').source === 'sshd_t' && R('bob').source === 'sshd_t' && R('carol').source === 'crond_t' && R('dave').source === 'local_login_t' && R('erin').source === 'init_t' && !R('nobody').login,
+  'login refusals: pam_selinux, sshd and crond messages, by login program and login (audit records left to the AVC parser)', refs);
+send({ cmd: 'result', result: { policy: { id: 'build', label: 'Last build' }, count: 0, notes: [], groups: [],
+  refusals: [{ ...R('rouser'), mapped: { login: 'rouser', user: 'ro_u', l: 2 }, problems: [{ kind: 'nocontext2', severity: 'error', text: 'rouser (ro_u) can\'t log in by ssh on RHEL 8 …', file: '/t/config/appconfig-mcs/seusers', l: 2 }] }] } });
+check(/1 login refusal/.test(byId.status.textContent), 'status counts login refusals when there are no denials', byId.status.textContent);
+const rc = find(e => (e.attrs.class || '').split(' ').includes('group'))[0];
+check(rc && /no audit record/.test(rc.textContent) && /sshd found no valid context for rouser/.test(rc.textContent) && /×2/.test(rc.textContent) && /can't log in by ssh on RHEL 8/.test(rc.textContent) && /seusers:3/.test(rc.textContent),
+  'a refusal card: no audit record, what the login check finds for that login, its seusers line', rc && rc.textContent);
+btn(rc, 'Open Check Login Contexts').fire('click');
+check(last('command') && last('command').id === 'selinux.checkLoginContexts', 'the card opens Check Login Contexts');
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nall denial checks passed');
 process.exit(failures ? 1 : 0);
