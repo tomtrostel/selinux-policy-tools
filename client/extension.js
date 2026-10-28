@@ -38,6 +38,36 @@ const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compile
 # never user_u may use sysadm_r
 `;
 
+/* ---------------- install profiles (kickstarts) ---------------- */
+
+/**
+ * Pick the kickstart whose hosts the tree's optional_policy blocks are judged
+ * for: separately packaged modules it doesn't install count as absent.
+ */
+async function selectInstallProfile() {
+  const r = await client.sendRequest('selinux/installProfiles');
+  if (!r.profiles.length) { vscode.window.showInformationMessage(r.unavailable || 'No kickstart profiles found.'); return; }
+  const none = { label: 'Every built module', description: r.profiles.some(p => p.active) ? '' : 'active',
+    detail: 'No profile: optional_policy blocks are judged by modules.conf (and APPS_MODS) only', profile: null };
+  const items = [none, ...r.profiles.map(p => ({ label: p.name, description: p.active ? 'active' : '', detail: p.path, profile: p.name }))];
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: `Install profile: dims optional_policy blocks that need modules its hosts don't install (${r.separate.length} modules are packaged on their own)` });
+  if (!pick) return;
+  const res = await client.sendRequest('selinux/selectInstallProfile', { profile: pick.profile });
+  if (res.error) { vscode.window.showWarningMessage(res.error); return; }
+  const all = { ...(extensionContext.workspaceState.get('selinux.installProfiles') || {}), [res.tree]: res.profile };
+  await extensionContext.workspaceState.update('selinux.installProfiles', all);
+  if (!pick.profile) { vscode.window.setStatusBarMessage('$(shield) SELinux: judging optional blocks by every built module', 4000); return; }
+  const info = await client.sendRequest('selinux/installProfiles');
+  const mods = (info.active && info.active.modules) || [];
+  const inst = mods.filter(m => m.state === 'installed').map(m => m.module);
+  const absent = mods.filter(m => m.state === 'absent' && m.built).map(m => m.module);
+  const unsure = mods.filter(m => m.state === 'unsure').map(m => m.module);
+  vscode.window.showInformationMessage(`${pick.profile} installs ${inst.length} of the ${mods.length} separately packaged modules` +
+    `${inst.length ? ` (${inst.join(', ')})` : ''}; ${absent.length} are left out${unsure.length ? `, ${unsure.length} depend on template settings that can't be decided (${unsure.join(', ')})` : ''}.` +
+    ' optional_policy blocks that need a left-out module are dimmed.');
+}
+
 /* ---------------- several policy trees in one workspace ---------------- */
 
 let policyTrees = [];       // [{ root, name, active }] from the last indexing
@@ -170,7 +200,7 @@ function activate(context) {
     documentSelector: [{ scheme: 'file', language: 'selinux' }, { scheme: 'file', language: 'selinux-fc' }, { scheme: 'file', language: 'selinux-checks' }],
     synchronize: {
       configurationSection: 'selinux',
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst,seusers,default_contexts,failsafe_context,*_default_contexts,*_context,*_contexts,default_type,media,securetty_types,customizable_types}'),
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/{*.te,*.if,*.fc,*.spt,*.m4,*.in,access_vectors,security_classes,*.checks,modules*.conf,*.lst,*.ks,*.tmpl,comps.xml,CONFIG_BUILD,Makefile,seusers,default_contexts,failsafe_context,*_default_contexts,*_context,*_contexts,default_type,media,securetty_types,customizable_types}'),
     },
     initializationOptions: {
       extraIncludePaths: cfg().get('extraIncludePaths'),
@@ -182,6 +212,8 @@ function activate(context) {
       trusted: vscode.workspace.isTrusted,
       // The policy tree last worked on, when the workspace has several.
       activeTree: context.workspaceState.get('selinux.activeTree') || null,
+      // Kickstart profile per tree root (Select Install Profile…).
+      installProfiles: context.workspaceState.get('selinux.installProfiles') || {},
     },
   });
   context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
@@ -390,6 +422,7 @@ function activate(context) {
         { placeHolder: 'Policy tree to work on (indexed, built and shown in the views)' });
       if (pick) await selectTree(pick.t.root, false);
     }),
+    vscode.commands.registerCommand('selinux.selectInstallProfile', () => selectInstallProfile()),
     vscode.commands.registerCommand('selinux.refreshCompiled', () => compiled.refresh()),
     vscode.commands.registerCommand('selinux.openChecks', async () => {
       const r = await client.sendRequest('selinux/checksFile');
@@ -1943,6 +1976,7 @@ const FEATURES = [
     ['selinux.buildRpm', 'package', 'Build RPM', 'Package a standalone module as an RPM'],
     ['selinux.configureFromSpec', 'settings-gear', 'Configure Build from Spec File…', 'Build a RHEL/Fedora tree the way its selinux-policy.spec does'],
     ['selinux.selectTree', 'list-tree', 'Select Policy Tree…', 'Switch between the trees in this workspace'],
+    ['selinux.selectInstallProfile', 'checklist', 'Select Install Profile…', 'A kickstart (CLIP): dim optional_policy blocks that need modules its hosts leave out'],
   ]],
   ['Compare and preview', [
     ['selinux.compareHead', 'git-compare', 'Compare with HEAD', 'What your uncommitted changes grant or take away'],

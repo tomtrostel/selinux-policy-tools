@@ -234,6 +234,37 @@ Open one of these as the workspace folder:
   branch is compiled and why. Names defined dynamically (inside macros,
   by `pushdef`/`undefine`, or matching a template-generated interface
   name) and defines in another module's `.te` stay undecided.
+* **`optional_policy` blocks the linker drops are dimmed too** (full trees).
+  An optional block is compiled into its module, but when the policy is
+  linked (on every `semodule -i`, and so in every policy RPM's `%post`)
+  it is kept only if everything it requires is in the policy store.
+  Otherwise the whole block goes silently, with any blocks nested in it.
+  A block is dimmed when it requires a type, attribute, role or boolean
+  that only modules outside the store declare: modules off in
+  `modules.conf`, or, with an install profile, modules its hosts don't
+  install. The requirements are the block's own `gen_require` entries and
+  what its calls always require (not what an interface asks for inside an
+  optional block of its own). Hovering a dimmed block says which name is
+  missing and why. On the `optional_policy` keyword, the hover shows what the whole block
+  would compile to; on a call inside it, what that call would compile to
+  (from the last build: m4 expands these blocks even though the linker
+  drops them). Blocks with an `else` part, in undecided `ifdef` branches or
+  needing a module whose package line can't be decided are left alone.
+* **Install profiles** (CLIP kickstarts): *SELinux: Select Install
+  Profile…* picks one of the `kickstart/<name>/<name>.ks` files above the
+  tree. CLIP packages each `SEPARATE_PKGS` module as its own RPM
+  (`selinux-policy-mcs-<module>`), so a host has the module only if its
+  kickstart installs that package. The profile's `%packages` are read with
+  their `%include` files (rendered from the `.tmpl` Mako templates with
+  `CONFIG_BUILD`'s values, as CLIP's kickstart Makefile does) and `@group`
+  lines (through `conf/yum/comps.xml`; comps.xml itself names no module
+  packages). Optional blocks needing a module the profile leaves out are
+  dimmed, and that module's `.te` gets an info note on its `policy_module`
+  line. On CLIP RHEL 9, clip-sftp-dropbox installs ssh and aide of the 37
+  separate modules (the GUI ones only with `CONFIG_BUILD_ENABLE_GUI := y`);
+  130 blocks in the modules it keeps are dimmed because of that, such as
+  cron's `postfix_read_config` block. "Every built module" goes back to
+  judging by `modules.conf` and `APPS_MODS` only.
 * Diagnostics as you type, with quick fixes where possible:
   * unknown interface/macro calls (suggests the closest names);
   * unknown object classes and invalid permissions for a class;
@@ -675,7 +706,9 @@ install it with *SELinux: Install Module*.
   `sudo semodule -i <module>.pp` in a terminal on the policy host, where you
   enter your password.
 * **"Compiles to" hover.** After a build, hovering an interface call in a
-  `.te` file shows the statements it produced, including nested calls.
+  `.te` file shows the statements it produced, including nested calls (also
+  inside `optional_policy` blocks, whose statements m4 puts on the block's
+  first line).
 * **SELinux: Show Expanded Policy** opens a module's m4 output read-only,
   each block headed by the source line that produced it.
 * Build logs go to the *SELinux Build* output channel.
@@ -1606,6 +1639,19 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
 
 ## What has been tested
 
+* Install profiles and dropped optional blocks (`npm run test:profile-e2e`,
+  melody, CLIP RHEL 9 and RHEL 8 with their kickstarts): the profiles and
+  separately packaged modules found; without a profile, cron's
+  `nis_use_ypbind` block is dimmed (nis off) and its `postfix_read_config`
+  block isn't; the hover shows the block's and the call's statements;
+  with clip-sftp-dropbox the postfix block is dimmed and postfix.te gets the
+  info note. Then against the real linker: the build's packages linked with
+  semodule (CIL), all of them and only the profile's. Every block dimmed
+  because of the profile (130 on RHEL 9, 147 on RHEL 8) needs a type that the
+  profile's linked policy lacks, and no kept block lost any of its own allow
+  rules there (243 and 257 blocks with rules to look up). The parser
+  (`test/kickstart-test.js`) and the block analysis (`test/diagnostics-test.js`)
+  have unit tests.
 * Levels and Categories (`npm run test:levels-e2e`, melody): on the
   running targeted policy, a container with categories c1,c2 is refused a
   file of another container (c1,c3) by `h1 dom h2` although the type rules
@@ -2091,6 +2137,22 @@ arguments (2026-10-22).
   names of services it doesn't have (tuned, timedated) are never read.
 
 ## Limitations
+
+**Dropped optional blocks and install profiles**
+
+* Only requirements decide: a block that uses a missing name without
+  requiring it (which `semodule`'s CIL also drops, but `checkmodule`
+  refuses) isn't dimmed, and neither is one whose calls' requirements
+  can't be worked out.
+* Profiles are read from kickstarts in CLIP's layout
+  (`kickstart/<name>/<name>.ks`, `SEPARATE_PKGS` from
+  `packages/selinux-policy/Makefile`). Package dependencies aren't
+  followed, so a module package pulled in only as another package's
+  `Requires` counts as left out. `%include` files read at install time and
+  template lines whose condition can't be decided (`OS_REL` comes from the
+  build host) count as unknown, so nothing depending on them is dimmed.
+* RHEL's own split (`selinux-policy-targeted-extra` on RHEL 10) is not read
+  as a profile.
 
 **Wrapped programs**
 

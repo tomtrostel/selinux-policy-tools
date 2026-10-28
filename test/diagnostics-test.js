@@ -3,14 +3,14 @@
 // unknown interfaces / classes / permissions, missing gen_require entries,
 // missing requires in loadable .te files (scopes, interfaces that provide
 // them, optional_policy, tunable_policy, unsure scopes), link failures from
-// modules turned off, corenetwork port checks, and gen_user roles / levels /
+// modules turned off, optional_policy blocks the linker drops, corenetwork port checks, and gen_user roles / levels /
 // duplicates. Each check also has a "stays quiet" case.
 //   node test/diagnostics-test.js
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { PolicyIndex } = require('../server/indexer');
-const { diagnose, globalRequirements } = require('../server/diagnostics');
+const { diagnose, globalRequirements, droppedOptionalBlocks } = require('../server/diagnostics');
 
 let failures = 0;
 const check = (cond, what, extra) => {
@@ -145,6 +145,56 @@ optional_policy(\`
 ')
 `;
 write('modules/services/baz.te', BAZ);
+// optional_policy blocks dropped at link time (bar is off).
+const QUX = `policy_module(qux, 1.0)
+type qux_t;
+
+optional_policy(\`
+	gen_require(\`
+		type bar_t;
+	')
+	allow qux_t bar_t:process signal;
+	optional_policy(\`
+		files_read_etc(qux_t)
+	')
+')
+
+optional_policy(\`
+	# its interface needs bar only inside an optional block of its own
+	qux_soft_bar(qux_t)
+	files_read_etc(qux_t)
+')
+
+optional_policy(\`
+	bar_domtrans(qux_t)
+',\`
+	files_read_etc(qux_t)
+')
+
+ifdef(\`some_undecided_flag',\`
+optional_policy(\`
+	bar_domtrans(qux_t)
+')
+')
+
+optional_policy(\`
+	files_read_etc(qux_t)
+	optional_policy(\`
+		bar_domtrans(qux_t)
+	')
+')
+`;
+write('modules/services/qux.te', QUX);
+write('modules/services/qux.if', `## <summary>qux</summary>
+interface(\`qux_soft_bar',\`
+	optional_policy(\`
+		gen_require(\`
+			type bar_t;
+		')
+		allow $1 bar_t:process signal;
+	')
+')
+`);
 const NET = `policy_module(corenetwork, 1.0)
 network_port(http, tcp,80,s0, tcp,443,s0)
 network_port(bogus, tcp,70000,s0)
@@ -212,6 +262,29 @@ check(g.names.has('bar_t') && g.names.get('bar_t').length === 1, 'global require
 idx.moduleKinds.set('bar', 'module');
 check(!diagOf('modules/services/baz.te').some(x => x.code === 'link-missing'), 'with bar enabled: quiet');
 idx.moduleKinds.set('bar', 'off');
+
+/* ---------- optional_policy blocks the linker drops ---------- */
+const loaded = (m) => idx.isEnabled(m) || m === 'qux';
+const QF = () => idx.files.get(P('modules/services/qux.te'));
+const blockLines = QUX.split('\n').map((l, i) => (/optional_policy\(/.test(l) ? i : -1)).filter(i => i >= 0);
+let dr = droppedOptionalBlocks(idx, QF(), loaded);
+const dropAt = (n) => dr.find(x => x.l === blockLines[n]);
+check(dropAt(0) && dropAt(0).missing.length === 1 && dropAt(0).missing[0].name === 'bar_t' && dropAt(0).missing[0].via === null && dropAt(0).missing[0].modules.join() === 'bar',
+  'a block whose gen_require names a type only an off module declares: dropped', dr);
+check(dropAt(1) && dropAt(1).parent === dropAt(0) && !dropAt(1).missing.length, 'the block nested in it goes with it (parent set, nothing missing of its own)', dr);
+check(!dropAt(2), 'an interface needing the module only inside its own optional block: kept');
+check(!dropAt(3), 'a block with an else part: left alone');
+check(!dropAt(4), 'a block in an undecided ifdef branch: left alone');
+check(!dropAt(5) && dropAt(6) && dropAt(6).missing.some(m => m.name === 'bar_exec_t' && m.via === 'bar_domtrans'),
+  'outer block kept, its inner block with bar_domtrans() dropped (requirement via the call)', dr);
+check(dr.length === 3, `three dropped blocks in qux.te (${dr.length})`, dr.map(x => x.l + 1));
+check(droppedOptionalBlocks(idx, QF(), (m) => (m === 'bar' ? null : loaded(m))).length === 0, 'bar unsure (loaded → null): nothing dropped');
+idx.moduleKinds.set('bar', 'module');
+check(droppedOptionalBlocks(idx, QF(), loaded).length === 0, 'bar enabled: nothing dropped');
+idx.moduleKinds.set('bar', 'off');
+dr = droppedOptionalBlocks(idx, idx.files.get(P('modules/services/foo.te')), loaded);
+check(dr.length === 1 && dr[0].l === lineOf(FOO, 'optional_policy') && dr[0].missing.some(m => m.via === 'bar_domtrans'),
+  'foo.te: only the block calling bar_domtrans() (rules without a require, or a block with an unknown call, decide nothing)', dr);
 
 /* ---------- missing gen_require in interfaces ---------- */
 d = diagOf('modules/kernel/files.if');

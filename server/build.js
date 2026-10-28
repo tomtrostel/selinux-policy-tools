@@ -259,15 +259,16 @@ function exportHead(info, dest) {
  * (CIL), like the RPM's `make load SEMODULE="semodule -p <buildroot> -X 100"`
  * but with all packages the build produced (APPS_MODS ones included). Works
  * unprivileged. Uses the host's semanage.conf so store options (e.g.
- * optimize-policy) match the installed policy.
+ * optimize-policy) match the installed policy. `exclude`: module names to leave
+ * out (the policy store of a host that lacks them); `root` names the store dir.
  */
-async function cilBuild(res, { name, timeoutMs = 900000 } = {}) {
+async function cilBuild(res, { name, timeoutMs = 900000, exclude = [], root: rootName = 'cil-root' } = {}) {
   const t0 = Date.now();
   const work = res.workDir;
   let pkgs = [];
-  try { pkgs = fs.readdirSync(work).filter(n => n.endsWith('.pp')); } catch { /* none */ }
+  try { pkgs = fs.readdirSync(work).filter(n => n.endsWith('.pp') && !exclude.includes(n.slice(0, -3))); } catch { /* none */ }
   if (!pkgs.includes('base.pp')) return { ok: false, log: 'No base.pp: a modular build is needed (MONOLITHIC=n).', ms: Date.now() - t0 };
-  const root = path.join(work, 'cil-root');
+  const root = path.join(work, rootName);
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(path.join(root, 'var', 'lib', 'selinux'), { recursive: true });
   fs.mkdirSync(path.join(root, 'etc', 'selinux'), { recursive: true });

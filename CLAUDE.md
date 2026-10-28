@@ -57,8 +57,9 @@ changes, a lockdown tutorial step; the user tried it before the release
 ("It looks like it works").
 Unreleased: step 15 (logins that bounce: session starts, fixes from the
 tree's interfaces, SELINUX_ERR verdicts in the denial assistant) and step 16
-(restricted logins: what they run, silent failures, which edit broke it);
-neither tried interactively yet.
+(restricted logins: what they run, silent failures, which edit broke it)
+and step 17 (dropped optional blocks dimmed, CLIP install profiles); none
+tried interactively yet.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1432,6 +1433,60 @@ so far covered by the e2e tests only.
    allow/dontaudit rule list (`_avc_src`). Now 2.3 s (0.4 s before step 16),
    same findings. loginctx-survey VERBOSE=1 prints questions per kind.
 
+17. **Dropped optional blocks + install profiles** (done, unreleased; user
+   2026-10-28: "parse comps.xml also and grey out optional components that
+   won't be used … when hovering they need to show what they would actually
+   expand to"; CLIP's conf/yum/comps.xml is RHEL's stock group file and
+   names no module packages, so the agreed source is the kickstarts:
+   "yes use the kickstart profiles"). server/kickstart.js (pure):
+   parseComps (groups/environments → mandatory/default/optional/
+   conditional), evalCondition (Mako `% if` subset: ==/!=/</>, and/or/not,
+   float()/int(); unknown → null, Kleene), renderMako (lines + unsure),
+   readKickstart (%packages, %include relative to kickstart/, missing file
+   → .tmpl rendered with CONFIG_BUILD vars, @group [--nodefaults/--optional]
+   via comps, -name removes group packages, explicit names win; absolute
+   includes noted, include-at-runtime ignored), profileModules
+   (selinux-policy-<type>-<mod> for SEPARATE_PKGS; globs; installed/unsure/
+   absent), findProfiles (kickstart/<n>/<n>.ks up to 6 levels above the
+   tree, comps, CONFIG_BUILD). diagnostics.js droppedOptionalBlocks(idx, f,
+   loaded): active, decided, not-in-def optional_policy blocks without an
+   else part; requirements = the block's own require entries + callRequires
+   (mandatory) of its calls (scopeOf = innermost block); a name whose
+   declaring modules (type/attribute/role/bool decls in module .te files,
+   aliases included) are all loaded() === false → missing; nested blocks
+   go with a dropped parent. Server: installProfiles() (SEPARATE_PKGS from
+   <tree>/../Makefile via specconfig.makeVars, type from CONFIG_BUILD or
+   NAME=; cached by the mtimes of every file read), settings.installProfiles
+   {treeRoot: name} (client workspaceState 'selinux.installProfiles'),
+   moduleLoaded(m) (isEnabled, then the profile's state), droppedBlocksOf
+   (WeakMap per parse, keyed by profile + moduleKinds + defs);
+   selinux/inactiveRanges adds { dropped, reason, missing }; hover wrapper
+   (hoverAt = the old handler): "Not in the linked policy" + why, on
+   optional_policy the whole block's statements (expansionOfLines), on a
+   call expansionOfCall (statements of calls inside optional blocks sit on
+   the block's first line in tmp/<mod>.tmp; entries under the one whose via
+   is the call — also fixed the general "Compiles to" for such calls);
+   INFO profile-not-installed on policy_module; requests
+   selinux/installProfiles, selinux/selectInstallProfile (publishAll +
+   inactiveChanged); watched .ks/.tmpl/comps.xml/CONFIG_BUILD/Makefile.
+   build.cilBuild takes exclude + root. Client selinux.selectInstallProfile
+   (quick pick with "Every built module"), FEATURES entry. CLIP RHEL 9:
+   37 separate modules; clip-sftp-dropbox installs ssh + aide (GUI off),
+   clip-minimal ssh aide rngd bind, clip-apache ssh postfix mysql apache;
+   639 blocks dropped without a profile (nis, nscd, container, … off),
+   whole tree ~20-80 ms. Tests: test/kickstart-test.js, diagnostics-test
+   (qux.te), test/profile-e2e.js (melody, CLIP layout copy; CIL links of all
+   packages vs the profile's: all 130 profile-dimmed blocks need a type the
+   profile's policy lacks, 0 of 243 checkable kept blocks lost own rules;
+   in clip-all as `profile`). Found on the way: the user's uncommitted
+   CLIP 9 work on melody doesn't link with semodule/CIL (legacy validate
+   passes): ro_user.te declares `role ro_user_r;` while
+   userdom_restricted_user_template gen_requires it ("Re-declaration of
+   role"; stock staff.te has `#role staff_r;`; rpmwrap then fails only
+   because it needs ro_user_t). The user editor writes that `role R;` line
+   (userUnits) and user-e2e only checks legacy validate. Reported to the
+   user; not fixed yet. RHEL 8 CLIP: 147/147 confirmed, 0 of 257 lost.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1618,6 +1673,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/levels.js`: level canonical form, setrans.conf names, descriptions.
 - `server/loginctx.js`: login contexts (libselinux 3.x / 2.x context selection per seusers line and way in, problems); `media/loginctx.js` the Login Contexts webview (also session starts and How to fix).
 - `server/sessions.js`: session starts after the context is picked (entrypoint, libraries, inherited terminal, NoNewPrivileges/nosuid, forced command, startup scripts, what the sessions run, typebounds).
+- `server/kickstart.js`: install profiles from CLIP kickstarts (%packages, %include, Mako .tmpl, comps groups, separately packaged modules).
 - `server/audittrace.js`: what a host logs for a refusal (AVC, hidden by dontaudit, SELINUX_ERR, the login program's log only).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
@@ -1737,6 +1793,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/sessions-test.js` (in `npm test`) and `test/sessions-e2e.js`
   (`npm run test:sessions-e2e`, melody/ricardo; optional tree arg; in
   clip-all as `sessions`).
+- `test/kickstart-test.js` (in `npm test`) and `test/profile-e2e.js`
+  (`npm run test:profile-e2e`, melody; optional tree arg, needs CLIP's
+  layout around it; in clip-all as `profile`).
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
@@ -1757,7 +1816,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   service-e2e).
 - `test/clip-all.js` (`npm run test:clip-all`, melody; 2026-10-14): every
   tree-based e2e test (build-tree checks diff preview filelabel logins
-  loginctx sessions restricted ctxfiles denials service user wrapper package levels multi-tree) on CLIP RHEL 8
+  loginctx sessions restricted ctxfiles denials service user wrapper package levels hostmods profile multi-tree) on CLIP RHEL 8
   and RHEL 9 (or named trees; `--only a,b`), then diag-survey (`--json`)
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);

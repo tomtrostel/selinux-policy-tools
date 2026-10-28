@@ -239,6 +239,74 @@ function checkLinkRequires(idx, f, out) {
   }
 }
 
+/**
+ * optional_policy blocks of a .te that the linker drops: the block requires a
+ * type, attribute, role or boolean that only modules not in the policy store
+ * declare (loaded(module) false; null = can't tell, which never drops).
+ * Requirements are the block's own require entries and what its calls
+ * always require (mandatory mode: not what an interface asks for inside its
+ * own optional blocks or m4 conditionals); code in nested blocks belongs to
+ * those, which go too when their parent does. Calls in undecided ifdef
+ * branches count for nothing. Blocks with an else part are left alone.
+ * → [{ l, c, endL, endC, missing: [{ name, modules, via, l, c }], parent }]
+ * (parent: the dropped block it sits in, missing empty then).
+ */
+function droppedOptionalBlocks(idx, f, loaded) {
+  if (!f || !/\.te(\.in)?$/.test(f.path || '')) return [];
+  const { scopeOf, inDef } = teScopes(idx, f);
+  const blocks = (f.calls || []).filter(c => c.name === 'optional_policy' && !c.inDef && idx.isActive(f, c.l, c.c) && !idx.undecidedAt(f, c.l, c.c));
+  if (!blocks.length) return [];
+  const missing = new Map(blocks.map(b => [b, []]));
+  const declMods = new Map();
+  const modulesOf = (name) => {
+    if (declMods.has(name)) return declMods.get(name);
+    let res = null;
+    const decls = (idx.decls.get(name) || []).filter(d => /^(type|attribute|role|bool)$/.test(d.kind));
+    if (decls.length) {
+      res = new Set();
+      for (const d of decls) {
+        const df = idx.files.get(d.path);
+        if (!df || !df.module || !/\.te(\.in)?$/.test(d.path)) { res = null; break; }
+        res.add(df.module);
+      }
+    }
+    declMods.set(name, res);
+    return res;
+  };
+  const need = (b, name, site) => {
+    const mods = modulesOf(name);
+    if (!mods || mods.has(f.module)) return;
+    if ([...mods].some(m => loaded(m) !== false)) return;
+    const list = missing.get(b);
+    if (!list.some(x => x.name === name)) list.push({ name, modules: [...mods].sort(), ...site });
+  };
+  const counts = (l, c) => idx.isActive(f, l, c) && !idx.undecidedAt(f, l, c) && !inDef(l, c);
+  for (const r of f.requires || []) {
+    if (r.l === undefined || !counts(r.l, r.c)) continue;
+    const b = scopeOf(r.l, r.c);
+    if (b && missing.has(b)) need(b, r.name, { via: null, l: r.l, c: r.c });
+  }
+  for (const c of f.calls || []) {
+    if (c.inDef || STRUCTURAL.has(c.name) || M4_BUILTINS.has(c.name) || !counts(c.l, c.c)) continue;
+    const b = scopeOf(c.l, c.c);
+    if (!b || !missing.has(b)) continue;
+    for (const n of callRequires(idx, c.name, c.args, 0, true).names) need(b, n, { via: c.name, l: c.l, c: c.c });
+  }
+  const out = [];
+  const dropped = new Map();
+  for (const b of blocks.slice().sort((x, y) => x.l - y.l || x.c - y.c)) {
+    if (b.args && b.args.length > 1) continue;
+    let parent = null;
+    for (let s = scopeOf(b.l, b.c); s; s = scopeOf(s.l, s.c)) if (dropped.has(s)) { parent = dropped.get(s); break; }
+    const own = missing.get(b);
+    if (!parent && !own.length) continue;
+    const d = { l: b.l, c: b.c, endL: b.endL, endC: b.endC, missing: parent ? [] : own, parent };
+    dropped.set(b, d);
+    out.push(d);
+  }
+  return out;
+}
+
 /** Does this tree's tunable_policy require its condition's booleans by itself? */
 function autoRequiringTunables(idx) {
   return (idx.defs.get('tunable_policy') || []).some(d => (d.bodyCalls || []).some(b => b.name === 'declare_required_symbols'));
@@ -408,4 +476,4 @@ function checkGenRequire(idx, f, d, out) {
   }
 }
 
-module.exports = { diagnose, callRequires, globalRequirements, ERROR, WARNING, INFO };
+module.exports = { diagnose, callRequires, globalRequirements, droppedOptionalBlocks, ERROR, WARNING, INFO };

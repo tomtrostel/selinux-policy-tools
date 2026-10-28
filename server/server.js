@@ -36,6 +36,8 @@ let settings = {
     trees: {} },
   // The policy tree to work on when the workspace has several (sent by the client).
   activeTree: null,
+  // The kickstart profile per tree root (sent by the client): which separately packaged modules hosts install.
+  installProfiles: {},
   // Set by the client from vscode.workspace.isTrusted. Building runs the tree's
   // Makefile and the build settings can carry commands, so untrusted
   // workspaces never build. Defaults to trusted for non-VS Code clients.
@@ -241,6 +243,12 @@ connection.onDidChangeWatchedFiles((ev) => {
       }, 500);
       continue;
     }
+    // Kickstarts, their templates, comps.xml, CONFIG_BUILD, Makefiles (CLIP's SEPARATE_PKGS): the install profile may have changed.
+    if (/.(ks|tmpl)$|(^|[\/])(comps.xml|CONFIG_BUILD)$/.test(p) || path.basename(p) === 'Makefile') {
+      profileCache = null;
+      connection.sendNotification('selinux/inactiveChanged', {});
+      continue;
+    }
     // modules.conf (or a spec module list): which modules are built changed; re-read on the rebuild below.
     if (/(^|[\\/])modules[^\\/]*\.conf$|\.lst$/.test(p)) continue;
     if (inExcludedTree(p)) continue;
@@ -272,7 +280,18 @@ function publish(doc) {
     message: d.msg,
     data: d.data,
   }));
-  connection.sendDiagnostics({ uri: doc.uri, diagnostics: diags.concat(buildDiagnosticsFor(p, doc.getText(), diags), reportDiagnosticsFor(p)) });
+  connection.sendDiagnostics({ uri: doc.uri, diagnostics: diags.concat(profileDiagnostics(f), buildDiagnosticsFor(p, doc.getText(), diags), reportDiagnosticsFor(p)) });
+}
+
+/** A separately packaged module the active install profile doesn't install: said once, on its policy_module line. */
+function profileDiagnostics(f) {
+  if (!f || !/.te(.in)?$/.test(f.path || '') || !idx.isEnabled(f.module)) return [];
+  const prof = installProfiles();
+  const st = prof && prof.active && prof.active.modules.get(f.module);
+  if (!st || st.state !== 'absent') return [];
+  const pm = (f.calls || []).find(c => c.name === 'policy_module') || { l: 0, c: 0, len: 0 };
+  return [{ range: range(pm.l, pm.c, pm.len || 13), severity: DiagnosticSeverity.Information, source: 'selinux', code: 'profile-not-installed',
+    message: `The ${prof.active.name} install profile doesn't install ${st.pkg}, so this module isn't in the policy store on those hosts (optional_policy blocks in other modules that need it are dimmed). Change the profile with "SELinux: Select Install Profile…".` }];
 }
 
 /* ---------------- real builds (m4 + checkmodule) ---------------- */
@@ -701,7 +720,34 @@ function ifdefConditionHover(doc, position, name) {
     (st.kind === 'flag' ? `\n\nFlags from the Makefile: \`${idx.m4.flags}\`` : '');
 }
 
-connection.onHover(({ textDocument, position }) => {
+/*
+ * Inside an optional_policy block the linker drops (see droppedBlocksOf), the
+ * hover says so and shows what the block (on `optional_policy`) or the line
+ * would compile to; "Compiles to" reads "Would compile to".
+ */
+connection.onHover((params) => {
+  const res = hoverAt(params);
+  const doc = documents.get(params.textDocument.uri);
+  const p = doc && toPath(params.textDocument.uri);
+  const f = p && idx.files.get(p);
+  const d = f && droppedBlockAt(f, params.position.line, params.position.character);
+  if (!d) return res;
+  const w = wordAt(doc, params.position);
+  const onBlock = w && w.word === 'optional_policy' && params.position.line === d.l;
+  let value = res && res.contents && res.contents.value ? res.contents.value.replace('**Compiles to**', '**Would compile to**') : '';
+  const MAX = 60;
+  const show = (rules, what) => (rules && rules.length
+    ? `\n\n**Would compile to** (${what}, ${rules.length} statement${rules.length > 1 ? 's' : ''}, last build):\n\n` +
+      '```selinux\n' + rules.slice(0, MAX).map(e => e.text).join('\n') + (rules.length > MAX ? `\n# … ${rules.length - MAX} more` : '') + '\n```'
+    : rules ? '' : '\n\n*Build the tree to see what it would compile to.*');
+  let note = `**Not in the linked policy.** ${droppedReason(d)}`;
+  if (onBlock) note += show(expansionOfLines(p, d.l, d.endL), 'the whole block');
+  else if (!/\*\*Would compile to\*\*/.test(value) ) note += show(expansionAt(p, params.position.line), 'this line');
+  value = value ? `${note}\n\n---\n\n${value}` : note;
+  return { range: res && res.range, contents: { kind: MarkupKind.Markdown, value } };
+});
+
+function hoverAt({ textDocument, position }) {
   const doc = documents.get(textDocument.uri);
   if (!doc) return null;
   const lh = levelHover(doc, position);
@@ -719,8 +765,8 @@ connection.onHover(({ textDocument, position }) => {
     let value = defMarkdown(defs[0], defs.length);
     const p = toPath(textDocument.uri);
     const f = idx.files.get(p);
-    const isCall = f && (f.calls || []).some(c => c.name === name && c.l === position.line && c.c === w.start);
-    const rules = isCall && expansionAt(p, position.line);
+    const call = f && (f.calls || []).find(c => c.name === name && c.l === position.line && c.c === w.start);
+    const rules = call && expansionOfCall(p, f, call);
     if (rules && rules.length) {
       const MAX = 40;
       value += `\n\n---\n\n**Compiles to** (${rules.length} statement${rules.length > 1 ? 's' : ''}, last build):\n\n` +
@@ -759,7 +805,7 @@ connection.onHover(({ textDocument, position }) => {
       defMarkdown(inactive[0], inactive.length) + `\n\n*Not part of this build configuration: its ifdef branch ${idx.branchReason(idx.files.get(inactive[0].path), b)}*` } };
   }
   return null;
-});
+}
 
 /* ---------------- navigation ---------------- */
 
@@ -1142,8 +1188,171 @@ connection.onNotification('selinux/setTrusted', ({ trusted }) => {
 connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
   await indexing;
   const f = idx.files.get(toPath(uri));
-  return idx.inactiveBranches(f).map(b => ({ range: { start: { line: b.s.l, character: b.s.c }, end: { line: b.e.l, character: b.e.c } },
+  const out = idx.inactiveBranches(f).map(b => ({ range: { start: { line: b.s.l, character: b.s.c }, end: { line: b.e.l, character: b.e.c } },
     reason: `Not compiled in this build configuration: ${idx.branchReason(f, b)}` }));
+  for (const d of droppedBlocksOf(f)) {
+    let own = d;
+    while (own.parent) own = own.parent;
+    out.push({ range: { start: { line: d.l, character: d.c }, end: { line: d.endL, character: d.endC + 1 } }, reason: droppedReason(d), dropped: true,
+      missing: own.missing.map(x => x.name) });
+  }
+  return out;
+});
+
+/* ---------------- install profiles (CLIP kickstarts) ---------------- */
+
+/*
+ * A module packaged on its own (CLIP's SEPARATE_PKGS → selinux-policy-<type>-<mod>)
+ * is in the policy store only on hosts that install its package. The active
+ * install profile (a kickstart) says which are installed; optional_policy
+ * blocks needing a module that isn't (or one off in modules.conf) are dropped
+ * by the linker, so they are dimmed. Without a profile, every built module counts.
+ */
+const kickstart = require('./kickstart');
+let profileCache = null; // { key, files: [[path, mtime]], info }
+
+/** The tree's kickstart profiles and the active one (settings.installProfiles[tree root]), or null outside CLIP-style layouts. */
+function installProfiles() {
+  if (!treeRoot || usingDevel) return null;
+  const wanted = (settings.installProfiles || {})[treeRoot] || null;
+  const key = `${treeRoot}\0${wanted}\0${JSON.stringify(treeCfg().makeArgs || [])}`;
+  if (profileCache && profileCache.key === key && profileCache.files.every(([p, m]) => mtimeOf(p) === m)) return profileCache.info;
+  const files = new Map();
+  const readFile = (p) => { const t = readSource(p); files.set(p, mtimeOf(p)); return t; };
+  const found = kickstart.findProfiles(treeRoot, {
+    exists: (p) => fs.existsSync(p),
+    list: (d) => { try { return fs.readdirSync(d); } catch { return []; } },
+  });
+  let info = null;
+  if (found) {
+    files.set(found.kickstartDir, mtimeOf(found.kickstartDir));
+    // SEPARATE_PKGS: CLIP's packages/selinux-policy/Makefile, next to the spec above the tree.
+    const mkPath = path.join(treeRoot, '..', 'Makefile');
+    const mk = fs.existsSync(mkPath) ? require('./specconfig').makeVars(readFile(mkPath) || '') : new Map();
+    const separate = new Set((mk.get('SEPARATE_PKGS') || '').split(/\s+/).filter(Boolean));
+    const config = found.config ? require('./specconfig').makeVars(readFile(found.config) || '') : new Map();
+    const nameArg = (treeCfg().makeArgs || []).map(a => /^NAME=(\S+)/.exec(a)).filter(Boolean).pop();
+    const type = config.get('CONFIG_BUILD_SELINUX_POL_TYPE') || (nameArg && nameArg[1]) || 'mcs';
+    const active = found.profiles.find(p => p.name === wanted || p.path === wanted) || null;
+    info = { ...found, separate, type, mkPath: fs.existsSync(mkPath) ? mkPath : null, active: null };
+    if (active) {
+      const comps = found.comps ? kickstart.parseComps(readFile(found.comps)) : new Map();
+      const vars = Object.fromEntries(config);
+      const ks = kickstart.readKickstart(active.path, { readFile, vars, comps });
+      if (ks) info.active = { ...active, modules: kickstart.profileModules(ks, separate, type), notes: ks.notes, groups: ks.groups };
+    }
+  }
+  profileCache = { key, files: [...files], info };
+  return info;
+}
+
+/** Whether a module is in the policy store: true / false / null (can't tell). */
+function moduleLoaded(m) {
+  if (!idx.moduleKinds) return null;
+  if (!idx.isEnabled(m)) return false;
+  const prof = installProfiles();
+  const st = prof && prof.active && prof.separate.has(m) ? prof.active.modules.get(m) : null;
+  if (!st) return true;
+  return st.state === 'installed' ? true : st.state === 'absent' ? false : null;
+}
+
+/** Why a module isn't in the policy store, in words. */
+function notLoadedWhy(m) {
+  if (!idx.isEnabled(m)) return `${m} is off in modules.conf`;
+  const prof = installProfiles();
+  const st = prof && prof.active && prof.active.modules.get(m);
+  return st ? `${m} is packaged on its own (${st.pkg}) and the ${prof.active.name} profile doesn't install it` : `${m} is not in the policy store`;
+}
+
+const droppedCache = new WeakMap(); // file parse -> { key, val }
+function droppedBlocksOf(f) {
+  if (!f || !idx.moduleKinds || !/\.te(\.in)?$/.test(f.path || '') || moduleLoaded(f.module) === false) return [];
+  const prof = installProfiles();
+  const key = `${prof && prof.active ? prof.active.path : ''}`;
+  const hit = droppedCache.get(f);
+  if (hit && hit.key === key && hit.kinds === idx.moduleKinds && hit.defs === idx.defs) return hit.val;
+  const val = require('./diagnostics').droppedOptionalBlocks(idx, f, moduleLoaded);
+  droppedCache.set(f, { key, kinds: idx.moduleKinds, defs: idx.defs, val });
+  return val;
+}
+
+function droppedReason(d) {
+  if (d.parent) return `Dropped when the policy is linked, with the optional_policy block around it (line ${d.parent.l + 1}).`;
+  const parts = d.missing.slice(0, 3).map(x => {
+    const owners = x.modules.map(notLoadedWhy).join('; ');
+    return `\`${x.name}\`${x.via ? ` (required by ${x.via}())` : ''}: ${owners}`;
+  });
+  const more = d.missing.length > 3 ? ` (and ${d.missing.length - 3} more)` : '';
+  return `Dropped when the policy is linked: this optional_policy block needs ${parts.join(', ')}${more}.`;
+}
+
+/** The dropped block whose range holds (line, character), innermost. */
+function droppedBlockAt(f, line, ch) {
+  const inside = (d) => (line > d.l || (line === d.l && ch >= d.c)) && (line < d.endL || (line === d.endL && ch <= d.endC));
+  return droppedBlocksOf(f).filter(inside).sort((a, b) => (b.l - a.l) || (b.c - a.c))[0] || null;
+}
+
+/**
+ * Statements one call compiled to. m4 expands an optional_policy block as a
+ * whole, so the statements of calls inside it sit on the block's first line;
+ * there they are the entries under the one whose `via` is this call (deeper
+ * entries follow it).
+ */
+function expansionOfCall(p, f, call) {
+  const own = expansionAt(p, call.l);
+  if (own === null || own.length) return own;
+  const within = (b) => (call.l > b.l || (call.l === b.l && call.c > b.c)) && (call.l < b.endL || (call.l === b.endL && call.c < b.endC));
+  const blocks = (f.calls || []).filter(b => b.name === 'optional_policy' && within(b));
+  if (!blocks.length) return own;
+  const block = blocks.sort((a, b) => (a.l - b.l) || (a.c - b.c))[0]; // outermost: m4 expands it in one go
+  const entries = expansionAt(p, block.l) || [];
+  const norm = (s) => s.replace(/[\s`']/g, '');
+  const want = norm(`${call.name}(${call.args.join(',')})`);
+  const out = [];
+  let depth = null; // the call's own depth, once found
+  let inCall = false;
+  for (const e of entries) {
+    if (e.via && norm(e.via) === want && (depth === null || e.depth === depth)) { depth = e.depth; inCall = true; out.push(e); continue; }
+    if (inCall && e.depth > depth) { out.push(e); continue; }
+    inCall = false;
+  }
+  return out;
+}
+
+/** Statements the last build compiled for lines l0..l1 (m4 expands optional blocks the linker drops later). */
+function expansionOfLines(p, l0, l1) {
+  const out = new Set();
+  for (let l = l0; l <= l1; l++) {
+    const rules = expansionAt(p, l);
+    if (rules === null) return null;
+    for (const r of rules) out.add(r);
+  }
+  return [...out];
+}
+
+connection.onRequest('selinux/installProfiles', async () => {
+  await indexing;
+  const prof = installProfiles();
+  if (!prof) return { profiles: [], unavailable: treeRoot ? 'No kickstart profiles (kickstart/<name>/<name>.ks) above this policy tree.' : 'Install profiles need a full policy source tree.' };
+  const a = prof.active;
+  return {
+    tree: treeRoot, profiles: prof.profiles.map(p => ({ name: p.name, path: p.path, active: !!a && a.path === p.path })),
+    separate: [...prof.separate].sort(), type: prof.type, makefile: prof.mkPath,
+    active: a && { name: a.name, path: a.path, notes: a.notes,
+      modules: [...a.modules].map(([m, s]) => ({ module: m, ...s, built: idx.isEnabled(m) })).sort((x, y) => x.module.localeCompare(y.module)) },
+  };
+});
+
+connection.onRequest('selinux/selectInstallProfile', async ({ profile }) => {
+  await indexing;
+  const prof = installProfiles();
+  if (!prof) return { error: 'No kickstart profiles found above this policy tree.' };
+  const p = profile ? prof.profiles.find(x => x.name === profile || x.path === profile) : null;
+  if (profile && !p) return { error: `${profile} is not a kickstart profile of this tree.` };
+  settings.installProfiles = { ...(settings.installProfiles || {}), [treeRoot]: p ? p.name : null };
+  publishAll();
+  connection.sendNotification('selinux/inactiveChanged', {});
+  return { ok: true, tree: treeRoot, profile: p ? p.name : null };
 });
 
 // Build settings derived from a Fedora/RHEL selinux-policy.spec, one entry per policy variant.

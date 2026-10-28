@@ -80,7 +80,23 @@
   `domain_use_interactive_fds`, so the wrapper keeps the terminal sshd or
   login hand over (without it the wrapper and what it starts print nothing).
 
+* **Dropped optional blocks are dimmed** (full trees): `optional_policy`
+  blocks that require a type, attribute, role or boolean only modules
+  outside the policy store declare. The linker drops them silently. The
+  hover says what is missing and why, and shows what the block (on
+  `optional_policy`) or a call in it would compile to.
+* **Install profiles** (*SELinux: Select Install Profile…*, CLIP): a
+  kickstart decides which separately packaged policy modules
+  (`selinux-policy-mcs-<module>`) its hosts have. `%include`, the `.tmpl`
+  Mako templates (with `CONFIG_BUILD`'s values) and `@group` lines through
+  comps.xml are followed. Blocks needing a module the profile leaves out are
+  dimmed, and that module gets an info note.
+
 **Fixed**
+
+* "Compiles to" showed nothing for calls inside `optional_policy` blocks:
+  m4 expands the block as a whole, so its statements sit on the block's
+  first line. They are now found by the call they come from.
 
 * Session start checks reused question ids across follow-up batches, so a
   later answer could overwrite an earlier one (no wrong result was seen;
