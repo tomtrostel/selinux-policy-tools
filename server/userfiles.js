@@ -166,7 +166,8 @@ function editUsers(text, model, opts = {}) {
 /**
  * kernel.te with `role R;` among the roles it declares: the users file is compiled into
  * the base module, so every role a gen_user line names must be declared there too (as
- * refpolicy does for staff_r, sysadm_r, …; the role's own module declares it again).
+ * refpolicy does for staff_r, sysadm_r, …; the role's own module then must not declare it
+ * again: semodule/CIL refuses the second declaration, refpolicy writes `#role staff_r;`).
  * Added after the last top-level role declaration; unchanged when already there.
  */
 function editKernelRoles(text, R) {
@@ -192,12 +193,15 @@ function parseSeusers(text) {
 /**
  * seusers with the model's logins: lines for NAME_u that are no longer wanted
  * go, changed ranges are rewritten, new logins are added before __default__.
+ * opts.level (MLS/MCS trees): the range of a login given none. The seusers file is
+ * packaged into base, and hll/pp turns a line without one into `systemlow`, which
+ * semodule/CIL can't resolve (legacy validate doesn't notice).
  */
-function editSeusers(text, model) {
+function editSeusers(text, model, opts = {}) {
   const U = `${model.name}_u`;
   const lines = String(text || '').split('\n');
   const have = parseSeusers(text);
-  const want = (model.logins || []).filter(x => (x.login || '').trim()).map(x => ({ login: x.login.trim(), range: (x.range || '').trim() }));
+  const want = (model.logins || []).filter(x => (x.login || '').trim()).map(x => ({ login: x.login.trim(), range: (x.range || '').trim() || opts.level || '' }));
   const line = (w) => `${w.login}:${U}${w.range ? `:${w.range}` : ''}`;
   const del = new Set();
   for (const h of have.filter(x => x.user === U)) {

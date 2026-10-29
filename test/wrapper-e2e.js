@@ -105,10 +105,10 @@ const sh = (cmd, args, opts = {}) => cp.spawnSync(cmd, args, { encoding: 'utf8',
   // 3. A new module in the tree.
   const prog = (l, stem) => ({ stem, original: l.path, wrapper: path.basename(l.path), copy: `${path.basename(l.path)}.real`, pkg: l.pkg, origType: l.origType, target: l.target,
     roles: l.target ? (l.candidates.find(c => c.domain === l.target).auto.map(a => a.domain)) : [], selfRules: l.target ? l.candidates.find(c => c.domain === l.target).selfRules : [], ifaces: info.defaults.slice() });
-  // The chroot's users: a group mapped to the SELinux user of that role in the tree's seusers.
+  // The chroot's users: a login mapped to the SELinux user of that role in the tree's seusers.
   const seusersP = path.join(ws, 'config', 'appconfig-mcs', 'seusers');
-  fs.appendFileSync(seusersP, `%rousers:${ro.role.replace(/_r$/, '_u')}:s0\n`);
-  const model = { name: 'wrapt', summary: 'Programs the chroot users may run', version: '1.0.0', chroot, likeRoot: true, protectedDir: '/.wrapt', wrapperDir: '/opt/wrapt/bin', role: ro.role, domain: ro.domain, logins: '%rousers',
+  fs.appendFileSync(seusersP, `rouser:${ro.role.replace(/_r$/, '_u')}:s0\n`);
+  const model = { name: 'wrapt', summary: 'Programs the chroot users may run', version: '1.0.0', chroot, likeRoot: true, protectedDir: '/.wrapt', wrapperDir: '/opt/wrapt/bin', role: ro.role, domain: ro.domain, logins: 'rouser',
     programs: [prog(look, 'setfiles'), prog(lookPlain, 'ls')] };
   let plan = await conn.sendRequest('selinux/wrapperPlan', { model, where: info.defaultLayer });
   const kinds = plan.files.map(f => f.kind).sort().join();
@@ -117,7 +117,7 @@ const sh = (cmd, args, opts = {}) => cp.spawnSync(cmd, args, { encoding: 'utf8',
   const subs = plan.files.find(f => f.kind === 'subs');
   check(subs.text.split('\n').includes(`${chroot} /`), 'the chroot is labeled like / (file_contexts.subs_dist)');
   const cf = plan.files.find(f => f.kind === 'checks');
-  check(cf.text.includes(`never ${ro.domain} may { execute read getattr } wrapt_setfiles_real_exec_t wrapt_ls_real_exec_t:file`) && cf.text.includes('never login %rousers reaches setfiles_t except through wrapt_setfiles_t'), 'checks written', cf.text);
+  check(cf.text.includes(`never ${ro.domain} may { execute read getattr } wrapt_setfiles_real_exec_t wrapt_ls_real_exec_t:file`) && cf.text.includes('never login rouser reaches setfiles_t except through wrapt_setfiles_t'), 'checks written', cf.text);
   const taken = await conn.sendRequest('selinux/wrapperPlan', { model: { ...model, protectedDir: '/etc', wrapperDir: '/usr/bin' }, where: info.defaultLayer });
   check(blocking(taken).some(p => /\/etc exists on the host too/.test(p)) && blocking(taken).some(p => /\/usr\/bin\/ls exists on the host too/.test(p)), 'paths the host has are refused (the equivalence would relabel them)', taken.problems);
   await write(plan);

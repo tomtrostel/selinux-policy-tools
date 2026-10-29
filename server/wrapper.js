@@ -265,6 +265,7 @@ function validate(model, ctx, opts = {}) {
   }
   const bad = loginList(model.logins).filter(l => !LOGIN_RE.test(l));
   if (bad.length) P.push(`Logins are Linux login names or %groups: ${bad.join(', ')} isn't one.`);
+  else if (opts.tree && loginList(model.logins).some(l => !/^[a-z_]/.test(l))) P.push(`Note: a tree's build keeps only seusers lines that start with a-z or _ (Rules.modular), so its seusers can't map ${loginList(model.logins).filter(l => !/^[a-z_]/.test(l)).join(', ')} and the login check can't follow them there; name logins the tree maps, or map these on the host with semanage login.`);
   else if (!loginList(model.logins).length) P.push('Note: give the Linux logins of the chroot\'s users (e.g. %chrootusers) to check after every build that they reach the programs\' domains only through the wrappers.');
   const progs = model.programs || [];
   if (!progs.length) P.push('Add at least one program to wrap.');

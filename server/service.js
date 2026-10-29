@@ -413,6 +413,26 @@ const USER_KINDS = [
     'A role for one administrative job (like webadm_r or logadm_r): no login of its own; users with the role switch to it with newrole or sudo -r from their login role, and it administers only what you add.'],
 ];
 const USER_KIND = Object.fromEntries(USER_KINDS.map(([id, label, templates, login, help]) => [id, { id, label, templates, login, help }]));
+
+/**
+ * The userdomain template a user model is written with. An existing module keeps the one it
+ * has (declaredBy) while its kind stays; a new one, or one whose kind changed, gets the kind's
+ * first the tree has. When base declares the role (a tree: kernel.te, for the users file),
+ * templates that declare `role $1_r;` themselves (RHEL's userdom_confined_admin_template) come
+ * last: semodule/CIL refuses the second declaration.
+ */
+// Roles libsepol's module_to_cil (hll/pp) declares only when it converts the base module, ignoring
+// their declarations in other modules: refpolicy declared them in both for a long time.
+const PP_BASE_ROLES = new Set(['user_r', 'staff_r', 'sysadm_r', 'system_r', 'unconfined_r']);
+
+function userTemplate(model, ctx) {
+  const k = USER_KIND[model.user.kind] || USER_KIND.unpriv;
+  if (model.declaredBy && k.templates.includes(model.declaredBy.name)) return model.declaredBy.name;
+  const R = `${model.name}_r`;
+  const own = (t) => !!(ctx.templateDeclaresRole && ctx.templateDeclaresRole(t));
+  const alts = ctx.roleInBase && ctx.roleInBase(R) ? [...k.templates.filter(t => !own(t)), ...k.templates.filter(own)] : k.templates;
+  return pick(ctx, alts) || k.templates[0];
+}
 const USER_TEMPLATES = USER_KINDS.flatMap(k => k[2]);
 
 /**
@@ -640,14 +660,13 @@ function unitsOf(model, ctx) {
   /** A user's role and domain (the kind's template), its role calls and role changes. */
   function userUnits() {
     const { R } = names(model);
-    const k = USER_KIND[model.user.kind] || USER_KIND.unpriv;
-    // An existing module keeps the template it was written with (declaredBy) while its kind stays;
-    // a new one, or one whose kind changed, gets the kind's.
-    const keep = model.declaredBy && k.templates.includes(model.declaredBy.name);
-    const tpl = keep ? model.declaredBy.name : pick(ctx, k.templates) || k.templates[0];
+    const tpl = userTemplate(model, ctx);
     const args = model.declaredBy ? model.declaredBy.args : [model.name];
+    // `role R;` only when neither a base module (in a tree kernel.te: the users file is compiled into
+    // base) nor the template declares R: semodule/CIL refuses a second declaration (refpolicy: `#role staff_r;`).
+    const decl = !(ctx.roleInBase && ctx.roleInBase(R)) && !(ctx.templateDeclaresRole && ctx.templateDeclaresRole(tpl));
     add('domain', { R, tpl, args }, [
-      { key: `roledecl:${R}`, kind: 'roledecl', name: R, text: `role ${R};`, section: 'decl' },
+      ...(decl ? [{ key: `roledecl:${R}`, kind: 'roledecl', name: R, text: `role ${R};`, section: 'decl' }] : []),
       call(tpl, args, 'decl')].map(s => (s.opt ? { ...s, opt: false } : s)));
     for (const n of model.roleCalls || []) {
       const args = roleCallArgs(n, model, ctx);
@@ -1516,6 +1535,11 @@ function editTe(text, rec, model, ctx) {
       inPlace.add('domain');
     }
   }
+  // A role base declares as well (kernel.te): this module's own `role R;` goes, or semodule/CIL refuses the policy.
+  // Not for the roles libsepol's pp→CIL conversion declares only from base anyway (RHEL's staff.te keeps its line).
+  if (model.user && cur.has('domain') && !cur.get('domain').stmts.some(s => s.kind === 'roledecl') && !PP_BASE_ROLES.has(names(model).R)) {
+    for (const s of byKey.get(`roledecl:${names(model).R}`) || []) if (s.top) delStmts.add(s);
+  }
   for (const [k, u] of old) {
     const n = cur.get(k);
     if (inPlace.has(k) || (n && n.sig === u.sig)) continue;
@@ -1939,9 +1963,14 @@ function validateUser(model, ctx, opts) {
   else if (!(model.declaredBy && k.templates.includes(model.declaredBy.name)) && !pick(ctx, k.templates)) out.push(`This policy has no ${k.templates.join(' or ')}, so it can't declare a user of this kind; choose another kind.`);
   else {
     // A template that needs a type only modules turned off declare can't link.
-    const tpl = model.declaredBy && k.templates.includes(model.declaredBy.name) ? model.declaredBy.name : pick(ctx, k.templates);
+    const tpl = userTemplate(model, ctx);
     const why = blockedText(ctx.linkBlockers ? ctx.linkBlockers(tpl) : []);
     if (why) out.push(model.user.kind === was ? `Note: ${tpl} ${why}, so the tree won't link; choose another kind.` : `${tpl} ${why}, so the tree wouldn't link; choose another kind.`);
+    // Only when the kind has no template that leaves the role to base (userTemplate tries those first).
+    else if (ctx.roleInBase && ctx.roleInBase(R) && ctx.templateDeclaresRole && ctx.templateDeclaresRole(tpl)) {
+      const what = `${tpl} declares ${R} itself, and so does the tree's base (kernel.te, for the users file): semodule/CIL refuses the second declaration (legacy make validate doesn't notice)`;
+      out.push(model.user.kind === was ? `Note: ${what}.` : `${what}; choose another kind.`);
+    }
   }
   if (was && k && model.user.kind !== was) {
     const before = USER_KIND[was];
@@ -1961,6 +1990,8 @@ function validateUser(model, ctx, opts) {
     const n = (l.login || '').trim();
     if (!n) continue;
     if (!/^(%?[a-z_][a-z0-9_.-]*\$?|__default__)$/i.test(n)) out.push(`"${n}" isn't a Linux login name (or %group, or __default__).`);
+    // refpolicy packages only seusers lines matching ^[a-z_] into base (Rules.modular), so a tree can't map these.
+    else if (!ctx.standalone && !/^[a-z_]/.test(n)) out.push(`Login ${n} can't be mapped in the tree: its build keeps only seusers lines that start with a-z or _ (Rules.modular greps '^[a-z_]'), so the line would never be installed. Leave it out here and map it on the host after installing: semanage login -a -s ${model.name}_u ${n}`);
     if (seen.has(n)) out.push(`Login ${n} is listed twice.`);
     seen.add(n);
     if (l.range && !/^s\d+(:[\w.,]+)?(\s*-\s*(s\d+(:[\w.,]+)?|\w+))?$/.test(l.range.trim())) out.push(`Range "${l.range}" for ${n} isn't an MLS/MCS range like s0 or s0-s0:c0.c1023.`);
@@ -2095,6 +2126,6 @@ function catalog(ctx) {
 module.exports = {
   FILE_KINDS, ACCESS_GROUPS, SELF, CAPS, PROVIDES, HELP,
   unitsOf, recognize, daemonDomains, plan, validate, renderTe, renderIf, renderFc, lineDiff, newModel, catalog,
-  USER_KINDS, USER_TEMPLATES, newUserModel, userCatalog, roleCallArgs, names, userDomainOf: (text) => userDomain(scanTe(text)),
+  USER_KINDS, USER_TEMPLATES, newUserModel, userCatalog, userTemplate, roleCallArgs, names, userDomainOf: (text) => userDomain(scanTe(text)),
   fcFromPath, pathFromFc, scanTe, fileType, editCorenet, helperNames, ENTRY_RE, ENTRY_CALLS, STARTS, makeStartsVia, webPatterns, webTypes, WEB_TEMPLATE,
 };

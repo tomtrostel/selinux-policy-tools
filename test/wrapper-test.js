@@ -81,6 +81,9 @@ v = W.validate({ ...model, programs: [] , role: '' }, ctx, opts);
 check(v.some(x => /Pick the user/.test(x)) && v.some(x => /at least one program/.test(x)), 'no user, no programs');
 check(W.validate({ ...model, programs: [a] }, ctx, { ...opts, hostExists: () => false }).length === 0, 'a complete model passes', W.validate({ ...model, programs: [a] }, ctx, { ...opts, hostExists: () => false }));
 check(W.validate({ ...model, programs: [a], logins: '' }, ctx, { ...opts, hostExists: () => false }).some(x => /^Note: give the Linux logins/.test(x)) && W.validate({ ...model, programs: [a], logins: 'bad login!' }, ctx, opts).some(x => /isn't one/.test(x)), 'logins: a note without them; bad names refused');
+const tv = (logins, tree) => W.validate({ ...model, programs: [a], logins }, ctx, { ...opts, tree, hostExists: () => false });
+check(tv('%ro rouser', true).some(x => /^Note: a tree's build keeps only seusers lines .* can't map %ro and/.test(x)) && !tv('%ro', false).some(x => /tree's build/.test(x)) && !tv('rouser', true).some(x => /tree's build/.test(x)),
+  'logins: a %group in a tree gets a note (its build drops the line), not standalone');
 
 /* ---------- checks ---------- */
 

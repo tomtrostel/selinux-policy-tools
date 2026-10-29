@@ -1127,7 +1127,8 @@ with a live preview of every file it writes:
   changed: its template call is replaced on its own line, and the role,
   logins and everything else stay.
 * **Logins**: Linux logins, `%group`s or `__default__` with an optional
-  range (seusers; a login mapped to another user is refused), and the **ways
+  range (seusers; a login mapped to another user is refused; in an MLS/MCS
+  tree a login without a range gets the user's default level), and the **ways
   in** (ssh, console, graphical login, cron jobs, rlogin): its own
   `NAME_u_default_contexts` lists only those, so the others aren't offered
   to it. Ticking cron jobs adds `cron_role`.
@@ -1930,10 +1931,14 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   tree build: `__default__ → staff_u` noted for its admin role, `staff_u`
   opens at its `gen_user` line, no host accounts. The webview is tested
   against a fake DOM.
-* User editor (test/user-e2e.js on CLIP and on RHEL 9 with its spec): a new
+* User editor (test/user-e2e.js on CLIP 8 and 9, and on RHEL 9 and 10 with
+  their specs): a new
   login user (ssh and console, sudo and the ssh client, may switch to
-  sysadm_r, logins `alice` and `%opsgroup`) and a confined log-admin role
-  entered from staff_r that staff_u gets; the tree builds and links, and
+  sysadm_r, logins `alice` and `bob`; `%opsgroup` refused in the tree) and a confined log-admin role
+  entered from staff_r that staff_u gets; the tree builds and links (also
+  with semodule/CIL, as installed policies are; a module declaring a role
+  `kernel.te` declares too is fixed by opening it, stock RHEL `staff.te`
+  left alone), and
   the build's logins report shows the user with its roles and logins, ssh
   landing in its domain, sysadm_t reached through newrole, and staff_u
   reaching the new role's domain. On RHEL the gen_user lines go into the
@@ -2135,6 +2140,30 @@ arguments (2026-10-22).
   `unconfined_u`. The context files for programs CLIP leaves out
   (`lxc_contexts`, `virtual_*_context`, `userhelper_context`) and two D-Bus
   names of services it doesn't have (tuned, timedated) are never read.
+
+### What semodule/CIL refuses that make validate accepts
+
+Trees are checked with refpolicy's `make validate` (legacy link and expand),
+but installed policies are linked by semodule through CIL, which is stricter.
+Found while removing a user written by the user editor (fixed in the editor):
+
+* **A role declared in base and again in its module.** The users file is
+  compiled into base, so a role with a `gen_user` line is declared in
+  `kernel.te`; `role ro_user_r;` in `ro_user.te` as well gives "Re-declaration
+  of role". Stock refpolicy comments these out (`#role staff_r;`). libsepol's
+  pp→CIL conversion skips module declarations of `user_r`, `staff_r`,
+  `sysadm_r`, `system_r` and `unconfined_r` only, which is why RHEL's
+  `staff.te` gets away with it. RHEL's `userdom_confined_admin_template`
+  declares `role $1_r;` itself, so a role it makes can't also be named in the
+  users file; the editor uses `userdom_base_user_template` then.
+* **A seusers line without a range** in an MLS/MCS tree becomes
+  `(selinuxuser alice opsusr_u (systemlow systemlow))`, and refpolicy's CIL
+  has no `systemlow`.
+* **`%group` lines in a tree's seusers never install.** `Rules.modular`
+  packages only lines matching `^[a-z_]` into base, in legacy builds too, so
+  `%wheel:staff_u:s0` in `config/appconfig-*/seusers` maps nobody. Map
+  groups on the host with `semanage login -a -s USER %group`. The login
+  reports and checks now read the tree's seusers the same way.
 
 ## Limitations
 

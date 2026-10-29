@@ -37,6 +37,31 @@ check(/optional_policy\(`\n\tsudo_role_template/.test(p.te) && !/optional_policy
 check(/interface\(`ops_role_change',`[\s\S]*role ops_r;[\s\S]*allow \$1 ops_r;/.test(p.if) && p.fc === '', '.if: ops_role_change; no file contexts');
 p = S.plan(m, fed, null);
 check(/sudo_role_template\(ops, ops_r, ops_t\)/.test(p.te) && /mozilla_role\(ops_r, ops_t\)/.test(p.te) && /sysadm_role_change\(ops_r\)/.test(p.te), 'Fedora role calls: (prefix, role, domain), (role, domain)');
+// In a tree kernel.te declares the role (the users file is in base): the module must not declare it again (semodule/CIL refuses it).
+const inBase = { ...up, roleInBase: () => true };
+p = S.plan(m, inBase, null);
+check(!/^role ops_r;/m.test(p.te) && /^userdom_unpriv_user_template\(ops\)$/m.test(p.te), 'tree: the role declared by base is not declared in the module', p.te);
+const dup = 'policy_module(ops, 1.0.0)\n\n########################################\n#\n# Declarations\n#\n\nrole ops_r;\nuserdom_unpriv_user_template(ops)\n\n########################################\n#\n# ops local policy\n#\n\nallow ops_t self:capability kill;\n';
+const duprec = S.recognize({ te: dup, if: '', fc: '' }, inBase, { user: true, module: 'ops' });
+check(duprec.model && duprec.model.user.kind === 'unpriv', 'a module declaring a role base declares too is read back', duprec.error);
+const dupp = S.plan(duprec.model, inBase, { te: dup, if: '', fc: '' }, null);
+check(dupp.te === dup.replace('role ops_r;\n', ''), 'opened unchanged: only its own `role ops_r;` goes', dupp.te);
+check(S.plan(duprec.model, inBase, { te: dupp.te, if: '', fc: '' }, null).te === dupp.te, 'planned again: no further change');
+check(S.plan(duprec.model, up, { te: dup, if: '', fc: '' }, null).te === dup, 'standalone (no base declaration): the module keeps declaring it');
+// pp declares staff_r & co. only from base: RHEL's staff.te declares it too and links, so it stays.
+const stf = dup.replace(/ops/g, 'staff');
+const stfrec = S.recognize({ te: stf, if: '', fc: '' }, inBase, { user: true, module: 'staff' });
+check(stfrec.model && S.plan(stfrec.model, inBase, { te: stf, if: '', fc: '' }, null).te === stf, 'staff.te declaring staff_r like kernel.te: left as it is (CIL allows it for that role)');
+// RHEL's userdom_confined_admin_template declares `role $1_r;` itself: with base declaring the role, the other confined template.
+const rhelc = { ...up, has: (n) => has.has(n) || n === 'userdom_confined_admin_template', templateDeclaresRole: (t) => t === 'userdom_confined_admin_template' };
+const cm = { ...S.newUserModel(), name: 'logops', summary: 'Log operators', user: { kind: 'confined' }, ways: [] };
+check(S.userTemplate(cm, rhelc) === 'userdom_confined_admin_template' && S.userTemplate(cm, { ...rhelc, roleInBase: () => true }) === 'userdom_base_user_template',
+  'confined kind: RHEL\'s template standalone, the one that leaves the role to base in a tree');
+const cte = S.plan(cm, rhelc, null).te;
+check(/^userdom_confined_admin_template\(logops\)$/m.test(cte) && !/^role logops_r;/m.test(cte), 'standalone: the template declares the role, the module doesn\'t again', cte);
+const onlyOwn = { ...rhelc, has: (n) => n === 'userdom_confined_admin_template' || has.has(n) && n !== 'userdom_base_user_template', roleInBase: () => true };
+check(S.validate(cm, onlyOwn, { isNew: true }).some(x => /^userdom_confined_admin_template declares logops_r itself, and so does the tree's base .*choose another kind\.$/.test(x)),
+  'a tree whose only confined template declares the role: refused', S.validate(cm, onlyOwn, { isNew: true }));
 /* ---------- an existing user's kind changed; kinds that can't link ---------- */
 
 // A tree where the X kind's template needs xdm_t and the xserver module is off (CLIP).
@@ -85,6 +110,10 @@ check(/gen_user\(ops_u, user, ops_r sysadm_r, s0, s0 - mls_systemhigh, mcs_allca
 const SE = 'root:unconfined_u:s0-s0:c0.c1023\nbob:ops_u:s0\nold:ops_u\n__default__:unconfined_u:s0-s0:c0.c1023\n';
 const se = F.editSeusers(SE, { ...m, logins: [{ login: 'alice', range: '' }, { login: 'bob', range: 's0-s0:c0.c5' }] });
 check(se === 'root:unconfined_u:s0-s0:c0.c1023\nbob:ops_u:s0-s0:c0.c5\nalice:ops_u\n__default__:unconfined_u:s0-s0:c0.c1023\n', 'seusers: changed range rewritten, removed login gone, new one before __default__', se);
+// MLS/MCS trees: a login without a range gets the default level (hll/pp makes `systemlow` of none, which CIL can't resolve).
+const sel = F.editSeusers(SE, { ...m, logins: [{ login: 'alice', range: '' }, { login: 'bob', range: 's0-s0:c0.c5' }, { login: 'old', range: '' }] }, { level: 's0' });
+check(sel === 'root:unconfined_u:s0-s0:c0.c1023\nbob:ops_u:s0-s0:c0.c5\nold:ops_u:s0\nalice:ops_u:s0\n__default__:unconfined_u:s0-s0:c0.c1023\n', 'seusers in an MLS/MCS tree: new and range-less lines get the default level', sel);
+check(F.editSeusers(sel, { ...m, logins: [{ login: 'bob', range: 's0-s0:c0.c5' }, { login: 'old', range: 's0' }, { login: 'alice', range: 's0' }] }, { level: 's0' }) === sel, 'seusers: read back and planned again, no change');
 const ct = F.contextsText({ ...m, roleCalls: ['sudo_role_template', 'su_role_template'], ways: ['ssh', 'cron'] }, { typeExists: (t) => t !== 'sshd_session_t' });
 check(ct === 'system_r:sshd_t:s0\t\tops_r:ops_t:s0\nsystem_r:crond_t:s0\t\tops_r:ops_t:s0\nops_r:ops_sudo_t:s0\t\tops_r:ops_t:s0 sysadm_r:sysadm_t:s0\nops_r:ops_su_t:s0\t\tops_r:ops_t:s0 sysadm_r:sysadm_t:s0\n', 'contexts file: ways in, then after sudo and su', ct);
 const K = 'policy_module(kernel)\n\nrole system_r;\nrole sysadm_r;\n\nifdef(`enable_mls\',`\n\trole secadm_r;\n\')\n';

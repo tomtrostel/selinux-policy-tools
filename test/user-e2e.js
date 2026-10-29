@@ -12,7 +12,7 @@ const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
-const { detectToolchain } = require('../server/build');
+const { detectToolchain, cilBuild } = require('../server/build');
 const { clipArgs } = require('./clip-args');
 
 const tc = detectToolchain(null);
@@ -86,14 +86,17 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
 
   // 2. A new login user: ssh and console, sudo and the ssh client, may switch to sysadm_r.
   const m = info.model;
-  Object.assign(m, { name: 'opsusr', summary: 'Operators', logins: [{ login: 'alice', range: '' }, { login: '%opsgroup', range: '' }],
+  Object.assign(m, { name: 'opsusr', summary: 'Operators', logins: [{ login: 'alice', range: '' }, { login: 'bob', range: '' }],
     roleCalls: ['sudo_role_template', 'ssh_role_template'], switchTo: ['sysadm_r'], extra: ['logging_send_syslog_msg'] });
   let plan = await conn.sendRequest('selinux/userPlan', { model: m });
   check(!blocking(plan).length, `plan: ${plan.files.map(f => `${path.basename(f.path)}${f.exists ? ' (edit)' : ' (new)'}`).join(', ')}`, plan.problems);
   const F = (k) => plan.files.find(f => f.kind === k);
-  check(F('te') && /^role opsusr_r;$/m.test(F('te').text) && new RegExp(`^${info.catalog.kinds.find(k => k.id === 'unpriv').template}\\(opsusr\\)$`, 'm').test(F('te').text), '.te declares the role and calls the unpriv template');
+  check(F('te') && !/^role opsusr_r;$/m.test(F('te').text) && new RegExp(`^${info.catalog.kinds.find(k => k.id === 'unpriv').template}\\(opsusr\\)$`, 'm').test(F('te').text), '.te calls the unpriv template and leaves the role to kernel.te');
+  check(F('kernel') && diffOf(F('kernel')).join('|') === '+ role opsusr_r;', 'kernel.te declares the role (the users file is in base)', F('kernel') && diffOf(F('kernel')));
   check(F('users') && diffOf(F('users')).some(l => /^\+ gen_user\(opsusr_u, \w+, opsusr_r sysadm_r, s0, s0\)$/.test(l)), `users file gets the gen_user line (${F('users') && path.relative(ws, F('users').path)})`, F('users') && diffOf(F('users')));
-  check(F('seusers') && diffOf(F('seusers')).join('|') === '+ alice:opsusr_u|+ %opsgroup:opsusr_u', 'seusers gets alice and %opsgroup, before __default__', F('seusers') && diffOf(F('seusers')));
+  check(F('seusers') && diffOf(F('seusers')).join('|') === '+ alice:opsusr_u:s0|+ bob:opsusr_u:s0', 'seusers gets alice and bob at the default level, before __default__', F('seusers') && diffOf(F('seusers')));
+  const grp = await conn.sendRequest('selinux/userPlan', { model: { ...m, logins: [{ login: '%opsgroup', range: '' }] } });
+  check(blocking(grp).some(p => /^Login %opsgroup can't be mapped in the tree: .*semanage login -a -s opsusr_u %opsgroup$/.test(p)), 'a %group login is refused in the tree (refpolicy drops the line), semanage suggested', grp.problems);
   check(F('contexts') && /^system_r:sshd_t:s0\t\topsusr_r:opsusr_t:s0$/m.test(F('contexts').text) && /^opsusr_r:opsusr_sudo_t:s0\t\topsusr_r:opsusr_t:s0 sysadm_r:sysadm_t:s0$/m.test(F('contexts').text),
     'its contexts file: ssh lands in opsusr_t; after sudo, its own context or sysadm', F('contexts') && F('contexts').text);
   check(F('conf') && /^opsusr = module$/m.test(F('conf').text), 'modules.conf gets "opsusr = module"');
@@ -119,11 +122,39 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
   const te = plan.files.find(f => f.kind === 'te').path;
   const r = await conn.sendRequest('selinux/build', { uri: uri(te) });
   check(r.ok && r.validated, `tree with both users builds and links (${(r.ms / 1000).toFixed(1)} s)`, { log: r.log && r.log.slice(-2500), errors: errors() });
-  const rep = await conn.sendRequest('selinux/logins', { against: 'build' });
+  // Installed policies are linked by semodule/CIL, which refuses a role declared twice (legacy validate doesn't).
+  // Modules written before that was known declare a role kernel.te declares too (opsusr made so here; ro_user in
+  // a CLIP clone): opened in the editor unchanged, only that line goes.
+  const kroles = new Set([...fs.readFileSync(path.join(ws, 'policy/modules/kernel/kernel.te'), 'utf8').matchAll(/^role (\w+);/gm)].map(x => x[1]));
+  fs.writeFileSync(te, fs.readFileSync(te, 'utf8').replace(/^(userdom_\w+_template\(opsusr\))$/m, 'role opsusr_r;\n$1'));
+  await write({ files: [] });
+  let fixedRoles = 0;
+  for (const u of (await conn.sendRequest('selinux/userList')).modules.filter(x => !x.standalone)) {
+    const ute = cp.execFileSync('find', [path.join(ws, 'policy/modules'), '-name', `${u.module}.te`], { encoding: 'utf8' }).trim().split('\n')[0];
+    const R = `${u.stem}_r`;
+    if (!ute || !kroles.has(R) || !new RegExp(`^role ${R};$`, 'm').test(readSource0(ute))) continue;
+    const ui = await conn.sendRequest('selinux/userInfo', { module: u.module });
+    const up = await conn.sendRequest('selinux/userPlan', { model: ui.model, module: u.module });
+    const d = up.files.map(f => `${path.basename(f.path)}: ${diffOf(f).join('|')}`);
+    // pp declares these only from base, whatever other modules say (RHEL's staff.te declares staff_r too).
+    if (['user_r', 'staff_r', 'sysadm_r', 'system_r', 'unconfined_r'].includes(R)) { check(!up.files.length, `${u.module}.te declares ${R} like kernel.te, which CIL allows for it: left as it is`, d); continue; }
+    check(d.join(' ; ') === `${u.module}.te: - role ${R};`, `${u.module}.te declares ${R} like kernel.te: opened unchanged, only that line goes`, { problems: up.problems, d });
+    await write(up);
+    fixedRoles++;
+  }
+  check(fixedRoles >= 1, `${fixedRoles} module(s) with a duplicate role declaration fixed`);
+  const rf = await conn.sendRequest('selinux/build', { uri: uri(te) });
+  check(rf.ok && rf.validated, 'rebuilt after the fixes', { log: rf.log && rf.log.slice(-1500), errors: errors() });
+  const cil = await cilBuild({ workDir: rf.workDir }, { name: 'usere2e' });
+  const seuserLines = () => { try { return cp.execFileSync('/usr/libexec/selinux/hll/pp', [path.join(rf.workDir, 'base.pp')], { encoding: 'utf8', maxBuffer: 256 << 20 }).split('\n').filter(l => /^\(selinuxuser/.test(l)).join('\n'); } catch (e) { return String(e.message); } };
+  check(cil.ok, `the same packages link with semodule/CIL too (${cil.packages} packages, ${(cil.ms / 1000).toFixed(1)} s)`, cil.ok ? '' : `${(cil.log || '').slice(-1500)}\nbase's seusers:\n${seuserLines()}`);
+  const su = seuserLines();
+  check(/^\(selinuxuser alice opsusr_u \(\(s0\) \(s0\)\)\)$/m.test(su) && /^\(selinuxuser bob opsusr_u /m.test(su), 'base keeps both logins at their level', su);
+  const rep =await conn.sendRequest('selinux/logins', { against: 'build' });
   const U = (n) => (rep.users || []).find(u => u.name === n);
   const ops = U('opsusr_u');
   check(ops && ops.roles.join(' ') === 'opsusr_r sysadm_r', `opsusr_u in the built policy with roles ${ops && ops.roles.join(' ')}`, rep.error || (rep.users || []).map(u => u.name));
-  check(ops && ops.logins.map(l => (l.group ? `%${l.login}` : l.login)).sort().join() === '%opsgroup,alice', 'its logins: alice, %opsgroup');
+  check(ops && ops.logins.map(l => (l.group ? `%${l.login}` : l.login)).sort().join() === 'alice,bob', 'its logins: alice, bob');
   const ssh = ops && ops.entries.find(e => e.source === 'sshd_t');
   check(ssh && ssh.contexts.length === 1 && ssh.contexts[0].type === 'opsusr_t', 'ssh lands in opsusr_t (its own contexts file)', ops && ops.entries);
   const reach = ops && await conn.sendRequest('selinux/loginReach', { against: 'build', user: 'opsusr_u', starts: [{ role: 'opsusr_r', type: 'opsusr_t' }] });
@@ -167,7 +198,8 @@ const diffOf = (f) => f.diff.filter(x => x[0] !== ' ').map(x => x.join(' '));
   // X template can't link (CLIP: xserver off, so xdm_t is missing) is switched to the terminal kind.
   const kx = info.catalog.kinds.find(k => k.id === 'restricted_x'), kr = info.catalog.kinds.find(k => k.id === 'restricted');
   // xserver is built when modules.conf or the build's APPS_MODS (CLIP's make arguments) turn it on.
-  const confOn = /^xserver = (base|module)$/m.test(readSource0(path.join(ws, 'policy', 'modules.conf')));
+  // RHEL 10's tree has no policy/modules.conf: the spec builds from dist/<variant>/modules.conf.
+  const confOn = [path.join(ws, 'policy', 'modules.conf'), path.join(ws, 'dist', variant, 'modules.conf')].some(p => /^xserver = (base|module)$/m.test(readSource0(p)));
   const appsOn = (specArg ? [] : CLIP_ARGS).some(a => /^APPS_MODS=/.test(a) && a.split(/[=\s]+/).includes('xserver'));
   const xOff = !confOn && !appsOn;
   if (kx && kr) {

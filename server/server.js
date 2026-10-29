@@ -2202,7 +2202,15 @@ function userCtx(standalone = false) {
     }
     return out;
   };
-  return { ...base, ...extra, standalone: sa || usingDevel, linkBlockers, roleExists: (r) => extra.roleExists(r) || (idx.decls.get(r) || []).some(d => d.kind === 'role') };
+  // In a tree: a role a base module declares (kernel.te, for the users file); the user's module then doesn't.
+  const roleInBase = (r) => !sa && !usingDevel && (idx.decls.get(r) || []).some(d => {
+    if (d.kind !== 'role' || !/\.te$/.test(d.path)) return false;
+    const f = idx.files.get(d.path);
+    return !!(f && f.module && (f.module === 'kernel' || (idx.moduleKinds && idx.moduleKinds.get(f.module) === 'base')));
+  });
+  // A userdomain template whose body declares `role $1_r;` itself (RHEL's userdom_confined_admin_template).
+  const templateDeclaresRole = (n) => (((src.defs.get(n) || [])[0] || {}).declPatterns || []).some(p => p.kind === 'role' && p.pattern === '$1_r');
+  return { ...base, ...extra, standalone: sa || usingDevel, linkBlockers, roleInBase, templateDeclaresRole, roleExists: (r) => extra.roleExists(r) || (idx.decls.get(r) || []).some(d => d.kind === 'role') };
 }
 
 /** The tree's login configuration files for a user: seusers and <user>_default_contexts in config/appconfig-<TYPE>. */
@@ -2375,7 +2383,7 @@ function existingUserPlan(model, m, ctx) {
     if (!prev.genUser.exists && (fields || (model.logins || []).some(l => (l.login || '').trim()))) problems.push(`${U} has no gen_user line in ${rel(P.users)}, so it has no levels or logins of its own; users get ${m.stem}_r through their own lines (below).`);
     if (prev.genUser.exists && !prev.genUser.simple && (switched || fields)) problems.push(`${U}'s gen_user line in ${rel(P.users)} is written with ifdef() or more than once, so the editor doesn't rewrite it; change its roles or levels there by hand.`);
     if (t.users != null) push(P.users, 'users', t.users, userfiles.editUsers(t.users, model, { prev, prevGrant: prev.grantUsers, prefix: prev.prefix }));
-    if (t.seusers != null && prev.genUser.exists) push(P.seusers, 'seusers', t.seusers, userfiles.editSeusers(t.seusers, model));
+    if (t.seusers != null && prev.genUser.exists) push(P.seusers, 'seusers', t.seusers, userfiles.editSeusers(t.seusers, model, { level: seusersLevel(model) }));
   }
   const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
   const ctxNew = userfiles.editContexts(t.contexts, model, prev, { typeExists: ctx.typeExists, level });
@@ -2478,6 +2486,11 @@ function userLevelsInfo(model, standalone) {
   return out;
 }
 
+/** The range a tree's seusers line gets when its login has none: the user's default level in an MLS/MCS tree (none otherwise). */
+function seusersLevel(model) {
+  return levelLimits() ? ((model.level || '').trim() || 's0') : '';
+}
+
 /** The files a user model writes: { problems, files } (new in the tree, new standalone, or edits of an existing user). */
 async function userPlan({ model, module: mod, standalone, where, license }) {
   if (!treeRoot && !usingDevel) return { problems: ['Open a policy source tree, or a folder for standalone modules, first.'], files: [] };
@@ -2487,8 +2500,10 @@ async function userPlan({ model, module: mod, standalone, where, license }) {
     return existingUserPlan(model, m, userCtx(m.standalone));
   }
   const sa = usingDevel || (!!treeRoot && !!develInterfaces() && !!standalone);
-  const ctx = userCtx(sa);
-  if (sa) return standaloneUserPlan(model, ctx, where, license);
+  const ctx0 = userCtx(sa);
+  if (sa) return standaloneUserPlan(model, ctx0, where, license);
+  // kernel.te gets `role R;` below, so the new module must not declare it too.
+  const ctx = { ...ctx0, roleInBase: () => true };
   const U = `${model.name}_u`;
   const cp = userConfigPaths(model.name);
   const seText = readSource(cp.seusers);
@@ -2512,7 +2527,7 @@ async function userPlan({ model, module: mod, standalone, where, license }) {
   if (kNew == null) problems.push('No role declarations found in kernel.te: declare the role in a base module yourself, or the gen_user line won’t compile.');
   else push(kmod.files.te, 'kernel', kText, kNew);
   if (seText == null) { if ((model.logins || []).some(l => (l.login || '').trim())) problems.push(`No seusers file at ${rel(cp.seusers)}: map the logins with semanage login after installing.`); }
-  else push(cp.seusers, 'seusers', seText, userfiles.editSeusers(seText, model));
+  else push(cp.seusers, 'seusers', seText, userfiles.editSeusers(seText, model, { level: seusersLevel(model) }));
   const level = (/^s\d+/.exec(model.level || 's0') || ['s0'])[0];
   const ctxText = userfiles.contextsText(model, { typeExists: ctx.typeExists, level });
   const oldCtx = readSource(cp.contexts);
@@ -2768,9 +2783,13 @@ async function loginChecks(checks, bin) {
       } else {
         const { lines, missing } = logins.resolveLogins(c.logins, seusers);
         if (missing.length) {
-          const groups = missing.filter(n => n.startsWith('%')), names = missing.filter(n => !n.startsWith('%'));
+          // Lines the tree's seusers has but its build drops (loginConfig blanks them).
+          const raw = cfg.host ? [] : logins.parseSeusers(readSource(cfg.seusers) || '');
+          const dropped = missing.filter(n => raw.some(x => (x.group ? `%${x.login}` : x.login) === n));
+          const groups = missing.filter(n => n.startsWith('%') && !dropped.includes(n)), names = missing.filter(n => !n.startsWith('%') && !dropped.includes(n));
           res.ok = false;
-          res.error = [groups.length ? `There is no seusers line for ${groups.join(', ')}.` : '', names.length ? `No seusers line applies to ${names.join(', ')} (there is no __default__ line).` : ''].filter(Boolean).join(' ');
+          res.error = [dropped.length ? `The seusers line for ${dropped.join(', ')} never reaches the policy: the tree's build keeps only lines that start with a-z or _ (Rules.modular greps '^[a-z_]'); map it on the host with semanage login, or check a login the tree maps.` : '',
+            groups.length ? `There is no seusers line for ${groups.join(', ')}.` : '', names.length ? `No seusers line applies to ${names.join(', ')} (there is no __default__ line).` : ''].filter(Boolean).join(' ');
           out.push(res);
           continue;
         }
@@ -3983,8 +4002,12 @@ function loginConfig(pol) {
   const read = (p) => { const t = readSource(p); return t == null ? null : t; };
   if (pol.build && !usingDevel && treeRoot) {
     const dir = appconfigDir(treeRoot);
-    return { dir, host: false, seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'default_contexts'), userFile: (u) => path.join(dir, `${u}_default_contexts`),
-      failsafe: path.join(dir, 'failsafe_context'), read };
+    const seusers = path.join(dir, 'seusers');
+    // The build packages only seusers lines matching ^[a-z_] (Rules.modular), so %group lines and the like never
+    // reach the policy: blanked here (line numbers kept) so reports and checks see what gets installed.
+    const readTree = (p) => { const t = read(p); return t == null || p !== seusers ? t : t.split('\n').map(l => (/^[a-z_]/.test(l) || /^\s*(#|$)/.test(l) ? l : '')).join('\n'); };
+    return { dir, host: false, seusers, defaults: path.join(dir, 'default_contexts'), userFile: (u) => path.join(dir, `${u}_default_contexts`),
+      failsafe: path.join(dir, 'failsafe_context'), read: readTree };
   }
   const name = pol.name || (build.installedPolicies().find(p => p.active) || {}).name;
   if (!name) return null;
@@ -5265,7 +5288,7 @@ async function wrapperPlan({ model, module: mod, standalone, where, license }) {
     roleExists = (r) => (idx.decls.get(r) || []).some(d => d.kind === 'role');
   }
   const hostExists = process.platform === 'win32' ? null : (x) => { try { return fs.existsSync(x); } catch { return false; } };
-  const problems = wrapper.validate(model, ctx, { isNew, typeExists: isNew ? typeExists : (t) => typeExists(t) || progs.some(p => Object.values(wrapper.names(model, p)).includes(t)), roleExists, hostExists });
+  const problems = wrapper.validate(model, ctx, { isNew, tree: !sa, typeExists: isNew ? typeExists : (t) => typeExists(t) || progs.some(p => Object.values(wrapper.names(model, p)).includes(t)), roleExists, hostExists });
   if (problems.some(p => /module name must|already exists/.test(p))) return { problems, files: [] };
   let paths, before = { te: null, if: null, fc: null };
   if (m) {

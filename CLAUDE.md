@@ -1483,9 +1483,29 @@ so far covered by the e2e tests only.
    passes): ro_user.te declares `role ro_user_r;` while
    userdom_restricted_user_template gen_requires it ("Re-declaration of
    role"; stock staff.te has `#role staff_r;`; rpmwrap then fails only
-   because it needs ro_user_t). The user editor writes that `role R;` line
-   (userUnits) and user-e2e only checks legacy validate. Reported to the
-   user; not fixed yet. RHEL 8 CLIP: 147/147 confirmed, 0 of 257 lost.
+   because it needs ro_user_t). The user editor wrote that `role R;` line.
+   RHEL 8 CLIP: 147/147 confirmed, 0 of 257 lost.
+   Fixed 2026-10-29 (user: "fix the role R; bug first"): CIL refuses a role
+   declared in base (kernel.te, which editKernelRoles fills for the users
+   file) and in the module; hll/pp skips module declarations only of
+   user_r/staff_r/sysadm_r/system_r/unconfined_r (service PP_BASE_ROLES;
+   RHEL's staff.te). service.userTemplate(model, ctx): kind's template,
+   with ctx.roleInBase(R) templates that declare `role $1_r;` themselves
+   (ctx.templateDeclaresRole: RHEL userdom_confined_admin_template) last;
+   userUnits writes `role R;` only when neither does; editTe deletes a
+   top-level `role R;` base declares too (not PP_BASE_ROLES); validateUser
+   refuses a kind whose only template declares it. Server userCtx
+   roleInBase (role decl in kernel or a base module's .te; new tree users:
+   always). Also found by the new semodule/CIL link in user-e2e:
+   rangeless seusers lines → `systemlow` (editSeusers opts.level = the
+   default level in MLS/MCS trees, server seusersLevel), and Rules.modular
+   keeps only `^[a-z_]` seusers lines (validateUser refuses %group logins
+   in trees; loginConfig blanks dropped lines for reports/checks with a
+   message saying so; wrapper.validate notes %group logins in trees;
+   wrapper-e2e uses login rouser). README Findings "What semodule/CIL
+   refuses". user-e2e: CIL link (build.cilBuild), duplicate-role repair of
+   every user module, base's selinuxuser lines; passes on CLIP 8/9, RHEL
+   9/10 (RHEL 10 fix: xserver state from dist/<variant>/modules.conf).
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
