@@ -2,12 +2,12 @@
 // arguments are plain text (template expansion and the .te require analysis),
 // and left active otherwise. Runs anywhere: node test/ifelse-test.js
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const { PolicyIndex } = require('../server/indexer');
 const { callRequires } = require('../server/diagnostics');
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-ifelse-'));
+const dir = tempDir('selinux-ifelse-');
 const mod = path.join(dir, 'policy/modules/system');
 fs.mkdirSync(mod, { recursive: true });
 fs.writeFileSync(path.join(mod, 'demo.if'), `## <summary>demo</summary>

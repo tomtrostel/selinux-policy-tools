@@ -7,6 +7,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -44,7 +45,7 @@ const pathText = (p) => (p || []).map(s => s.text).join(' ; ');
 
 (async () => {
   // 1. This host's running targeted policy.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-logins-e2e-'));
+  const ws = tempDir('selinux-logins-e2e-');
   fs.writeFileSync(path.join(ws, 'readme.txt'), 'empty workspace\n');
   const a = start(ws);
   await a.init();

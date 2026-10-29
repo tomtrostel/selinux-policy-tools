@@ -6,6 +6,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const crypto = require('crypto');
 const rpc = require('vscode-jsonrpc/node');
@@ -23,10 +24,10 @@ const makeArgs = process.argv[3] ? JSON.parse(fs.readFileSync(process.argv[3], '
   clipArgs(src);
 
 // Work on a copy so the test can edit files freely.
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-tree-e2e-'));
+const ws = tempDir('selinux-tree-e2e-');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
-const OUT = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-tree-out-')), 'build');
+const OUT = path.join(tempDir('selinux-tree-out-'), 'build');
 const P = (rel) => path.join(ws, rel);
 const LOGGING = P('policy/modules/system/logging.te'), FILES = P('policy/modules/kernel/files.te');
 const ORIG = { [LOGGING]: fs.readFileSync(LOGGING, 'utf8'), [FILES]: fs.readFileSync(FILES, 'utf8') };

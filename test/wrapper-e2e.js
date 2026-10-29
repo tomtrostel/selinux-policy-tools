@@ -9,6 +9,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -25,17 +26,17 @@ const CLIP_ARGS = clipArgs(src);
 // Programs every RHEL-like host has: one with a domain of its own, one without.
 const PROG = '/usr/sbin/setfiles', PLAIN = '/usr/bin/ls';
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-wrapper-e2e-'));
+const ws = tempDir('selinux-wrapper-e2e-');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 let spec = null;
 if (specArg) {
-  const sdir = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-wrapper-spec-'));
+  const sdir = tempDir('selinux-wrapper-spec-');
   cp.execFileSync('cp', ['-a', path.dirname(path.resolve(specArg)) + '/.', sdir]);
   spec = path.join(sdir, path.basename(specArg));
 }
 // A small chroot: /etc and a library directory, no copies yet.
-const chroot = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-wrapper-chroot-'));
+const chroot = tempDir('selinux-wrapper-chroot-');
 fs.mkdirSync(path.join(chroot, 'etc'));
 fs.mkdirSync(path.join(chroot, 'usr/lib64'), { recursive: true });
 

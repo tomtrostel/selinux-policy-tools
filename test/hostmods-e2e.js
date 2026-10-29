@@ -8,6 +8,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -62,7 +63,7 @@ const EXPORT = [
 
 (async () => {
   // 1. The running targeted policy.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-hostmods-e2e-'));
+  const ws = tempDir('selinux-hostmods-e2e-');
   fs.writeFileSync(path.join(ws, 'readme.txt'), 'empty workspace\n');
   const a = start(ws);
   await a.init();
@@ -89,7 +90,7 @@ const EXPORT = [
   // 2. A tree build: compare, write the fixable changes into a copy, rebuild, compare again.
   const tc = detectToolchain(null);
   if (!tc.ok || !fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP tree part: ${tc.ok ? `no tree at ${src}` : tc.reason}`); return finish(); }
-  const tw = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-hostmods-tree-'));
+  const tw = tempDir('selinux-hostmods-tree-');
   cp.execFileSync('cp', ['-a', src + '/.', tw]);
   fs.rmSync(path.join(tw, 'tmp'), { recursive: true, force: true });
   const conf = path.join(tw, 'policy/modules.conf');

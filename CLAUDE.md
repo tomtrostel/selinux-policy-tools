@@ -1821,6 +1821,11 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   per tree vs test/survey-baseline.json keyed by the tree's VERSION
   (2.20200229: 8 findings, 2.20240226: 4; all reviewed, real);
   `--update-baseline` after review. Logs in /tmp/clip-all-*.
+- `test/tmpdirs.js`: `tempDir(prefix)` for every test's temp dirs (not
+  clip-all's logs, not lsp-e2e's fixed workspace); removed on exit, Ctrl-C
+  and kill; `KEEP_TMP=1` keeps them and prints their paths. Before it, every
+  e2e run left its tree copies in /tmp (filled ricardo's root disk along
+  with PCP's pmlogger archives).
 - `test/diag-survey.js` (prints undecided branch counts with `--make`; `--json FILE` writes every finding): runs all diagnostics over a tree and summarizes;
   use it after any parser/diagnostic change to catch false positives.
 

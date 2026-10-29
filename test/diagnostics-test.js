@@ -8,6 +8,7 @@
 //   node test/diagnostics-test.js
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const { PolicyIndex } = require('../server/indexer');
 const { diagnose, globalRequirements, droppedOptionalBlocks } = require('../server/diagnostics');
@@ -18,7 +19,7 @@ const check = (cond, what, extra) => {
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + JSON.stringify(extra, null, 1).slice(0, 2500).replace(/\n/g, '\n     ')); }
 };
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-diag-'));
+const dir = tempDir('selinux-diag-');
 const P = (rel) => path.join(dir, 'policy', rel);
 const write = (rel, text) => { fs.mkdirSync(path.dirname(P(rel)), { recursive: true }); fs.writeFileSync(P(rel), text); };
 

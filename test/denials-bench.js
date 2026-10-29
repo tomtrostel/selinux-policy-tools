@@ -12,6 +12,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -44,7 +45,7 @@ console.log(`${calls.length} calls in ${dir}; sampling ${sample.length}`);
 
 (async () => {
   // 2. What each call grants (m4 with the devel headers), and one denial per call it would fix.
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-bench-probe-'));
+  const work = tempDir('selinux-bench-probe-');
   const ex = await build.expandCalls(sample.map(c => `${c.iface}(${c.domain})`), { work, develMakefile: DEVEL });
   if (!ex.ok) { console.log(`m4 failed: ${ex.log}`); process.exit(1); }
   const stmts = denials.probeStatements(ex.text);
@@ -73,7 +74,7 @@ console.log(`${calls.length} calls in ${dir}; sampling ${sample.length}`);
   console.log(`${cases.length} calls give ${uniq.length} distinct denials`);
 
   // 3. Suggestions over LSP (standalone workspace = devel headers), against the installed policy.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-bench-ws-'));
+  const ws = tempDir('selinux-bench-ws-');
   const proc = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
   const conn = rpc.createMessageConnection(new rpc.StreamMessageReader(proc.stdout), new rpc.StreamMessageWriter(proc.stdin));
   let done;

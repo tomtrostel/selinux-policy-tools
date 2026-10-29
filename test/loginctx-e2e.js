@@ -8,6 +8,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -47,7 +48,7 @@ function start(ws, initOptions = {}) {
 
 (async () => {
   // 1. The running targeted policy: every real login gets a context.
-  const ws0 = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-loginctx-e2e-'));
+  const ws0 = tempDir('selinux-loginctx-e2e-');
   fs.writeFileSync(path.join(ws0, 'readme.txt'), 'empty workspace\n');
   const a = start(ws0);
   await a.init();
@@ -63,7 +64,7 @@ function start(ws, initOptions = {}) {
   // 2. A tree build.
   const tc = detectToolchain(null);
   if (!tc.ok || !fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP tree part: ${tc.reason || `no tree at ${src}`}`); return finish(); }
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-loginctx-e2e-tree-'));
+  const ws = tempDir('selinux-loginctx-e2e-tree-');
   cp.execFileSync('cp', ['-a', src + '/.', ws]);
   fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
   const args = clipArgs(src);

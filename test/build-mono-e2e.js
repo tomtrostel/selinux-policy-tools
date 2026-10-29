@@ -7,6 +7,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -17,12 +18,12 @@ if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/refpolicy');
 if (!fs.existsSync(path.join(src, 'Rules.monolithic'))) { console.log(`SKIP: no refpolicy tree at ${src}`); process.exit(0); }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-mono-e2e-'));
+const ws = tempDir('selinux-mono-e2e-');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 const LOGGING = path.join(ws, 'policy/modules/system/logging.te');
 const ORIG = fs.readFileSync(LOGGING, 'utf8');
-const OUT = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-mono-out-')), 'build');
+const OUT = path.join(tempDir('selinux-mono-out-'), 'build');
 const isGit = fs.existsSync(path.join(ws, '.git'));
 if (isGit) { try { cp.execFileSync('git', ['-C', ws, 'config', 'user.email', 'test@example.com']); cp.execFileSync('git', ['-C', ws, 'config', 'user.name', 'test']); } catch { /* ignore */ } }
 

@@ -6,6 +6,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -21,7 +22,7 @@ if (![CLIP_SRC, R10_SRC].every(t => fs.existsSync(path.join(t, 'Rules.modular'))
   console.log('SKIP: need the CLIP and RHEL 10 trees and the RHEL 10 spec directory'); process.exit(0);
 }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-multi-e2e-'));
+const ws = tempDir('selinux-multi-e2e-');
 const CLIP = path.join(ws, 'clip'), R10 = path.join(ws, 'rhel10');
 for (const [s, d] of [[CLIP_SRC, CLIP], [R10_SRC, R10]]) { cp.execFileSync('cp', ['-a', s, d]); fs.rmSync(path.join(d, 'tmp'), { recursive: true, force: true }); }
 const trees = {

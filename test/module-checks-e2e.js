@@ -6,7 +6,7 @@
 // and setools, and an installed policy under /etc/selinux; skips otherwise.
 const cp = require('child_process');
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -16,7 +16,7 @@ const tc = detectToolchain('/usr/share/selinux/devel/Makefile');
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 if (!installedKernelPolicy()) { console.log('SKIP: no installed policy under /etc/selinux'); process.exit(0); }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-modchecks-e2e-'));
+const ws = tempDir('selinux-modchecks-e2e-');
 const te = path.join(ws, 'demo.te');
 const TE = `policy_module(demo, 1.0.0)
 

@@ -3,7 +3,7 @@
 // Needs Linux with make, m4, checkpolicy and selinux-policy-devel; skips otherwise.
 const cp = require('child_process');
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -12,7 +12,7 @@ const { detectToolchain } = require('../server/build');
 const tc = detectToolchain('/usr/share/selinux/devel/Makefile');
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-build-e2e-'));
+const ws = tempDir('selinux-build-e2e-');
 const dir = path.join(ws, 'policy/modules/local');
 fs.mkdirSync(dir, { recursive: true });
 const te = path.join(dir, 'myapp.te');

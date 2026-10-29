@@ -2,14 +2,14 @@
 // Build settings from specs: CLIP's (%installCmds + the Makefile's
 // SEPARATE_PKGS). Any OS.
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const { specBuildConfigs, makeVars } = require('../server/specconfig');
 
 let failures = 0;
 const check = (ok, what, extra) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) { failures++; if (extra !== undefined) console.log('     ', JSON.stringify(extra, null, 1)); } };
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'specconfig-test-'));
+const dir = tempDir('specconfig-test-');
 const pkg = path.join(dir, 'packages/selinux-policy');
 fs.mkdirSync(pkg, { recursive: true });
 fs.writeFileSync(path.join(dir, 'CONFIG_BUILD'), 'CONFIG_BUILD_SELINUX_POL_TYPE := mcs\n');
@@ -66,7 +66,7 @@ check(c2[0] && c2[0].makeArgs.includes('APPS_MODS=') && /no Makefile/.test(c2[0]
 fs.rmSync(dir, { recursive: true, force: true });
 
 /* ---------- RHEL 9 / older Fedora: config files next to the spec ---------- */
-const d9 = fs.mkdtempSync(path.join(os.tmpdir(), 'specconfig-rhel9-'));
+const d9 = tempDir('specconfig-rhel9-');
 const spec9 = path.join(d9, 'selinux-policy.spec');
 fs.writeFileSync(spec9, [
   '%define distro redhat',
@@ -118,7 +118,7 @@ check(v9('mls').makeArgs.includes('TYPE=mls') && v9('mls').makeArgs.includes('UN
 fs.rmSync(d9, { recursive: true, force: true });
 
 /* ---------- RHEL 10 / newer Fedora: dist/NAME in the tree, filtered modules.conf ---------- */
-const d10 = fs.mkdtempSync(path.join(os.tmpdir(), 'specconfig-rhel10-'));
+const d10 = tempDir('specconfig-rhel10-');
 const tree10 = path.join(d10, 'tree');
 const spec10 = path.join(d10, 'selinux-policy.spec');
 fs.writeFileSync(spec10, [
@@ -159,7 +159,7 @@ check(JSON.stringify(m10.files['policy/modules.conf'][0].disable) === JSON.strin
   'RHEL 10 minimum: filtered again with modules-extra.lst', m10.files);
 check(m10.missing.length === 2 && m10.missing.every(p => /dist\/minimum\/(booleans\.conf|users)$/.test(p)) && !t10.missing.length, 'missing tree files are reported against the tree root', m10.missing);
 fs.rmSync(d10, { recursive: true, force: true });
-check(JSON.stringify(specBuildConfigs((() => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'specconfig-none-')); const p = path.join(d, 'x.spec'); fs.writeFileSync(p, 'Name: x\n%build\nmake\n'); return p; })())) === '[]',
+check(JSON.stringify(specBuildConfigs((() => { const d = tempDir('specconfig-none-'); const p = path.join(d, 'x.spec'); fs.writeFileSync(p, 'Name: x\n%build\nmake\n'); return p; })())) === '[]',
   'a spec with neither %makeCmds nor %installCmds: no variants');
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall specconfig checks passed');

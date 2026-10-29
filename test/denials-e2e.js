@@ -10,6 +10,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -22,7 +23,7 @@ const bool = (b) => { try { return fs.readFileSync(`/sys/fs/selinux/booleans/${b
 if (bool('httpd_can_network_relay') !== false || bool('httpd_read_user_content') !== false) { console.log('SKIP: expects httpd_can_network_relay and httpd_read_user_content off'); process.exit(0); }
 const tc = detectToolchain('/usr/share/selinux/devel/Makefile');
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-e2e-'));
+const ws = tempDir('selinux-denials-e2e-');
 const te = path.join(ws, 'demo.te');
 fs.writeFileSync(te, `policy_module(demo, 1.0.0)
 
@@ -189,7 +190,7 @@ const LOG = [
   k4.onNotification('selinux/indexing', p => { if (p.state === 'done') d4(); });
   for (const n of ['textDocument/publishDiagnostics', 'selinux/checks', 'selinux/build', 'window/logMessage', 'selinux/inactiveRanges']) k4.onNotification(n, () => {});
   k4.listen();
-  const ws4 = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-p4-'));
+  const ws4 = tempDir('selinux-denials-p4-');
   await k4.sendRequest('initialize', { processId: null, rootUri: uri(ws4), capabilities: {}, initializationOptions: { trusted: true } });
   k4.sendNotification('initialized', {});
   await i4;
@@ -207,7 +208,7 @@ const LOG = [
   // A tree build: checked against its own policy.bin and file contexts.
   const treeSrc = process.argv[2] || path.join(os.homedir(), 'sepol-test/clip/packages/selinux-policy/selinux-policy');
   if (detectToolchain(null).ok && fs.existsSync(path.join(treeSrc, 'Rules.modular'))) {
-    const tree = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-denials-tree-'));
+    const tree = tempDir('selinux-denials-tree-');
     cp.execFileSync('cp', ['-a', treeSrc + '/.', tree]);
     fs.rmSync(path.join(tree, 'tmp'), { recursive: true, force: true });
     const makeArgs = clipArgs(treeSrc);

@@ -9,6 +9,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -23,12 +24,12 @@ const specArg = process.argv[3];
 const variant = process.argv[4] || 'targeted';
 const CLIP_ARGS = clipArgs(src);
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-service-e2e-'));
+const ws = tempDir('selinux-service-e2e-');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 let spec = null;
 if (specArg) {
-  const sdir = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-service-spec-'));
+  const sdir = tempDir('selinux-service-spec-');
   cp.execFileSync('cp', ['-a', path.dirname(path.resolve(specArg)) + '/.', sdir]);
   spec = path.join(sdir, path.basename(specArg));
 }
@@ -447,7 +448,7 @@ const build = async (te) => {
 })().catch(e => { console.error(e); process.exit(1); });
 
 async function standalone() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-service-devel-'));
+  const dir = tempDir('selinux-service-devel-');
   const p2 = cp.spawn('node', [path.join(__dirname, '../server/server.js'), '--stdio']);
   const c2 = rpc.createMessageConnection(new rpc.StreamMessageReader(p2.stdout), new rpc.StreamMessageWriter(p2.stdin));
   let done, ready = new Promise(r => (done = r));

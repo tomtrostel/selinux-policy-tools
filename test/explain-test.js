@@ -5,7 +5,7 @@
 // by changed files, attribute membership ("because"). Any OS.
 //   node test/explain-test.js
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const E = require('../server/explain');
 
@@ -50,7 +50,7 @@ const OUT = [
   '#line 1 "policy/support/obj_perm_sets.spt"',
   'allow ignored_t ignored_t:file read;',
 ].join('\n');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-explain-'));
+const tmp = tempDir('selinux-explain-');
 const outFile = path.join(tmp, 'foo.tmp');
 fs.writeFileSync(outFile, OUT);
 const resolve = (f) => (/\.te$/.test(f) ? `/src/${f}` : null);

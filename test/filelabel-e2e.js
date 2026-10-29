@@ -11,6 +11,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -159,7 +160,7 @@ function start(ws, initOptions = {}) {
   check(F.sortSpecs(main, typedFirst).every((s, i) => s === main[i]), `the installed file_contexts is in fc_sort order already (lines with a file kind ${typedFirst ? 'first, as libsemanage 2.9 sorts' : 'last'} among equals)`);
 
   // 2. Over LSP, running policy.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-filelabel-e2e-'));
+  const ws = tempDir('selinux-filelabel-e2e-');
   fs.writeFileSync(path.join(ws, 'readme.txt'), 'empty workspace\n');
   const a = start(ws);
   await a.init();

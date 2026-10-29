@@ -10,6 +10,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -24,7 +25,7 @@ if (!detectToolchain(null).ok || !fs.existsSync(DEVEL) || !fs.existsSync(path.jo
   console.log('SKIP: needs the toolchain, selinux-policy-devel, rpm-build and a refpolicy tree'); process.exit(0);
 }
 // The workspace: a folder holding a copy of the tree (the module goes next to it).
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-package-e2e-'));
+const ws = tempDir('selinux-package-e2e-');
 const tree = path.join(ws, 'policy-tree');
 cp.execFileSync('cp', ['-a', src + '/.', tree]);
 fs.rmSync(path.join(tree, 'tmp'), { recursive: true, force: true });

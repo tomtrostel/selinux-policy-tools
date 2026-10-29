@@ -9,6 +9,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -21,7 +22,7 @@ const spec = process.argv[3] || path.join(os.homedir(), 'sepol-test/srpm/selinux
 const variant = process.argv[4] || 'targeted';
 if (!fs.existsSync(path.join(src, 'Rules.modular')) || !fs.existsSync(spec)) { console.log(`SKIP: need a tree at ${src} and a spec at ${spec}`); process.exit(0); }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-rhel-e2e-'));
+const ws = tempDir('selinux-rhel-e2e-');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
 const LOGGING = path.join(ws, 'policy/modules/system/logging.te');

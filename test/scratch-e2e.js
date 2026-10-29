@@ -5,6 +5,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -13,7 +14,7 @@ const { detectToolchain } = require('../server/build');
 const tc = detectToolchain('/usr/share/selinux/devel/Makefile');
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-scratch-e2e-'));
+const ws = tempDir('selinux-scratch-e2e-');
 fs.writeFileSync(path.join(ws, 'myapp.te'), 'policy_module(myapp, 1.0.0)\ntype myapp_t;\ntype myapp_exec_t;\ninit_daemon_domain(myapp_t, myapp_exec_t)\n');
 const uri = URI.file(path.join(ws, 'myapp.te')).toString();
 const BASE = path.join(os.tmpdir(), `selinux-policy-tools-${process.getuid()}`);

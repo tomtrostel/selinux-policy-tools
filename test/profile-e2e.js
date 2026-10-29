@@ -10,6 +10,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const readline = require('readline');
 const rpc = require('vscode-jsonrpc/node');
@@ -26,7 +27,7 @@ if (!fs.existsSync(path.join(src, 'Rules.modular')) || !fs.existsSync(path.join(
 const makeArgs = clipArgs(src);
 const PROFILE = 'clip-sftp-dropbox';
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-profile-e2e-'));
+const ws = tempDir('selinux-profile-e2e-');
 for (const p of ['kickstart', 'conf/yum/comps.xml', 'CONFIG_BUILD', 'packages/selinux-policy/Makefile']) {
   fs.mkdirSync(path.dirname(path.join(ws, p)), { recursive: true });
   cp.execFileSync('cp', ['-a', path.join(clip, p), path.join(ws, p)]);

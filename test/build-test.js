@@ -5,7 +5,7 @@
 // tree discovery, and the scratch copy sync.
 //   node test/build-test.js
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const B = require('../server/build');
 
@@ -14,7 +14,7 @@ const check = (cond, what, extra) => {
   console.log(`${cond ? 'ok  ' : 'FAIL'} ${what}`);
   if (!cond) { failures++; if (extra !== undefined) console.log('     ' + JSON.stringify(extra, null, 1).slice(0, 2500).replace(/\n/g, '\n     ')); }
 };
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-build-test-'));
+const tmp = tempDir('selinux-build-test-');
 const write = (p, t, mode) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, t); if (mode) fs.chmodSync(p, mode); };
 
 /* ---------- tool output ---------- */

@@ -9,6 +9,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -47,7 +48,7 @@ function start(ws, initOptions = {}) {
 }
 
 (async () => {
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-restricted-e2e-'));
+  const ws = tempDir('selinux-restricted-e2e-');
   cp.execFileSync('cp', ['-a', src + '/.', ws]);
   fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });
   const args = clipArgs(src);

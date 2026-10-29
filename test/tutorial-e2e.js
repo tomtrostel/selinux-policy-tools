@@ -7,7 +7,7 @@
 // also policycoreutils, setools and an installed policy. Skips otherwise.
 const cp = require('child_process');
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -17,7 +17,7 @@ const tc = detectToolchain('/usr/share/selinux/devel/Makefile');
 if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
 
 const src = path.join(__dirname, '..', 'media', 'practice');
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-practice-e2e-'));
+const ws = tempDir('selinux-practice-e2e-');
 for (const f of fs.readdirSync(src)) fs.copyFileSync(path.join(src, f), path.join(ws, f));
 const file = (f) => path.join(ws, f);
 

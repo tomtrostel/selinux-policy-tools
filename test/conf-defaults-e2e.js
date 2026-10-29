@@ -7,13 +7,14 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
 
 const src = process.argv[2] || path.join(os.homedir(), 'sepol-test/refpolicy');
 if (!fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP: no refpolicy tree at ${src}`); process.exit(0); }
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-confdef-e2e-'));
+const ws = tempDir('selinux-confdef-e2e-');
 fs.cpSync(src, ws, { recursive: true, filter: (p) => !/[\\/](\.git|tmp)$/.test(p) });
 fs.rmSync(path.join(ws, 'policy/modules.conf'), { force: true });
 const SSH = path.join(ws, 'policy/modules/services/ssh.te');      // loadable by default

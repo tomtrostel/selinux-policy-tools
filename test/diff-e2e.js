@@ -7,6 +7,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -21,7 +22,7 @@ const makeArgs = process.argv[3] ? JSON.parse(fs.readFileSync(process.argv[3], '
   clipArgs(src);
 
 // The tree lives in a subdirectory of the repository, like CLIP's.
-const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-diff-e2e-'));
+const repo = tempDir('selinux-diff-e2e-');
 const ws = path.join(repo, 'policy-src');
 cp.execFileSync('cp', ['-a', src + '/.', ws]);
 fs.rmSync(path.join(ws, 'tmp'), { recursive: true, force: true });

@@ -5,6 +5,7 @@
 //   node test/client-test.js
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const Module = require('module');
 
@@ -79,7 +80,7 @@ const pkg = require('../package.json');
   check(!calls.executed.length, 'escape runs nothing');
 
   /* ---------- Add check ---------- */
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-client-test-'));
+  const tmp = tempDir('selinux-client-test-');
   const checksPath = path.join(tmp, 'selinux.checks');
   let reply = { path: checksPath, exists: false };
   ext._setClient({ sendRequest: async (m) => (m === 'selinux/checksFile' ? reply : null) });

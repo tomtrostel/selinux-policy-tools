@@ -8,6 +8,7 @@
 const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const rpc = require('vscode-jsonrpc/node');
 const { URI } = require('vscode-uri');
@@ -52,7 +53,7 @@ const C = {
 
 (async () => {
   // 1. The running targeted policy.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-levels-e2e-'));
+  const ws = tempDir('selinux-levels-e2e-');
   fs.writeFileSync(path.join(ws, 'readme.txt'), 'empty workspace\n');
   const a = start(ws);
   await a.init();
@@ -114,7 +115,7 @@ const C = {
   const tc = detectToolchain(null);
   if (!tc.ok || !fs.existsSync(path.join(src, 'Rules.modular'))) { console.log(`SKIP tree part: ${tc.ok ? `no tree at ${src}` : tc.reason}`); return finish(); }
   // CLIP's layout: the tree in packages/selinux-policy/selinux-policy, setrans-*.conf (RHEL 9) in ../support.
-  const twParent = fs.mkdtempSync(path.join(os.tmpdir(), 'selinux-levels-tree-'));
+  const twParent = tempDir('selinux-levels-tree-');
   const tw = path.join(twParent, 'selinux-policy');
   fs.mkdirSync(tw);
   cp.execFileSync('cp', ['-a', src + '/.', tw]);

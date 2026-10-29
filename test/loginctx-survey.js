@@ -4,7 +4,7 @@
 //   node test/loginctx-survey.js build <tree>                 builds a copy of a CLIP tree (its spec's make arguments) first
 // Prints every problem; exits 0 (it reports, it doesn't judge).
 const fs = require('fs');
-const os = require('os');
+const { tempDir } = require('./tmpdirs');
 const path = require('path');
 const cp = require('child_process');
 const L = require('../server/loginctx');
@@ -17,7 +17,7 @@ let bin, cfg;
 if (mode === 'build') {
   const { clipArgs } = require('./clip-args');
   const args = clipArgs(a);
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'loginctx-survey-'));
+  const work = tempDir('loginctx-survey-');
   cp.execFileSync('cp', ['-a', a + '/.', work]);
   fs.rmSync(path.join(work, 'tmp'), { recursive: true, force: true });
   const t0 = Date.now();
