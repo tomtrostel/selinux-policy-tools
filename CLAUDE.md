@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-10-22: **v0.17.0 released** (GitHub release `v0.17.0`;
+Status as of 2026-11-12: **v0.18.0 released** (GitHub release `v0.18.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -55,13 +55,14 @@ work").
 RHEL 8 hosts (ricardo: fc order, matchpathcon -f), user editor kind
 changes, a lockdown tutorial step; the user tried it before the release
 ("It looks like it works").
-Unreleased: step 15 (logins that bounce: session starts, fixes from the
-tree's interfaces, SELINUX_ERR verdicts in the denial assistant) and step 16
-(restricted logins: what they run, silent failures, which edit broke it)
-and step 17 (dropped optional blocks dimmed, CLIP install profiles) and
-step 18 (headless check runner for CI) and step 19 (what runs unconfined on
-this host); none tried interactively yet. A fresh build with everything up
-to step 19 is installed on melody.
+0.18.0 (released 2026-11-12 at the user's request, before trying it
+interactively): step 15 (logins that bounce: session starts, fixes from the
+tree's interfaces, SELINUX_ERR verdicts in the denial assistant), step 16
+(restricted logins: what they run, silent failures, which edit broke it),
+step 17 (dropped optional blocks dimmed, CLIP install profiles), the user
+editor CIL fixes, the 2026-11-11 review pass, step 18 (headless check runner
+for CI) and step 19 (what runs unconfined on this host); none tried
+interactively yet. The release build is installed on melody.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
