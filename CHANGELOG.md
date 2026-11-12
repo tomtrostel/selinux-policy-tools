@@ -22,6 +22,14 @@
   target's audit log (`ausearch`, plus the login programs' refusals from
   its journal) over the ssh connection, with no terminal or sudo, and check
   the denials against the target's policy. Request `selinux/targetDenials`.
+* **Services on a target host**: *What Runs Unconfined* has a *Programs
+  on* choice (this host or a connected target, read over ssh with paths,
+  packages and ports resolved there) and, for a target, a *denials since*
+  window: each service shows the denials logged on the target for its
+  domain, whether the domain is permissive there, and *Fix in Service
+  Editor…* opens the owning module with those denials in its *From a
+  permissive run* section. Request `selinux/unconfined` takes `host` and
+  `since`.
 
 ## 0.19.0 (2026-11-12)
 

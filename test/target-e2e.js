@@ -133,6 +133,19 @@ function start(ws) {
     const da = await req('selinux/analyzeDenials', { text: dn.text, against: id });
     check(!da.error && da.groups && da.groups.some(g => g.source === 'unconfined_t' || g.target === 'httpd_t' || g.source === 'httpd_t'), `those denials analyzed against the target's policy: ${da.groups && da.groups.length} groups`, da.error || (da.groups || []).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}`));
     check(!(await req('selinux/targetDenials', { id: c.id, since: 'x; echo pwned' })).error, 'an odd since word falls back to recent');
+    // The target's services and processes, with their denials.
+    t0 = Date.now();
+    const un = await req('selinux/unconfined', { against: id, host: c.id, since: 'recent' });
+    const rows = un.rows || [];
+    check(!un.error && un.host && un.host.target === c.id && un.host.hostname === os.hostname() && rows.length > 10 && un.targets.some(t => t.id === c.id) && un.summary && un.host.denials && un.host.denials.since === 'recent' && !un.host.denials.error && Array.isArray(un.host.permissive),
+      `programs on the target (${Date.now() - t0} ms): ${rows.length} rows, ${un.summary && un.summary.unconfined} unconfined, ${un.host.denials && un.host.denials.total} denials since recent, permissive: ${un.host.permissive && un.host.permissive.length}`, un.error || { host: un.host, summary: un.summary });
+    check(rows.every(r => r.exists && r.real.startsWith('/') && 'denials' in r && 'permissive' in r && 'module' in r) && rows.some(r => r.pkg) && rows.some(r => r.listens.length) && !(un.host.limits || []).some(l => /not run to its end|could not all/.test(l)),
+      'rows resolved on the target: real paths, packages, listening ports as root; denial and permissive fields on every row', { limits: un.host.limits, sample: rows.slice(0, 2) });
+    const un0 = await req('selinux/unconfined', { against: `installed:${installed.name}`, host: '' });
+    check(!un0.error && un0.host && un0.host.target === null && un0.host.hostname === os.hostname() && Math.abs(un0.rows.length - rows.length) <= 3 && un0.rows.filter(r => r.pkg).length >= rows.filter(r => r.pkg).length - 3,
+      `this host explicitly (host ''): ${un0.rows && un0.rows.length} rows, the same programs`, un0.error || { t: rows.length, h: un0.rows && un0.rows.length });
+    const unD = await req('selinux/unconfined', { against: `installed:${installed.name}` });
+    check(!unD.error && unD.host && unD.host.target === c.id, 'without a host given, a connected target is looked at by default', unD.error || unD.host);
     t0 = Date.now();
     const rf = await req('selinux/targetRefresh', { id: c.id });
     check(!rf.error && rf.state === 'connected' && rf.facts.modules.length === f.modules.length && fs.existsSync(rf.mirror.policy), `refresh (${Date.now() - t0} ms)`, rf.error);

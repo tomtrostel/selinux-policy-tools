@@ -214,6 +214,55 @@ function parseDenialsOutput(out) {
     error: e ? (/ermission denied/i.test(e) ? 'The audit log needs root on the target.' : /not found/i.test(e) ? 'ausearch is not installed on the target (audit package).' : e) : s.done == null ? 'The command did not finish on the target.' : null };
 }
 
+/**
+ * The processes, services and listening sockets of the target, the same
+ * commands What Runs Unconfined runs here (unconfined.js parses them).
+ */
+const HOST_FACTS_SCRIPT = `
+sec() { printf '### %s\\n' "$1"; }
+sec hostname; hostname 2>/dev/null || uname -n
+sec uid; id -u
+sec ps; ps -eo pid=,ppid=,user:32=,label=,comm=,args= 2>&1 </dev/null
+sec units; systemctl show --no-pager -p Id,ExecStart,MainPID,ActiveState,SubState,FragmentPath,User,NoNewPrivileges '*.service' 2>&1 </dev/null
+sec ss; ss -lntuHp 2>&1 </dev/null
+sec done
+`;
+
+/** systemd's own search path for a bare name in ExecStart=. */
+const PATH_DIRS = ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'];
+
+/**
+ * A script resolving program paths on the target: for each candidate (an
+ * absolute path, or a bare name systemd would search), whether it exists,
+ * its real path and its package: lines `candidate<TAB>real<TAB>exists<TAB>pkg`.
+ * The candidates ride inside the script (a quoted heredoc: no expansion).
+ */
+function pathsScript(candidates) {
+  const list = [...new Set(candidates)].filter(c => /^[^\n\t]+$/.test(c) && c !== 'EOF_PATHS');
+  return `
+resolve() { p=$1; case "$p" in /*) ;; *) for d in ${PATH_DIRS.join(' ')}; do if [ -f "$d/$p" ]; then p="$d/$p"; break; fi; done ;; esac
+  if [ -e "$p" ]; then r=$(realpath "$p" 2>/dev/null || printf '%s' "$p"); pk=$(rpm -qf --qf '%{NAME}\\n' -- "$r" 2>/dev/null </dev/null | head -1); case "$pk" in *"not owned"*|error*) pk= ;; esac; printf '%s\\t%s\\t1\\t%s\\n' "$1" "$r" "$pk"; else printf '%s\\t\\t0\\t\\n' "$1"; fi; }
+while IFS= read -r c; do [ -n "$c" ] && resolve "$c"; done <<'EOF_PATHS'
+${list.join('\n')}
+EOF_PATHS
+printf '### done\\n'
+`;
+}
+
+/** pathsScript's output → Map candidate → { real, exists, pkg } (+ `done`). */
+function parsePaths(out) {
+  const m = new Map();
+  let done = false;
+  for (const line of String(out || '').split('\n')) {
+    if (line === '### done') { done = true; continue; }
+    const f = line.split('\t');
+    if (f.length < 3) continue;
+    m.set(f[0], { real: f[1] || null, exists: f[2] === '1', pkg: f[3] || null });
+  }
+  m.done = done;
+  return m;
+}
+
 /** One line about a target for the status bar / pickers. */
 function describe(t, facts) {
   const bits = [];
@@ -238,4 +287,4 @@ function mirrorPaths(name, policyFile) {
 /** The tar command (run on the target) that streams the mirror. */
 const mirrorCommand = (name, policyFile) => `cd /etc/selinux && tar czf - --ignore-failed-read ${mirrorPaths(name, policyFile).map(shq).join(' ')} 2>/dev/null`;
 
-module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };
+module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, HOST_FACTS_SCRIPT, PATH_DIRS, pathsScript, parsePaths, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };

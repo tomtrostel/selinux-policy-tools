@@ -1689,8 +1689,20 @@ programs' refusals from its journal) are read over the ssh connection, no
 terminal or sudo involved, and the assistant checks them against the
 target's policy. Reading the audit log needs root on the target; as another
 user the panel says so. The status line names the host, how far back it
-looked and its current mode. Listing the target's services and pushing a
-policy to it are the next steps of this feature.
+looked and its current mode.
+
+*What Runs Unconfined* looks at the target too: **Programs on** picks this
+host or a connected target (a connected target is the default), and the
+same `ps`, `systemctl show` and `ss` run there over the connection, with
+program paths, packages and listening ports resolved on the target (as
+root, all of them). With a target chosen, **denials since** reads its audit
+log for the window picked, and every service shows the denials logged for
+the domain it runs in there (count, classes, targets), whether that domain
+is permissive on the target, and the module that owns the domain. **Fix in
+Service Editor…** opens that module with those denials already in its
+*From a permissive run* section, so each one becomes a form setting; the
+verdict line counts the denials and names the permissive domains. Pushing a
+policy to the target is the next step of this feature.
 
 ## Checking in CI: `selinux-policy-check`
 

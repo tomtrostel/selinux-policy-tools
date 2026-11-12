@@ -901,10 +901,10 @@ const EDITOR_CSS = `  body { font-family: var(--vscode-font-family); font-size: 
   .gap { opacity: .5; }
 `;
 
-function showServiceEditor(context, mod, prefill = null) {
+function showServiceEditor(context, mod, prefill = null, opts = null) {
   const key = mod || '';
   const existing = servicePanels.get(key);
-  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); return; }
+  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); if (opts && opts.learnText && existing.learn) existing.learn(opts.learnText, opts.learnStatus); return; }
   const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
   servicePanels.set(key, panel);
@@ -933,7 +933,9 @@ ${EDITOR_CSS}</style></head><body>
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
     post({ cmd: 'init', info, keep });
     post({ cmd: 'targets', targets: connectedTargets() });
+    if (opts && opts.learnText) { post({ cmd: 'learnLog', text: opts.learnText, status: opts.learnStatus || '' }); opts = null; }
   };
+  panel.learn = (text, status) => post({ cmd: 'learnLog', text, status: status || '' });
   // A new-service form opened again for another program (from the denial assistant) starts over with it.
   panel.prefill = (p) => { current.prefill = p; load(); };
   // Edits to the module's files elsewhere make the form stale.
@@ -2343,6 +2345,7 @@ function targetsChanged(p) {
   targets = (p && p.targets) || [];
   refreshDenialPolicies();
   for (const sp of servicePanels.values()) sp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
+  for (const rp of reportPanels.values()) rp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
   if (!targetStatus) return;
   const live = targets.filter(t => t.state === 'connected');
   const t = live[0] || targets.find(x => x.state === 'connecting') || targets.find(x => x.state === 'lost' || x.state === 'error');
@@ -2535,7 +2538,10 @@ function showReport(context, viewType) {
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
       if (m.cmd === 'load') {
-        panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest(def.request, { against: m.against }) });
+        panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest(def.request, { against: m.against, ...(m.params || {}) }) });
+      } else if (m.cmd === 'fixService') {
+        // A service with denials on the target: its module in the editor, the denials in the learn section.
+        showServiceEditor(context, m.module, null, { learnText: m.text, learnStatus: m.status || '' });
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
       } else if (m.cmd === 'sessionFix') {

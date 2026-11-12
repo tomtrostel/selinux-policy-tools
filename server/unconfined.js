@@ -163,4 +163,58 @@ function startsAsFrom(transitions, canExec) {
   };
 }
 
-module.exports = { parsePs, parseUnits, parseSs, assemble, startsAsFrom, UNCONFINED_NAMES, GENERIC_EXEC };
+/**
+ * The audit records of a host grouped by the source domain: Map type → the
+ * AVC / USER_AVC / SELINUX_ERR lines from that domain (at most `cap` each),
+ * so a service's denials can be handed to the service editor's learn section.
+ */
+function denialLinesBySource(text, cap = 400) {
+  const m = new Map();
+  for (const line of String(text || '').split('\n')) {
+    if (!/^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(line)) continue;
+    // SELINUX_ERR records of a refused transition carry oldcontext instead of scontext.
+    const s = /(?:scontext|oldcontext)=[^:\s]+:[^:\s]+:([^:\s]+)/.exec(line);
+    if (!s) continue;
+    let a = m.get(s[1]);
+    if (!a) m.set(s[1], a = []);
+    if (a.length < cap) a.push(line);
+  }
+  return m;
+}
+
+/**
+ * Join the denial groups (denials.groupDenials) onto the rows: a row gets
+ * `denials` = { count, classes, targets } for the domains it runs in on the
+ * host (else the one the policy starts it in), `permissive` when one of
+ * those is permissive there, and `denialText` (the records of those
+ * domains, from `lines` = denialLinesBySource). Rows with denials sort first
+ * within their verdict. → the total count attached to rows.
+ */
+function joinDenials(rows, groups, { permissive = new Set(), lines = new Map() } = {}) {
+  const by = new Map();
+  for (const g of groups || []) {
+    if (g.kind !== 'deny' && g.kind !== 'error') continue;
+    let a = by.get(g.source);
+    if (!a) by.set(g.source, a = { count: 0, classes: new Set(), targets: new Set(), errors: 0 });
+    a.count += g.count || 1;
+    if (g.kind === 'error') a.errors += g.count || 1; else { a.classes.add(g.tclass); a.targets.add(g.target); }
+  }
+  let total = 0;
+  for (const r of rows) {
+    const doms = r.hostDomains.length ? r.hostDomains : r.policyDomain ? [r.policyDomain] : [];
+    const hit = doms.filter(d => by.has(d));
+    r.permissive = doms.some(d => permissive.has(d));
+    r.denials = null;
+    r.denialText = null;
+    if (!hit.length) continue;
+    const d = { count: 0, classes: new Set(), targets: new Set(), errors: 0, domains: hit };
+    for (const x of hit) { const a = by.get(x); d.count += a.count; d.errors += a.errors; a.classes.forEach(c => d.classes.add(c)); a.targets.forEach(t => d.targets.add(t)); }
+    r.denials = { count: d.count, errors: d.errors, classes: [...d.classes].sort(), targets: [...d.targets].sort().slice(0, 12), domains: hit };
+    r.denialText = hit.flatMap(x => lines.get(x) || []).join('\n') || null;
+    total += d.count;
+  }
+  rows.sort((a, b) => ((b.denials ? b.denials.count : 0) - (a.denials ? a.denials.count : 0)));
+  return total;
+}
+
+module.exports = { parsePs, parseUnits, parseSs, assemble, startsAsFrom, UNCONFINED_NAMES, GENERIC_EXEC, denialLinesBySource, joinDenials };

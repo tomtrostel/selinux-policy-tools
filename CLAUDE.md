@@ -1705,7 +1705,33 @@ so far covered by the e2e tests only.
    from the target (done, unreleased; the user tried piece 1 and found the
    log still read locally: "It needed to go to the target host and retrieve
    those logs"), 3 services on the target with their denials and a way
-   into the service editor, 4 push .pp files with backup/rollback and retest.
+   into the service editor (done, unreleased), 4 push .pp files with
+   backup/rollback and retest.
+   Piece 3: target.js HOST_FACTS_SCRIPT (ps/systemctl show/ss sections +
+   uid), pathsScript(candidates) (quoted heredoc of ExecStart entries and
+   argv0s; bare names searched on systemd's PATH_DIRS; realpath, exists,
+   rpm -qf per line) + parsePaths. Server hostProcessFacts(target) (15 s
+   cache per target); unconfinedReport(against, { host, since }): host
+   undefined → the policy's target else the first connected one, '' = this
+   host; the host ops (realpath/exists/which/pkgOf) come from parsePaths
+   for a target; targetDenialsText(id, since) (factored from the request)
+   → denials.groupDenials → unconfined.joinDenials(rows, groups,
+   { permissive: the target's facts.permissive, lines:
+   denialLinesBySource(text) }) sets r.denials {count, errors, classes,
+   targets, domains}, r.permissive, r.denialText (records of those domains,
+   400 max) and sorts rows with denials first; r.module = the
+   serviceModules() module owning a host/policy domain; result.targets
+   [{id, mode, root}] and host { target, permissive, denials: { since,
+   total, error, mode } }. Client: showReport's `load` passes m.params;
+   `fixService` → showServiceEditor(context, module, null, { learnText,
+   learnStatus }) (panel.learn for an open one; posted as learnLog after
+   init); targetsChanged posts `targets` to report panels too. Webview
+   unconfined.js: Programs on / denials since selects (state host/since;
+   `targets` message), denial badge + permissive tag per row, Fix in
+   Service Editor… (Edit Service… for a module without denials). Tests:
+   unconfined-test (joinDenials, denialLinesBySource, webview with a
+   target), target-test (scripts, parsePaths), target-e2e (60 rows on
+   root@localhost resolved there, same programs as locally, default host).
    Piece 2: target.js denialsScript(since) (`sh -s`: getenforce, `ausearch
    -m avc,user_avc,selinux_err -ts <since> --raw` ("<no matches>" is not an
    error), journalctl --since per JOURNAL_SINCE grep pam_selinux|

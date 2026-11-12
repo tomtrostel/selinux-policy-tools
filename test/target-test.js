@@ -115,5 +115,14 @@ d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### audit.err\nsh: lin
 check(/not installed/.test(d.error), 'parseDenialsOutput: no ausearch', d);
 check(/did not finish/.test(T.parseDenialsOutput('### mode\nEnforcing\n### audit\n').error), 'parseDenialsOutput: cut off');
 
+// 6. The target's programs: the facts script and the path resolver.
+check(/sec ps; ps -eo pid=,ppid=,user:32=,label=,comm=,args=/.test(T.HOST_FACTS_SCRIPT) && /systemctl show --no-pager -p Id,ExecStart,MainPID,ActiveState,SubState,FragmentPath,User,NoNewPrivileges '\*\.service'/.test(T.HOST_FACTS_SCRIPT) && /ss -lntuHp/.test(T.HOST_FACTS_SCRIPT) && /sec uid; id -u/.test(T.HOST_FACTS_SCRIPT) && /sec done\s*$/.test(T.HOST_FACTS_SCRIPT), 'HOST_FACTS_SCRIPT: ps, systemctl show, ss as What Runs Unconfined runs them, uid, done');
+const ps = T.pathsScript(['/usr/sbin/sshd', 'bootctl', '/opt/x y/agent', '/usr/sbin/sshd', "it's", 'bad\nline', 'EOF_PATHS']);
+check(/<<'EOF_PATHS'\n\/usr\/sbin\/sshd\nbootctl\n\/opt\/x y\/agent\nit's\nEOF_PATHS\n/.test(ps) && !/bad/.test(ps) && (ps.match(/EOF_PATHS/g) || []).length === 2 && /for d in \/usr\/local\/sbin \/usr\/local\/bin \/usr\/sbin \/usr\/bin \/sbin \/bin/.test(ps) && /rpm -qf --qf/.test(ps) && /realpath/.test(ps) && /printf '### done/.test(ps),
+  'pathsScript: the candidates in a quoted heredoc (deduplicated; newlines and the terminator refused), systemd\'s PATH for bare names, realpath and the package', ps);
+const pm = T.parsePaths('/usr/sbin/sshd\t/usr/sbin/sshd\t1\topenssh-server\nbootctl\t/usr/bin/bootctl\t1\tsystemd-udev\n/opt/x y/agent\t\t0\t\n/bin/sh\t/usr/bin/bash\t1\tbash\n### done\n');
+check(pm.done && pm.size === 4 && pm.get('/usr/sbin/sshd').pkg === 'openssh-server' && pm.get('bootctl').real === '/usr/bin/bootctl' && pm.get('/opt/x y/agent').exists === false && pm.get('/opt/x y/agent').real === null && pm.get('/bin/sh').real === '/usr/bin/bash', 'parsePaths: real path, existence, package per candidate', [...pm]);
+check(!T.parsePaths('/a\t/a\t1\t\n').done && T.parsePaths('/a\t/a\t1\t\n').get('/a').pkg === null, 'parsePaths: cut off → not done; no package → null');
+
 console.log(failures ? `\n${failures} target checks FAILED` : '\nall target checks passed');
 process.exit(failures ? 1 : 0);

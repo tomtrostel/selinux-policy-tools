@@ -164,5 +164,48 @@ check(/The policy can't start them/.test(page) && /can't start it/.test(page) &&
 send({ cmd: 'error', text: 'boom' });
 check(/boom/.test(byId.main.textContent), 'webview: an error is shown');
 
+// 5. A target host's denials joined onto the programs, and the webview with a target.
+const AVC = (n, s, t, c, perm) => `type=AVC msg=audit(1700000000.${n}:${n}): avc:  denied  { ${perm} } for  pid=${n} comm="x" scontext=system_u:system_r:${s}:s0 tcontext=system_u:object_r:${t}:s0 tclass=${c} permissive=1`;
+const LOGTXT = [AVC(1, 'chronyd_t', 'etc_t', 'file', 'write'), AVC(2, 'chronyd_t', 'etc_t', 'file', 'write'), AVC(3, 'chronyd_t', 'http_port_t', 'tcp_socket', 'name_connect'), 'type=SYSCALL msg=audit(1700000000.3:3): arch=c000003e', AVC(4, 'sshd_t', 'shadow_t', 'file', 'read'),
+  'type=SELINUX_ERR msg=audit(1700000000.5:5): op=security_bounded_transition seresult=denied oldcontext=system_u:system_r:sshd_t:s0 newcontext=system_u:system_r:staff_t:s0', AVC(6, 'unconfined_t', 'bin_t', 'file', 'entrypoint')].join('\n');
+const lines = U.denialLinesBySource(LOGTXT);
+check(lines.get('chronyd_t').length === 3 && lines.get('sshd_t').length === 2 && lines.get('unconfined_t').length === 1 && !lines.has('SYSCALL') && [...lines.values()].flat().every(l => /^type=(AVC|SELINUX_ERR)/.test(l)), 'denialLinesBySource: AVC and SELINUX_ERR lines per source domain, syscall lines out', [...lines.keys()]);
+const D = require('../server/denials');
+const groups = D.groupDenials(D.parseDenials(LOGTXT));
+const rowsT = r.rows.map(x => ({ ...x, hostDomains: [...x.hostDomains], denials: undefined }));
+const total = U.joinDenials(rowsT, groups, { permissive: new Set(['chronyd_t']), lines });
+const chrony = rowsT.find(x => x.real === '/usr/sbin/chronyd'), sshdRow = rowsT.find(x => x.real === '/usr/sbin/sshd');
+check(total === 5 && chrony.denials && chrony.denials.count === 3 && chrony.denials.classes.join() === 'file,tcp_socket' && chrony.denials.targets.join() === 'etc_t,http_port_t' && chrony.denials.domains.join() === 'chronyd_t' && chrony.permissive && chrony.denialText.split('\n').length === 3,
+  'joinDenials: counts, classes, targets, the permissive flag and the records per program', chrony.denials);
+check(sshdRow.denials && sshdRow.denials.count === 2 && sshdRow.denials.errors === 1 && !sshdRow.permissive && rowsT.filter(x => !x.denials).every(x => x.denials === null && x.denialText === null) && rowsT[0] === chrony && rowsT[1] === sshdRow, 'joinDenials: SELINUX_ERR counted as an error; rows with denials first; others null', rowsT.map(x => [x.real, x.denials && x.denials.count]));
+check(U.joinDenials(rowsT, [], {}) === 0 && rowsT.every(x => x.denials === null && x.permissive === false), 'joinDenials: no groups → nothing');
+// The webview: a target with denials.
+const rowsW = r.rows.map(x => ({ ...x, hostDomains: [...x.hostDomains] }));
+U.joinDenials(rowsW, groups, { permissive: new Set(['chronyd_t']), lines });
+rowsW.forEach(x => { x.module = x.real === '/usr/sbin/chronyd' ? 'chronyd' : x.real === '/usr/sbin/sshd' ? 'ssh' : null; });
+byId.against.value = 'installed:targeted';
+byId.against.fire('change');
+send({ cmd: 'result', key: posted[posted.length - 1].key, result: { ...r, rows: rowsW, policies, policy: policies[0], locs: {}, targets: [{ id: 'root@box', mode: 'permissive', root: true }],
+  host: { hostname: 'box', processes: 7, units: 3, limits: [], target: 'root@box', permissive: ['chronyd_t'], denials: { since: 'today', total: 5, error: null, mode: 'Permissive' } } } });
+page = byId.main.textContent;
+check(/services systemd starts on root@box/.test(page) && /5 denials of these programs since today \(permissive\)/.test(page) && /permissive there: chronyd_t/.test(page) && /3 denials/.test(page) && /on file, tcp_socket/.test(page) && /permissive/.test(page), 'webview: the target in the intro and verdict line, each program\'s denials and permissive state', page.slice(0, 1500));
+const sels = byId.main.all(e => e.tag === 'select');
+check(sels.length === 2 && sels[0].all(e => e.tag === 'option').map(o => o.textContent).join('|') === 'this host|root@box (permissive)' && sels[1].all(e => e.tag === 'option').some(o => o.attrs.value === 'today' && o.attrs.selected != null), 'webview: Programs on / denials since selects', sels.map(s => s.all(e => e.tag === 'option').map(o => o.textContent)));
+const fixBtns = byId.main.all(e => e.tag === 'button' && e.textContent === 'Fix in Service Editor…');
+fixBtns[0].fire('click');
+let last = posted[posted.length - 1];
+check(fixBtns.length === 2 && last.cmd === 'fixService' && last.module === 'chronyd' && last.domain === 'chronyd_t' && last.text.split('\n').length === 3 && /3 denials of chronyd_t read from root@box \(today\)/.test(last.status), 'webview: Fix in Service Editor… carries the module and its denials', last);
+check(byId.main.all(e => e.tag === 'button' && e.textContent === 'Edit Service…').length === 0 && byId.main.all(e => e.tag === 'button' && e.textContent === 'New Service…').length === 6, 'webview: no plain Edit button for modules without denials here (none have a module without denials); New Service… on every row');
+sels[1].value = 'boot';
+sels[1].fire('change');
+last = posted[posted.length - 1];
+check(last.cmd === 'load' && last.params.host === 'root@box' && last.params.since === 'boot', 'webview: changing the window asks again for the target', last);
+sels[0].value = '';
+sels[0].fire('change');
+last = posted[posted.length - 1];
+check(last.cmd === 'load' && last.params.host === '' && last.params.since === null, 'webview: back to this host: no denial window', last);
+send({ cmd: 'targets', targets: [] });
+check(posted[posted.length - 1].cmd !== 'load' || posted[posted.length - 1].params.host === '', 'webview: targets gone: stays on this host');
+
 console.log(failures ? `\n${failures} unconfined checks FAILED` : '\nall unconfined checks passed');
 process.exit(failures ? 1 : 0);

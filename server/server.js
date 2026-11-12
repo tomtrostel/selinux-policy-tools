@@ -3531,17 +3531,18 @@ const shqAll = (paths) => paths.map(targetLib.shq).join(' ');
  * The target's denials since `since` (ausearch -ts words): { text, count, mode, status } or { error }.
  * ausearch + the journal's login refusals, run as the connected user (root reads the audit log).
  */
-connection.onRequest('selinux/targetDenials', async ({ id, since } = {}) => {
+async function targetDenialsText(id, since) {
   const e = targetHosts.get(id);
   if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
-  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(since), timeout: 120000 });
-  if (r.lost) return { error: r.stderr.trim() || `Connection to ${id} lost.` };
-  const d = targetLib.parseDenialsOutput(r.stdout);
-  if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode };
-  if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
   const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
-  return { text: d.text, count: d.count, mode: d.mode, id, status: d.count ? `Read ${d.count} records from ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` : `No denials logged on ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` };
-});
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(ts), timeout: 120000 });
+  if (r.lost) return { error: r.stderr.trim() || `Connection to ${id} lost.`, since: ts };
+  const d = targetLib.parseDenialsOutput(r.stdout);
+  if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode, since: ts };
+  if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
+  return { text: d.text, count: d.count, mode: d.mode, id, since: ts, status: d.count ? `Read ${d.count} records from ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` : `No denials logged on ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` };
+}
+connection.onRequest('selinux/targetDenials', async ({ id, since } = {}) => targetDenialsText(id, since));
 
 const execFileP = (cmd, args) => new Promise((resolve) => {
   require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
@@ -4998,8 +4999,24 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
 const unconfinedLib = require('./unconfined');
 let hostProcCache = { at: 0, facts: null };
 
-/** This host's services and processes (ps, systemctl show, ss), cached for 15 s. */
-async function hostProcessFacts() {
+const targetProcCache = new Map(); // target id → { at, facts }
+
+/** This host's services and processes (ps, systemctl show, ss), cached for 15 s; or a target's, over its connection. */
+async function hostProcessFacts(target = null) {
+  if (target) {
+    // A target host: the same commands over its ssh connection (root there sees every port and program).
+    const c = targetProcCache.get(target);
+    if (c && Date.now() - c.at < 15000) return c.facts;
+    const r = await targetHosts.run(target, 'sh -s', { input: targetLib.HOST_FACTS_SCRIPT, timeout: 60000 });
+    if (r.lost || (r.code !== 0 && !r.stdout.trim())) return { error: r.stderr.trim() || `Could not look at ${target} (exit ${r.code}).` };
+    const s = targetLib.splitSections(r.stdout);
+    const limits = [];
+    if (s.done == null) limits.push(`The look at ${target} did not run to its end.`);
+    if (parseInt(s.uid, 10) !== 0) limits.push(`Not root on ${target}: listening ports are known only for processes of the user logged in there, and programs are taken from each process's command line.`);
+    const facts = { processes: unconfinedLib.parsePs(s.ps), units: unconfinedLib.parseUnits(s.units), sockets: unconfinedLib.parseSs(s.ss), limits, hostname: (s.hostname || '').trim() || target, target };
+    targetProcCache.set(target, { at: Date.now(), facts });
+    return facts;
+  }
   if (hostProcCache.facts && Date.now() - hostProcCache.at < 15000) return hostProcCache.facts;
   const ps = await execFileP('ps', ['-eo', 'pid=,ppid=,user:32=,label=,comm=,args=']); // user:32: not cut to 8 characters ("libstor+")
   const units = await execFileP('systemctl', ['show', '--no-pager', '-p', 'Id,ExecStart,MainPID,ActiveState,SubState,FragmentPath,User,NoNewPrivileges', '*.service']);
@@ -5021,19 +5038,39 @@ async function hostProcessFacts() {
  * sorted so programs without a domain of their own come first. → unconfined.assemble()'s result +
  * { policies, policy, host: { hostname, processes, units, limits }, locs }.
  */
-async function unconfinedReport(against) {
+async function unconfinedReport(against, { host, since } = {}) {
   await indexing;
   if (process.platform === 'win32') return { error: 'Looking at a host\'s processes needs a Linux host (use Remote-SSH).', policies: [], policy: null };
   const lp = await loginPolicy(against);
   const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
   const policy = lp.pol ? { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active } : null;
   if (lp.error) return { error: lp.error, policies, policy };
-  const facts = await hostProcessFacts();
-  const realpath = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
-  const exists = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+  // Whose programs: this host, or a connected target (by default the policy's target, else the first connected one).
+  const targets = targetHosts.list().filter(e => e.state === 'connected').map(e => ({ id: e.id, mode: e.facts && e.facts.mode ? e.facts.mode.toLowerCase() : null, root: !!(e.facts && e.facts.root) }));
+  const hostId = host === undefined ? (lp.pol && lp.pol.target && targets.some(t => t.id === lp.pol.target) ? lp.pol.target : targets.length ? targets[0].id : null) : host || null;
+  if (hostId && !targets.some(t => t.id === hostId)) return { error: `Not connected to ${hostId}.`, policies, policy, targets };
+  const facts = await hostProcessFacts(hostId);
+  if (facts.error) return { error: facts.error, policies, policy, targets };
+  let realpath = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+  let exists = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
   // A bare program name in ExecStart= (systemd searches its own PATH).
-  const PATH_DIRS = ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'];
-  const which = (n) => (/^[\w.+-]+$/.test(n) ? PATH_DIRS.map(d => `${d}/${n}`).find(exists) || null : null);
+  const PATH_DIRS = targetLib.PATH_DIRS;
+  let which = (n) => (/^[\w.+-]+$/.test(n) ? PATH_DIRS.map(d => `${d}/${n}`).find(exists) || null : null);
+  let pkgOf = null;
+  if (hostId) {
+    // Paths resolved on the target, in one round trip: every ExecStart= entry and process program.
+    const cands = new Set();
+    for (const u of facts.units) for (const p of u.exec) cands.add(p);
+    for (const p of facts.processes) if (p.argv0.startsWith('/')) cands.add(p.argv0);
+    const r = await targetHosts.run(hostId, 'sh -s', { input: targetLib.pathsScript([...cands]), timeout: 120000 });
+    const m = targetLib.parsePaths(r.stdout);
+    if (!m.done) facts.limits.push(`Program paths could not all be resolved on ${hostId}${r.stderr.trim() ? ` (${r.stderr.trim().split('\n')[0]})` : ''}.`);
+    for (const v of [...m.values()]) if (v.real && !m.has(v.real)) m.set(v.real, v);
+    realpath = (p) => (m.get(p) && m.get(p).real) || p;
+    exists = (p) => !!(m.get(p) && m.get(p).exists);
+    which = (n) => (/^[\w.+-]+$/.test(n) && m.get(n) && m.get(n).exists ? m.get(n).real : null);
+    pkgOf = (p) => (m.get(p) && m.get(p).pkg) || null;
+  }
   const paths = new Set();
   for (const u of facts.units) for (const p of u.exec) { const q = p.startsWith('/') ? p : which(p); if (q) paths.add(realpath(q)); }
   for (const p of facts.processes) if (p.argv0.startsWith('/') && (p.ppid === 1 || facts.units.some(u => u.mainPid === p.pid))) paths.add(realpath(p.argv0));
@@ -5055,19 +5092,32 @@ async function unconfinedReport(against) {
     const r = await policyQuery.request({ op: 'names', bin: lp.bin, names: [n] });
     if (!r.error) for (const t of r.types || []) unconfined.add(t);
   }
-  // Packages, a few rpm queries at a time.
+  // Packages, a few rpm queries at a time (resolved on the target already).
   const pkgs = new Map();
-  const list = [...paths].filter(exists);
+  const list = hostId ? [] : [...paths].filter(exists);
   for (let i = 0; i < list.length; i += 8) {
     await Promise.all(list.slice(i, i + 8).map(async (p) => { const q = await execFileP('rpm', ['-qf', '--qf', '%{NAME}\n', '--', p]); if (!q.err) pkgs.set(p, q.stdout.trim().split('\n')[0] || null); }));
   }
-  const out = unconfinedLib.assemble({ processes: facts.processes, units: facts.units, sockets: facts.sockets, labelOf, unconfined, exists, realpath, which, pkgOf: (p) => pkgs.get(p) || null,
+  const out = unconfinedLib.assemble({ processes: facts.processes, units: facts.units, sockets: facts.sockets, labelOf, unconfined, exists, realpath, which, pkgOf: pkgOf || ((p) => pkgs.get(p) || null),
     startsAs: unconfinedLib.startsAsFrom(tr.transitions || [], (t) => canExec.get(t) || null) });
+  // The target's denials since `since`, joined onto the programs by the domain they run in; which service module owns that domain.
+  const den = { since: null, total: 0, error: null, mode: null };
+  const te = hostId ? targetHosts.get(hostId) : null;
+  const permissive = new Set((te && te.facts && te.facts.permissive) || []);
+  if (hostId && since) {
+    const d = await targetDenialsText(hostId, since);
+    den.since = d.since; den.mode = d.mode || null;
+    if (d.error) den.error = d.error;
+    else den.total = unconfinedLib.joinDenials(out.rows, denials.groupDenials(denials.parseDenials(d.text || '')), { permissive, lines: unconfinedLib.denialLinesBySource(d.text || '') });
+  } else unconfinedLib.joinDenials(out.rows, [], { permissive });
+  const owner = new Map();
+  for (const sm of serviceModules()) for (const d of sm.domains) if (!owner.has(d.domain)) owner.set(d.domain, sm.module);
+  for (const r of out.rows) { const d = [...r.hostDomains, r.policyDomain].find(x => x && owner.has(x)); r.module = d ? owner.get(d) : null; }
   const locs = {};
   for (const d of new Set(out.rows.flatMap(r => [r.policyDomain, ...r.hostDomains]).filter(Boolean))) { const l = sourceLocation(d, ['type']); if (l) locs[d] = l; }
-  return { ...out, policies, policy, locs, host: { hostname: facts.hostname, processes: facts.processes.length, units: facts.units.length, limits: facts.limits } };
+  return { ...out, policies, policy, locs, targets, host: { hostname: facts.hostname, processes: facts.processes.length, units: facts.units.length, limits: facts.limits, target: hostId, permissive: [...permissive], denials: den } };
 }
-connection.onRequest('selinux/unconfined', async ({ against } = {}) => unconfinedReport(against));
+connection.onRequest('selinux/unconfined', async ({ against, host, since } = {}) => unconfinedReport(against, { host, since }));
 
 /* ---------------- booleans ---------------- */
 
