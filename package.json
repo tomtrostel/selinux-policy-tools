@@ -119,6 +119,10 @@
     "views": {
       "selinux": [
         {
+          "id": "selinuxFeatures",
+          "name": "Features"
+        },
+        {
           "id": "selinuxPolicyExplorer",
           "name": "Policy Explorer"
         },

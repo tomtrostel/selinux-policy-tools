@@ -20,7 +20,8 @@ modules → their types, attributes, booleans, interfaces and file contexts.
 Right-click a module to edit it as a service or preview turning it off.
 
 **Every feature in one menu:** click **SELinux** in the status bar (or
-[All Features…](command:selinux.showFeatures)). Right-click any file,
+[All Features…](command:selinux.showFeatures)); the same groups are the
+**Features** view at the top of the SELinux sidebar. Right-click any file,
 in the explorer or the editor, for the **SELinux** menu: **Look Up File
 Label** shows what label a file or program gets from each policy, the
 line that sets it, who may access it and which domain running it starts.

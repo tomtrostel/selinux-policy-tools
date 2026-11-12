@@ -974,7 +974,11 @@ so far covered by the e2e tests only.
    Policy Explorer title (menu icon) and submenu `selinux.contextMenu`
    ("SELinux") in explorer/context and editor/context (lookUpFile,
    buildModule for .te/.if/.fc — takes the Uri now —, analyzeDenials,
-   showFeatures). Getting-started navigate page mentions both. Also fixed:
+   showFeatures). Getting-started navigate page mentions both. Features
+   view (2026-11-12, unreleased; user: "add the Features tree to the
+   sidebar"): `FeaturesView` (TreeDataProvider over FEATURES: group nodes
+   collapsed with the count, entries with icon, tooltip = detail, command),
+   view `selinuxFeatures` first in the container; client-test. Also fixed:
    policy_query reach iterated the user's roles as a set (hash order
    changes per run), so logins-e2e's "staff_u reaches sysadm_t as
    sysadm_r" was flaky; now same role, role named like the domain, name.

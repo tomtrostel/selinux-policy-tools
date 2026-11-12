@@ -248,6 +248,7 @@ function activate(context) {
   context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxChanges', changes));
   const preview = new ModulePreviewView();
   context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxModulePreview', preview));
+  context.subscriptions.push(vscode.window.createTreeView('selinuxFeatures', { treeDataProvider: new FeaturesView(), showCollapseAll: true }));
 
   // Dim ifdef/ifndef branches the build flags turn off, like inactive #ifdef code.
   const inactiveDeco = vscode.window.createTextEditorDecorationType({ opacity: '0.45' });
@@ -2079,6 +2080,29 @@ function specPickItem(c) {
 }
 
 /** One menu with every SELinux feature (status bar, Policy Explorer, context menus). */
+/** The Features view in the sidebar: the same table as the All Features menu, one collapsible node per group. */
+class FeaturesView {
+  getChildren(node) {
+    if (!node) return FEATURES.map(([group, list]) => ({ group, list }));
+    return (node.list || []).map(([command, icon, title, detail]) => ({ command, icon, title, detail }));
+  }
+  getTreeItem(node) {
+    if (node.group) {
+      const item = new vscode.TreeItem(node.group, vscode.TreeItemCollapsibleState.Collapsed);
+      item.description = String(node.list.length);
+      item.tooltip = node.list.map(([, , title]) => title).join('\n');
+      item.contextValue = 'group';
+      return item;
+    }
+    const item = new vscode.TreeItem(node.title, vscode.TreeItemCollapsibleState.None);
+    item.iconPath = new vscode.ThemeIcon(node.icon);
+    item.tooltip = node.detail;
+    item.command = { command: node.command, title: node.title };
+    item.contextValue = 'feature';
+    return item;
+  }
+}
+
 async function showFeatures() {
   const items = [];
   for (const [group, list] of FEATURES) {
@@ -2810,4 +2834,4 @@ async function applyDenialFix(plan) {
 
 function deactivate() { return client ? client.stop() : undefined; }
 
-module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView, saveLicense, FEATURES, showFeatures, addCheckLine, specPickItem, _setClient: (c) => { client = c; } };
+module.exports = { activate, deactivate, CompiledPolicyView, ChangesView, ModulePreviewView, FeaturesView, saveLicense, FEATURES, showFeatures, addCheckLine, specPickItem, _setClient: (c) => { client = c; } };

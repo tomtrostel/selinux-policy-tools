@@ -30,6 +30,9 @@ const docOf = (p) => {
 class WorkspaceEdit { constructor() { this.ops = []; } insert(uri, pos, text) { this.ops.push({ uri, pos, text }); } }
 const vscode = {
   QuickPickItemKind: { Separator: -1 }, ViewColumn: { Beside: -2, Active: -1 },
+  TreeItem: class { constructor(label, state) { this.label = label; this.collapsibleState = state; } },
+  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+  ThemeIcon: class { constructor(id) { this.id = id; } },
   Selection: class { constructor(a, b, c, d) { this.range = [a, b, c, d]; } },
   WorkspaceEdit,
   window: {
@@ -78,6 +81,21 @@ const pkg = require('../package.json');
   calls.executed = [];
   await ext.showFeatures();
   check(!calls.executed.length, 'escape runs nothing');
+
+  /* ---------- Features view (sidebar) ---------- */
+  const view = new ext.FeaturesView();
+  const groups = view.getChildren();
+  check(groups.map(g => g.group).join('|') === ext.FEATURES.map(([g]) => g).join('|'), 'the Features view: one node per group of the menu, in the same order');
+  const gi = view.getTreeItem(groups[0]);
+  check(gi.label === 'Look into a policy' && gi.collapsibleState === 1 && gi.description === String(groups[0].list.length) && /Look Up File Label/.test(gi.tooltip),
+    'a group node: collapsed, the count as description, the titles as tooltip', gi);
+  const entries = groups.flatMap(g => view.getChildren(g));
+  check(entries.map(e => e.command).join('|') === cmds.join('|'), 'the entries are exactly the menu entries');
+  const ei = view.getTreeItem(entries.find(e => e.command === 'selinux.showLevels'));
+  check(ei.label === 'Levels and Categories…' && ei.iconPath.id === 'layers' && ei.command.command === 'selinux.showLevels' && ei.collapsibleState === 0 && ei.tooltip.length > 20,
+    'an entry: its title, icon and command, the detail as tooltip', ei);
+  check(view.getChildren(entries[0]).length === 0, 'entries have no children');
+  check(pkg.contributes.views.selinux.some(v => v.id === 'selinuxFeatures' && v.name === 'Features'), 'the view is contributed in the SELinux container');
 
   /* ---------- Add check ---------- */
   const tmp = tempDir('selinux-client-test-');

@@ -202,8 +202,10 @@ Open one of these as the workspace folder:
   *SELinux* item in the status bar, the ☰ button in the Policy Explorer's
   title bar, or *SELinux* in the right-click menu of the explorer and the
   editor. Features are grouped by what they're for (look into a policy,
-  write policy, fix problems, build and install, compare, learn), each with
-  a line saying what it does.
+  write policy, fix problems, build and install, compare, target host,
+  learn), each with a line saying what it does. The same groups sit at the
+  top of the SELinux sidebar as the **Features** view: expand a group and
+  click an entry to run it (hover for what it does).
 
 **Authoring**
 

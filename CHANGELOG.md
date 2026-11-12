@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Features view** at the top of the SELinux sidebar: the entries of the
+  *All Features* menu as a tree, one collapsible node per group (look into
+  a policy, write policy, fix problems, build and install, compare and
+  preview, target host, learn); click an entry to run it, hover for what it
+  does.
+
 ## 0.20.0 (2026-11-12)
 
 **Added**
