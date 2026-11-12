@@ -3387,8 +3387,8 @@ const mtimeOf = (p) => { try { return fs.statSync(p).mtimeMs; } catch { return 0
 let fcListCache = new Map();
 
 /** An installed policy's file contexts: { main, homedirs, local, subs: { local, dist }, files }. */
-function installedFc(name) {
-  const dir = path.join('/etc/selinux', name, 'contexts', 'files');
+function installedFc(name, root = '/etc/selinux') {
+  const dir = path.join(root, name, 'contexts', 'files');
   const f = (n) => path.join(dir, n);
   const specs = (n) => filelabel.parseSpecs(readIf(f(n)), f(n));
   return {
@@ -3461,10 +3461,11 @@ function fcLists(pol) {
     };
   } else {
     const name = pol.name;
-    const dir = path.join('/etc/selinux', name, 'contexts', 'files');
+    const root = selinuxRoot(pol);
+    const dir = path.join(root, name, 'contexts', 'files');
     const newest = Math.max(...['file_contexts', 'file_contexts.homedirs', 'file_contexts.local', 'file_contexts.subs', 'file_contexts.subs_dist'].map(n => mtimeOf(path.join(dir, n))));
-    key = `installed:${name}:${newest}`;
-    make = () => { const i = installedFc(name); return { order: filelabel.lookupOrder(i.main, i.homedirs, i.local), subs: i.subs, newest }; };
+    key = `installed:${root}:${name}:${newest}`;
+    make = () => { const i = installedFc(name, root); return { order: filelabel.lookupOrder(i.main, i.homedirs, i.local), subs: i.subs, newest }; };
   }
   const id = pol.res ? 'tree' : pol.id;
   const c = fcListCache.get(id);
@@ -3493,12 +3494,55 @@ function denialPolicies() {
       list.push({ id: 'build', label: `Last build of ${path.basename(treeRoot)}`, bin: res.policyBin, build: true, fc });
     }
   }
+  // Target hosts' running policies, mirrored here (targethost.js): read like an installed policy, from `root`.
+  for (const e of targetHosts.list()) {
+    if (e.state !== 'connected' || !e.mirror) continue;
+    list.push({ id: `target:${e.id}`, label: `Running on ${e.id} (${e.mirror.name}${e.facts && e.facts.mode ? `, ${e.facts.mode.toLowerCase()}` : ''})`,
+      bin: e.mirror.policy, name: e.mirror.name, target: e.id, root: e.mirror.root, fc: path.join(e.mirror.root, e.mirror.name, 'contexts', 'files', 'file_contexts') });
+  }
   return list;
 }
+
+/** Where a policy's /etc/selinux lives: this host's, or a target's mirror. */
+const selinuxRoot = (pol) => (pol && pol.root) || '/etc/selinux';
+
+/* ---------------- target hosts ---------------- */
+
+const { TargetHosts } = require('./targethost');
+const targetLib = require('./target');
+const targetHosts = new TargetHosts({ dirFor: (id) => build.scratchDir('target', id), log });
+targetHosts.onChange = () => { fcListCache.clear(); connection.sendNotification('selinux/targetsChanged', { targets: targetHosts.list() }); };
+process.on('exit', () => targetHosts.closeAll());
+
+/** Connect to a target host ({ spec, password?, keyOnly? }) → its summary (facts, notes, mirror) or { error }. The password is used once and never kept. */
+connection.onRequest('selinux/targetConnect', async ({ spec, password, keyOnly } = {}) => {
+  const r = await targetHosts.connect({ spec, password: password || null, keyOnly: !!keyOnly });
+  if (!r.error) log(`target ${r.id}: connected (${r.label})`);
+  return r;
+});
+connection.onRequest('selinux/targetDisconnect', async ({ id } = {}) => targetHosts.disconnect(id));
+connection.onRequest('selinux/targetRefresh', async ({ id } = {}) => { const r = await targetHosts.refresh(id); targetHosts.onChange(); return r; });
+connection.onRequest('selinux/targets', async () => ({ targets: targetHosts.list(), linux: process.platform !== 'win32' }));
+/** Run a command on a connected target (used by the tests and the later target features): { code, stdout, stderr }. */
+connection.onRequest('selinux/targetRun', async ({ id, command, input } = {}) => targetHosts.run(id, command, { input: input == null ? null : String(input) }));
+/** Shell-quoted paths for a command on a target. */
+const shqAll = (paths) => paths.map(targetLib.shq).join(' ');
 
 const execFileP = (cmd, args) => new Promise((resolve) => {
   require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
 });
+
+/**
+ * The boolean values in force for a policy: this host's running policy from
+ * /sys/fs/selinux, a target's as read at its last refresh (getsebool -a),
+ * `none` (default {}) for a policy that runs nowhere (its compiled defaults apply).
+ */
+function policyBooleans(pol, none = {}) {
+  if (!pol) return none;
+  if (pol.active) return runningBooleans();
+  if (pol.target) return targetHosts.booleans(pol.target);
+  return none;
+}
 
 /** Current boolean values of the running policy (/sys/fs/selinux/booleans), {} when not available. */
 function runningBooleans() {
@@ -3566,7 +3610,8 @@ async function denialLabels(groups, pol) {
     }
   }
   if (all.size) {
-    const r = await execFileP('stat', ['-c', '%n\t%C', '--', ...all]);
+    // The current labels: stat here, or on the target the policy runs on.
+    const r = pol.target ? await targetHosts.run(pol.target, `stat --printf '%n\\t%C\\n' -- ${shqAll([...all])}`) : await execFileP('stat', ['-c', '%n\t%C', '--', ...all]);
     for (const line of r.stdout.split('\n')) {
       const m = /^(.*)\t(\S+)$/.exec(line);
       if (!m) continue;
@@ -4022,7 +4067,7 @@ connection.onRequest('selinux/analyzeDenials', async ({ text, against, suggest }
       usedBin = bin;
       // A standalone module's own file contexts count too (they label the files it is about).
       if (pol.build && usingDevel) fcFile = moduleFileContexts();
-      const bools = pol.active ? runningBooleans() : {};
+      const bools = policyBooleans(pol);
       if (pol.active && Object.keys(bools).length) policyName = `the running ${pol.name} policy`;
       const checks = groups.filter(g => g.kind === 'deny').map(g => ({ id: g.key, s: g.source, t: g.target, c: g.tclass, perms: g.perms }));
       if (checks.length) {
@@ -4127,8 +4172,8 @@ function loginConfig(pol) {
   }
   const name = pol.name || (build.installedPolicies().find(p => p.active) || {}).name;
   if (!name) return null;
-  const dir = path.join('/etc/selinux', name);
-  return { dir, host: !!(pol.active || pol.build), seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'contexts', 'default_contexts'),
+  const dir = path.join(selinuxRoot(pol), name);
+  return { dir, host: !!(pol.active || pol.build), target: pol.target || null, seusers: path.join(dir, 'seusers'), defaults: path.join(dir, 'contexts', 'default_contexts'),
     userFile: (u) => path.join(dir, 'contexts', 'users', u), failsafe: path.join(dir, 'contexts', 'failsafe_context'), read };
 }
 
@@ -4265,7 +4310,7 @@ async function loginContextReport(lp) {
   const cfg = loginConfig(lp.pol);
   if (!cfg) return { error: 'No login configuration found for this policy.' };
   const f = (p) => ({ path: p, text: cfg.read(p) });
-  const bools = lp.pol.active ? runningBooleans() : {};
+  const bools = policyBooleans(lp.pol);
   const ask = async (items) => {
     const r = await policyQuery.request({ op: 'logincontexts', bin: lp.bin, items, bools });
     if (r.error) throw new Error(`Policy query failed: ${r.error}`);
@@ -4741,9 +4786,11 @@ function contextFilesConfig(pol) {
       fc: { main, templates: main.filter(s => ctxfiles.templateKind(s)), local: installedFc(active.name).local, localLabel: `file_contexts.local of this host's ${active.name} policy`, build: true, label: `${res.module}.fc` } };
   }
   const name = pol.name;
-  const i = installedFc(name);
+  const root = selinuxRoot(pol);
+  const i = installedFc(name, root);
   notes.push(`The home-directory templates are readable by root only (/var/lib/selinux/${name}/active/homedir_template); the file_contexts.homedirs genhomedircon wrote is checked instead.`);
-  return { dir: path.join('/etc/selinux', name), notes, files: appFiles(installedFile(name)), seusers: path.join('/etc/selinux', name, 'seusers'), usersExtra: null,
+  if (pol.target) notes.push(`The files are ${pol.target}'s, as copied at the last refresh of the target.`);
+  return { dir: path.join(root, name), notes, files: appFiles((def) => path.join(root, name, 'contexts', def.where === 'files' ? 'files' : '', def.name)), seusers: path.join(root, name, 'seusers'), usersExtra: null,
     fc: { main: i.main, homedirs: i.homedirs, local: i.local, label: 'file_contexts' } };
 }
 
@@ -4751,7 +4798,7 @@ function contextFilesConfig(pol) {
 async function contextFilesReport(lp) {
   const cfg = contextFilesConfig(lp.pol);
   if (cfg.error) return { error: cfg.error };
-  const bools = lp.pol.active ? runningBooleans() : {};
+  const bools = policyBooleans(lp.pol);
   const sourceOf = (x) => { const s = fcSourceOf(x); return s ? { file: s.p, l: s.l } : null; };
   const report = await ctxfiles.analyze({ files: cfg.files, fc: cfg.fc, sourceOf, seusers: { path: cfg.seusers, text: readSource(cfg.seusers) }, usersExtra: cfg.usersExtra },
     async (items) => {
@@ -4985,7 +5032,7 @@ async function unconfinedReport(against) {
   // The policy: transitions out of init_t, whether init_t may run each type at all, and the domains that confine nothing.
   const tr = await policyQuery.request({ op: 'transitions', bin: lp.bin, name: 'init_t', dir: 'out' });
   if (tr.error) return { error: `Policy query failed: ${tr.error}`, policies, policy };
-  const av = types.length ? await policyQuery.request({ op: 'avc', bin: lp.bin, checks: types.map(t => ({ s: 'init_t', t, c: 'file', perms: ['execute', 'execute_no_trans'] })), bools: lp.pol.active ? runningBooleans() : {} }) : { results: [] };
+  const av = types.length ? await policyQuery.request({ op: 'avc', bin: lp.bin, checks: types.map(t => ({ s: 'init_t', t, c: 'file', perms: ['execute', 'execute_no_trans'] })), bools: policyBooleans(lp.pol) }) : { results: [] };
   const canExec = new Map();
   for (const r of (av.results || [])) if (!r.unknown && r.perms) canExec.set(r.t, { execute: r.perms.execute && r.perms.execute.status === 'allowed', noTrans: r.perms.execute_no_trans && r.perms.execute_no_trans.status === 'allowed' });
   const unconfined = new Set();
@@ -5048,7 +5095,7 @@ async function booleansReport(against) {
   const compiled = {};
   const effects = {};
   for (const [name, e] of Object.entries(r.booleans || {})) { compiled[name] = e.default; effects[name] = { on: e.on, off: e.off, mixed: e.mixed, exprs: e.exprs }; }
-  const out = booleansLib.assemble({ decls: lp.pol.build ? decls : new Map(), conf: booleansLib.parseConf(confText), compiled, running: lp.pol.active ? runningBooleans() : null, effects });
+  const out = booleansLib.assemble({ decls: lp.pol.build ? decls : new Map(), conf: booleansLib.parseConf(confText), compiled, running: policyBooleans(lp.pol, null), effects });
   for (const row of out.rows) { const e = effects[row.name]; if (e) row.exprs = e.exprs; }
   return { ...out, policies, policy, conf: { path: confPath, exists: confText != null, editable: !!confPath && !!lp.pol.build } };
 }
@@ -5302,7 +5349,7 @@ function setransFor(pol) {
       ...specDirs.map(d => path.join(d, `setrans-${name}.conf`)));
   } else {
     const name = pol && !pol.build ? pol.name : (build.installedPolicies().find(p => p.active) || {}).name;
-    if (name) cands.push(path.join('/etc/selinux', name, 'setrans.conf'));
+    if (name) cands.push(path.join(selinuxRoot(pol), name, 'setrans.conf'));
   }
   for (const p of cands) {
     let st;
@@ -5409,7 +5456,7 @@ connection.onRequest('selinux/contextCheck', async ({ against, source, target, t
   if (!/^\w+$/.test(tclass || '')) return { policies: lp.policies, policy, error: 'Pick an object class.' };
   const ps = (Array.isArray(perms) ? perms : String(perms || '').split(/[\s,{}]+/)).filter(Boolean);
   if (!ps.length || ps.some(x => !/^\w+$/.test(x))) return { policies: lp.policies, policy, error: 'Give one or more permissions, e.g. read open.' };
-  const bools = lp.pol.active ? runningBooleans() : {};
+  const bools = policyBooleans(lp.pol);
   const r = await policyQuery.request({ op: 'context', bin: lp.bin, s: source.trim(), t: target.trim(), c: tclass, perms: ps, bools });
   if (r.error) return { policies: lp.policies, policy, error: /^\w+Error: /.test(r.error) ? `Policy query failed: ${r.error}` : r.error };
   delete r.id;

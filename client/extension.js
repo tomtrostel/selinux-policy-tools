@@ -6,6 +6,8 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
 let status;
+let targetStatus = null; // the connected target host, when there is one
+let targets = []; // the server's target list (selinux/targetsChanged)
 
 const CHECKS_TEMPLATE = `# SELinux property checks: assertions about the compiled policy, checked
 # after every build and whenever this file is saved. One per line:
@@ -233,6 +235,9 @@ function activate(context) {
   const checksStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9);
   checksStatus.command = 'selinux.openChecks';
   context.subscriptions.push(checksStatus);
+  targetStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 8);
+  targetStatus.command = 'selinux.showTarget';
+  context.subscriptions.push(targetStatus);
 
   const explorer = new PolicyExplorer();
   context.subscriptions.push(vscode.window.registerTreeDataProvider('selinuxPolicyExplorer', explorer));
@@ -276,6 +281,7 @@ function activate(context) {
     });
     // A build that stops a login from working (or makes it work again): say so right away.
     client.onNotification('selinux/loginsChanged', (p) => loginsChanged(context, p));
+    client.onNotification('selinux/targetsChanged', (p) => targetsChanged(p));
     client.onNotification('selinux/indexing', (p) => {
       if (p.state === 'start') status.text = '$(sync~spin) SELinux: indexing…';
       else {
@@ -454,6 +460,8 @@ function activate(context) {
       showTransitionGraph(context, name, 'out');
     }),
     vscode.commands.registerCommand('selinux.analyzeDenials', async (arg) => {
+      // From Target Host…: the panel on a given policy (a target's).
+      if (arg && typeof arg === 'object' && arg.against) { showDenials(context, null, arg.against); return; }
       // From the tutorial: the practice module's sample denials, checked against its build.
       if (arg === 'practice') {
         const found = await vscode.workspace.findFiles('**/sample-denials.log', '**/node_modules/**', 1);
@@ -481,6 +489,9 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.showUnconfined', () => showUnconfined(context)),
     vscode.commands.registerCommand('selinux.exportReport', () => exportReport()),
     vscode.commands.registerCommand('selinux.showBooleans', () => showBooleans(context)),
+    vscode.commands.registerCommand('selinux.connectTarget', (arg) => connectTarget(context, typeof arg === 'string' ? arg : null)),
+    vscode.commands.registerCommand('selinux.showTarget', () => showTarget(context)),
+    vscode.commands.registerCommand('selinux.disconnectTarget', () => disconnectTarget()),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1713,6 +1724,12 @@ class PolicyExplorer {
 
 let denialPanel = null;
 
+/** The denial panel's policy list read again (a target connected or gone), `selected` picked when given. */
+function refreshDenialPolicies(selected = null) {
+  if (!denialPanel || !client || !client.isRunning()) return;
+  client.sendRequest('selinux/denialPolicies').then(r => { if (denialPanel) denialPanel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected }); }).catch(() => {});
+}
+
 /** A terminal for commands the assistant offers (shared, created on demand). */
 /**
  * The host's AVC denials since `since` (ausearch's -ts words), read with sudo in the SELinux
@@ -1742,6 +1759,7 @@ function showDenials(context, text, against = null) {
   if (denialPanel) {
     denialPanel.reveal();
     if (text) denialPanel.webview.postMessage({ cmd: 'log', text, against });
+    else if (against) refreshDenialPolicies(against);
     return;
   }
   const panel = vscode.window.createWebviewPanel('selinuxDenials', 'Denials', vscode.ViewColumn.Active,
@@ -1820,7 +1838,7 @@ function showDenials(context, text, against = null) {
     try {
       if (m.cmd === 'ready') {
         const r = await client.sendRequest('selinux/denialPolicies');
-        panel.webview.postMessage({ cmd: 'policies', policies: r.policies });
+        panel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against });
         if (text) panel.webview.postMessage({ cmd: 'log', text, against });
       } else if (m.cmd === 'analyze') {
         const result = await client.sendRequest('selinux/analyzeDenials', { text: m.text, against: m.against });
@@ -2016,6 +2034,10 @@ const FEATURES = [
     ['selinux.compareHostChanges', 'diff', 'Compare Host\'s Local Changes…', 'What semanage and semodule changed on a host (file contexts, ports, booleans, logins, modules), against your policy; write them into its source'],
     ['selinux.exportReport', 'book', 'Export Evidence Report…', 'One Markdown or HTML document about a policy: build settings, modules, static findings, property checks, logins, context files, users, services, levels, this host\'s programs'],
     ['selinux.previewModule', 'eye', 'Preview Turning a Module Off/On…', 'What a lockdown change would remove or add, before you make it'],
+  ]],
+  ['Target host', [
+    ['selinux.connectTarget', 'plug', 'Connect to Target Host…', 'A host running SELinux, reached over ssh (password or key, kept nowhere): its policy, mode and booleans become a policy to analyze against'],
+    ['selinux.showTarget', 'remote', 'Target Host…', 'The connected hosts: their facts, refresh, disconnect'],
   ]],
   ['Learn', [
     ['selinux.openTutorials', 'book', 'Open Tutorials', 'Walkthroughs of the extension and of writing policy'],
@@ -2297,6 +2319,120 @@ function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'
  * After a tree build: logins it broke ({ broken, fixed, changed } from the server's comparison with
  * the previous build). A broken login is a warning with the line that causes it when known.
  */
+/* ---------------- target hosts ---------------- */
+
+/** The connected target in the status bar; `targets` kept for the picker. */
+function targetsChanged(p) {
+  targets = (p && p.targets) || [];
+  refreshDenialPolicies();
+  if (!targetStatus) return;
+  const live = targets.filter(t => t.state === 'connected');
+  const t = live[0] || targets.find(x => x.state === 'connecting') || targets.find(x => x.state === 'lost' || x.state === 'error');
+  if (!t) { targetStatus.hide(); return; }
+  const f = t.facts || {};
+  const icon = t.state === 'connected' ? '$(remote)' : t.state === 'connecting' ? '$(sync~spin)' : '$(debug-disconnect)';
+  targetStatus.text = `${icon} ${t.id}${f.mode ? ` · ${f.mode.toLowerCase()}` : ''}${live.length > 1 ? ` +${live.length - 1}` : ''}`;
+  targetStatus.tooltip = t.state === 'connected'
+    ? `Target host ${t.id}: ${f.os && f.os.pretty ? f.os.pretty + ', ' : ''}${f.policy ? `policy ${f.policy.name}` : 'no policy'}${f.policyRpm ? ` (${f.policyRpm})` : ''}${f.root ? '' : ', not root'}.\nClick for details, refresh and disconnect.`
+    : t.state === 'connecting' ? `Connecting to ${t.id}…` : t.error || `${t.id}: ${t.state}`;
+  targetStatus.show();
+}
+
+/**
+ * Connect to a target host: host (user@host[:port]), then how to log in. The
+ * password goes to the server for the one connection and is kept nowhere.
+ */
+async function connectTarget(context, preset) {
+  if (!client || !client.isRunning()) return;
+  const recent = context.globalState.get('selinux.targetHosts') || [];
+  let spec = preset;
+  if (!spec) {
+    spec = await vscode.window.showInputBox({
+      title: 'Connect to Target Host', prompt: 'A host running SELinux, reachable over ssh from the machine the extension runs on: host, user@host or user@host:port. With a password the user is root unless given; with a key it is the one your ssh config names, else your own.',
+      value: recent[0] || '', placeHolder: 'root@192.0.2.10',
+      validateInput: (v) => (/^\s*(?:[\w.-]+@)?(\[[0-9a-fA-F:.]+\]|[\w.-]+)(?::\d{1,5})?\s*$/.test(v) ? null : 'host, user@host or user@host:port'),
+    });
+    if (!spec) return;
+  }
+  spec = spec.trim();
+  const how = await vscode.window.showQuickPick([
+    { label: '$(key) Password', description: 'asked now, used for this connection only, never stored', id: 'password' },
+    { label: '$(file-symlink-file) My ssh key', description: 'the keys and ssh config of the machine the extension runs on (ssh-agent, ~/.ssh/config)', id: 'key' },
+  ], { title: `Log in to ${spec} as…`, placeHolder: 'How to log in' });
+  if (!how) return;
+  let password = null;
+  if (how.id === 'password') {
+    password = await vscode.window.showInputBox({ title: `Password for ${spec}`, prompt: 'Sent to the host once over ssh; not written to settings, state or logs.', password: true, ignoreFocusOut: true });
+    if (password == null) return;
+  }
+  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Connecting to ${spec}…` },
+    () => client.sendRequest('selinux/targetConnect', { spec, password, keyOnly: how.id === 'key' }));
+  if (r.error) { vscode.window.showErrorMessage(r.error); return; }
+  await context.globalState.update('selinux.targetHosts', [spec, ...recent.filter(x => x !== spec)].slice(0, 8));
+  const f = r.facts || {};
+  const what = [f.os && f.os.pretty, f.policy ? `policy ${f.policy.name}` : 'no SELinux policy', f.mode && f.mode.toLowerCase(), f.root ? null : 'not root'].filter(Boolean).join(', ');
+  const notes = (r.notes || []).length ? ` ${r.notes.join(' ')}` : '';
+  const pick = await vscode.window.showInformationMessage(`Connected to ${r.id}: ${what}.${notes}`, 'Target Host…', 'Analyze Denials');
+  if (pick === 'Target Host…') showTarget(context);
+  else if (pick === 'Analyze Denials') vscode.commands.executeCommand('selinux.analyzeDenials');
+}
+
+/** The connected targets: facts, and refresh / disconnect / connect another. */
+async function showTarget(context) {
+  if (!client || !client.isRunning()) return;
+  const r = await client.sendRequest('selinux/targets', {});
+  targets = r.targets || [];
+  const items = [];
+  for (const t of targets) {
+    const f = t.facts || {};
+    items.push({ label: `$(remote) ${t.id}`, kind: vscode.QuickPickItemKind.Separator });
+    if (t.state === 'connected') {
+      const lines = [
+        [f.os && f.os.pretty, f.hostname && f.hostname !== t.host ? `(${f.hostname})` : null].filter(Boolean).join(' '),
+        `SELinux ${f.mode ? f.mode.toLowerCase() : 'state unknown'}${f.config && f.config.mode && f.config.mode.toLowerCase() !== (f.mode || '').toLowerCase() ? ` (${f.config.mode} in /etc/selinux/config)` : ''}, policy ${f.policy ? f.policy.name : 'none'}${f.policyRpm ? ` · ${f.policyRpm}` : ''}`,
+        f.modules ? `${f.modules.length} modules installed${f.modules.filter(m => m.disabled).length ? `, ${f.modules.filter(m => m.disabled).length} disabled` : ''}${f.modules.some(m => m.priority > 100) ? `, ${f.modules.filter(m => m.priority > 100).length} local (priority > 100)` : ''}` : null,
+        f.permissive ? (f.permissive.length ? `Permissive domains: ${f.permissive.slice(0, 8).join(', ')}${f.permissive.length > 8 ? '…' : ''}` : 'No permissive domains') : null,
+        f.booleans ? `${Object.keys(f.booleans).length} booleans read` : null,
+        f.root ? `Logged in as root` : `Logged in as ${t.user} (not root: the module list, permissive domains and the audit log need root)`,
+        ...(t.notes || []),
+      ].filter(Boolean);
+      for (const l of lines) items.push({ label: l, id: null });
+      items.push({ label: '$(refresh) Refresh', description: 'read the facts and the policy files again', id: 'refresh', t });
+      items.push({ label: '$(shield) Analyze Denials against its policy…', id: 'denials', t });
+      items.push({ label: '$(debug-disconnect) Disconnect', id: 'disconnect', t });
+    } else {
+      items.push({ label: t.error || `${t.state}…`, id: null });
+      items.push({ label: '$(debug-disconnect) Forget', id: 'disconnect', t });
+      items.push({ label: '$(plug) Connect again…', id: 'connect', t });
+    }
+  }
+  items.push({ label: 'Connect', kind: vscode.QuickPickItemKind.Separator });
+  items.push({ label: '$(plug) Connect to Target Host…', description: targets.length ? 'another host' : 'a host running SELinux, reachable over ssh', id: 'connect' });
+  const pick = await vscode.window.showQuickPick(items, { title: 'Target Hosts', placeHolder: r.linux === false ? 'Target hosts need a Linux host running the extension (use Remote-SSH).' : 'A host whose SELinux state, denials and services the editor reads over ssh' });
+  if (!pick || !pick.id) return;
+  if (pick.id === 'connect') return connectTarget(context, pick.t ? pick.t.id : null);
+  if (pick.id === 'disconnect') { await client.sendRequest('selinux/targetDisconnect', { id: pick.t.id }); return; }
+  if (pick.id === 'refresh') {
+    const x = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Refreshing ${pick.t.id}…` }, () => client.sendRequest('selinux/targetRefresh', { id: pick.t.id }));
+    if (x.error) vscode.window.showErrorMessage(x.error);
+    return showTarget(context);
+  }
+  if (pick.id === 'denials') vscode.commands.executeCommand('selinux.analyzeDenials', { against: `target:${pick.t.id}` });
+}
+
+async function disconnectTarget() {
+  if (!client || !client.isRunning()) return;
+  const live = targets.filter(t => t.state === 'connected');
+  if (!live.length) { vscode.window.showInformationMessage('No target host is connected.'); return; }
+  let t = live[0];
+  if (live.length > 1) {
+    const pick = await vscode.window.showQuickPick(live.map(x => ({ label: x.id, t: x })), { title: 'Disconnect which target host?' });
+    if (!pick) return;
+    t = pick.t;
+  }
+  await client.sendRequest('selinux/targetDisconnect', { id: t.id });
+}
+
 function loginsChanged(context, p) {
   const who = (x) => [x.login, x.way].filter(Boolean).join(' by ') || x.kind;
   const broken = (p.broken || []).filter(x => x.severity === 'error');

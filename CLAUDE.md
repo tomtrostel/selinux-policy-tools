@@ -1696,6 +1696,56 @@ so far covered by the e2e tests only.
    onto the generated decl. CLIP 8's booleans.conf names every declared
    boolean, so the e2e sets one whose line still says the declared value.
 
+24. **Target hosts** (user 2026-11-12: "give an IP address and a root
+   password so that the system can SSH to a target and retrieve the AVC
+   denials when the target system is in permissive mode … enumerate the
+   services running and see what needs to be changed … push compiled policy
+   changes to that server in order to retest"; plan agreed, "lets try this
+   starting with 1"). Four pieces: 1 connect (done, unreleased), 2 denials
+   from the target, 3 services on the target with their denials and a way
+   into the service editor, 4 push .pp files with backup/rollback and retest.
+   Piece 1: `server/target.js` (pure): parseSpec (user@host[:port]; neither
+   part may start with '-'; default user root for passwords, null = ssh's
+   choice for keys), targetId/sshDest, sshArgs (ControlPath; master:
+   ControlMaster=yes ControlPersist=600 NumberOfPasswordPrompts=1; commands:
+   BatchMode; StrictHostKeyChecking=accept-new with the user's own
+   known_hosts and ~/.ssh/config), ASKPASS_SCRIPT (prints the 0600 password
+   file only to a *assword* prompt, "no" to anything else), FACTS_SCRIPT (one
+   `sh -s` round trip: hostname, uid, clock, os-release, /etc/selinux/config,
+   getenforce, rpm -q selinux-policy, ls of every /etc/selinux/*/policy/
+   policy.NN, semodule --list-modules=full, semanage permissive -l -n,
+   getsebool -a; failures under `key.err` → notes "not root on the target"),
+   parseFacts, mirrorCommand (tar of config, NAME/seusers, NAME/contexts,
+   NAME/setrans.conf, NAME/policy/policy.NN from /etc/selinux).
+   `server/targethost.js` TargetHosts: connect() spawns `setsid -w ssh …
+   true` with SSH_ASKPASS/SSH_ASKPASS_REQUIRE=force/DISPLAY (OpenSSH < 8.4
+   needs DISPLAY and no tty), password file removed right after; run(id,
+   cmd, {input}) over the socket (exit 255 with a socket error → state
+   lost); refresh() = facts + mirror into <scratch>/target-<hash>/mirror/
+   etc/selinux (0700); keepalive ping every 4 min (a crashed server's master
+   still dies after 10 min idle); disconnect = `ssh -O exit` + rm; closeAll
+   on exit. Server: denialPolicies() adds `{ id: 'target:<id>', target,
+   root: mirror, name, bin, fc }` per connected target; `selinuxRoot(pol)`
+   (pol.root || /etc/selinux) in installedFc/fcLists/loginConfig/
+   contextFilesConfig/setransFor; `policyBooleans(pol)` (running here /
+   target's getsebool / none) replaces the `pol.active ? runningBooleans()`
+   sites; denialLabels stats on the target (`stat --printf` over ssh, shq).
+   Requests selinux/targetConnect {spec, password, keyOnly},
+   targetDisconnect, targetRefresh, targets, targetRun {id, command, input};
+   notification selinux/targetsChanged (fcListCache cleared). Client:
+   connectTarget (input box, password/key pick, masked password input, the
+   last 8 specs in globalState 'selinux.targetHosts' — never the password),
+   showTarget quick pick (facts lines, Refresh, Analyze Denials against it,
+   Disconnect, Connect another), disconnectTarget, status bar item
+   (priority 8), FEATURES group "Target host"; selinux.analyzeDenials takes
+   {against}; the denial panel's policy list is re-read on targetsChanged
+   (`policies` message with `selected`). Tests: test/target-test.js (npm
+   test), test/target-e2e.js (melody: `TARGET=root@localhost
+   TARGET_PASS_FILE=<0600 file> KEY_TARGET=ricardo`; the password file is
+   the user's, copied to melody for the run and removed after, never in the
+   repo; a wrapper `ssh` on the server's PATH proves the askpass flow; not in
+   clip-all).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1889,6 +1939,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
 - `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
 - `server/booleans.js`: booleans (booleans.conf parsing, the rows from declarations / conf / compiled / running values, setting a value); `media/booleans.js` the Booleans webview.
+- `server/target.js`: target hosts, pure (host spec, ssh arguments, the askpass helper, the facts script and its parsers, the mirror command); `server/targethost.js` the connections (ssh ControlMaster per target, commands over it, the mirrored /etc/selinux).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -2024,6 +2075,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/booleans-test.js` (in `npm test`) and `test/booleans-e2e.js`
   (`npm run test:booleans-e2e`, melody; optional tree arg; in clip-all as
   `booleans`): the Booleans view.
+- `test/target-test.js` (in `npm test`) and `test/target-e2e.js`
+  (`npm run test:target-e2e`, melody; env TARGET, TARGET_PASS_FILE,
+  KEY_TARGET; not in clip-all): target hosts.
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`

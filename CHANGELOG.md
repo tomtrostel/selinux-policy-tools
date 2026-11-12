@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Target hosts** (*SELinux: Connect to Target Host…*, *SELinux: Target
+  Host…*): a host reached over ssh from the machine the extension runs on,
+  with a password (root unless a user is given; used once to open an ssh
+  control connection, never stored) or with that machine's ssh keys and
+  config. Its OS, policy and package, mode, installed modules, permissive
+  domains and booleans are read, and its kernel policy, `seusers`,
+  contexts and `setrans.conf` are mirrored, so "Running on `<target>`" is a
+  policy to analyze against in the denial assistant (label verdicts stat
+  the files on the target), Booleans, Check Login Contexts, Check Context
+  Files, Levels and File Labels. Status bar item; refresh; disconnect.
+  Requests `selinux/targetConnect`, `selinux/targetDisconnect`,
+  `selinux/targetRefresh`, `selinux/targets`, `selinux/targetRun`;
+  notification `selinux/targetsChanged`.
+
 ## 0.19.0 (2026-11-12)
 
 **Added**

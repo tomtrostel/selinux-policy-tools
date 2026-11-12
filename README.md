@@ -1657,6 +1657,32 @@ them, and on a host the programs that run unconfined under the policy. A
 summary of the open findings comes first. Pick a tree build or an installed
 policy; the Markdown opens in the preview.
 
+**Target hosts** (*SELinux: Connect to Target Host…*, *SELinux: Target
+Host…*): a machine other than the one the extension runs on — a test VM in
+permissive mode, a system being locked down — reached over ssh from the
+host where the extension runs (the Remote-SSH host; on Windows without one
+the feature is unavailable). Give the host as `host`, `user@host` or
+`user@host:port` and log in with a password (root unless a user is given)
+or with the ssh keys and `~/.ssh/config` of that host (its user, else your
+own). The password is used once to open an ssh control connection that
+every later command shares; it is held in memory only until then, never
+written to settings, state or logs. Host keys go through your known_hosts
+(`accept-new`: a changed key is refused). Once connected, the status bar
+shows the target with its SELinux mode, and *Target Host…* lists what was
+read: OS, policy and its package, mode (and what `/etc/selinux/config`
+says), the installed modules with their priorities and the disabled ones,
+the permissive domains, the booleans; as a non-root user the module list
+and permissive domains are missing and the panel says so. The target's
+kernel policy, `seusers`, contexts and `setrans.conf` are copied into the
+extension's private scratch area, so **"Running on `<target>`" is a policy
+to pick** in the denial assistant, Booleans (the target's running values),
+Check Login Contexts, Check Context Files, Levels and Categories and the
+File Labels lookup, exactly like a policy installed here; denial label
+verdicts stat the files on the target. *Refresh* reads everything again;
+*Disconnect* closes the connection and removes the copies (the server does
+the same when it exits). Reading the target's denials, listing its
+services and pushing a policy to it are the next steps of this feature.
+
 ## Checking in CI: `selinux-policy-check`
 
 Everything the extension checks after a build also runs without VS Code,
@@ -2141,6 +2167,16 @@ Example for CLIP on RHEL 9 (its RPM build arguments), in the tree's
   and removing two permissions gives exactly the five changed rules and one
   attribute-membership change, each traced to the right line (removals to
   the HEAD version); an edit granting nothing new reports no change.
+* Target hosts (`test/target-e2e.js` on Rocky 9): a password login to
+  root on the same host through the askpass helper (a wrapper around ssh
+  checks the helper answers only a password prompt; the password file is
+  gone afterwards; a wrong password is refused), the facts as root (443
+  modules, 7 permissive domains, 364 booleans), the mirrored policy giving
+  the same denial verdicts, boolean values, login-context and context-file
+  problems as the installed one, a command over the connection, refresh,
+  disconnect; a key login to a Rocky 8 host as a plain user (module list
+  and permissive domains reported missing, booleans and logins read, a
+  label verdict with the file's current label read there).
 * Interactive use through VS Code Remote-SSH from Windows to Rocky 9:
   indexing, standalone-module builds, and on CLIP the full-tree build
   (compile and link errors), the Compiled Policy view (browsing, navigation,

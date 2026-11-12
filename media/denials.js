@@ -226,7 +226,7 @@
 
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (m.cmd === 'policies') setPolicies(m.policies);
+    if (m.cmd === 'policies') setPolicies(m.policies, m.selected);
     else if (m.cmd === 'result') { if (m.result.policies) setPolicies(m.result.policies, m.result.policy && m.result.policy.id); render(m.result); }
     else if (m.cmd === 'log') { $('log').value = m.text; analyze(m.against || undefined); }
     else if (m.cmd === 'status') $('status').textContent = m.text;
