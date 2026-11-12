@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-11-12: **v0.19.0 released** (GitHub release `v0.19.0`;
+Status as of 2026-11-12: **v0.20.0 released** (GitHub release `v0.20.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -67,7 +67,15 @@ interactively yet.
 interactively): step 20 (learn from a permissive run), step 21
 (session-start checks), step 22 (evidence report + CLI --report), step 23
 (Booleans view) and the template-generated booleans fix; full clip-all
-green on melody and ricardo. The release build is installed on melody.
+green on melody and ricardo.
+0.20.0 (released 2026-11-12; the user tried the target-host features on
+melody first: "ok tested"): step 24 (target hosts: connect, denials from
+the target, services on the target, push a build with backup/rollback and
+retest), tested on melody and ricardo both ways. The release build is
+installed on melody. The repo is public: the root password files for the
+test hosts stay untracked in `sample/` (audited at release: no password
+content, file name or Claude-side path in any tracked file, commit or the
+vsix).
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1701,12 +1709,12 @@ so far covered by the e2e tests only.
    denials when the target system is in permissive mode … enumerate the
    services running and see what needs to be changed … push compiled policy
    changes to that server in order to retest"; plan agreed, "lets try this
-   starting with 1"). Four pieces: 1 connect (done, unreleased), 2 denials
-   from the target (done, unreleased; the user tried piece 1 and found the
+   starting with 1"). Four pieces (all done, 0.20.0): 1 connect, 2 denials
+   from the target (the user tried piece 1 and found the
    log still read locally: "It needed to go to the target host and retrieve
    those logs"), 3 services on the target with their denials and a way
-   into the service editor (done, unreleased), 4 push .pp files with
-   backup/rollback and retest (done, unreleased).
+   into the service editor, 4 push .pp files with backup/rollback and
+   retest.
    Piece 4: target.js storeChecksumScript(name) (md5 of each module's hll
    as semodule -E would extract it; /var/lib/selinux/NAME/active/modules/
    PRIO/MOD/{cil,hll,lang_ext}, hll bzip2 — verified equal to `semodule -E`
