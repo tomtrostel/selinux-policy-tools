@@ -532,7 +532,9 @@ class PolicyIndex {
             const doc = p.doc ? substDoc(p.doc, args) : null;
             push(genDefs, n, { kind: p.kind, name: n, path: site.path, l: site.l, c: site.c, len: site.len, doc, generated: true, via: site.name, declPatterns: [], bodyCalls: [], requires: [], reqBlocks: [] });
           } else {
-            push(genDecls, n, { kind: p.kind, name: n, path: site.path, l: site.l, c: site.c, len: site.len, attrs: [], generated: true, via: site.name });
+            const g = { kind: p.kind, name: n, path: site.path, l: site.l, c: site.c, len: site.len, attrs: [], generated: true, via: site.name };
+            if (p.kind === 'bool') { g.tunable = !!p.tunable; g.default = subst(p.default || '', args); if (p.doc) g.doc = substDoc(p.doc, args); }
+            push(genDecls, n, g);
           }
         }
         for (const bc of d.bodyCalls) {

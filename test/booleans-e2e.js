@@ -71,15 +71,19 @@ const finish = () => { console.log(failures ? `\n${failures} booleans e2e checks
   const declared = (r2.rows || []).filter(x => x.declared && x.inPolicy);
   const oddLoc = declared.filter(x => !(x.loc && /\.te(\.in)?$/.test(x.loc.p) && x.loc.p.startsWith(ws)));
   const noDefault = declared.filter(x => x.source == null);
-  // Booleans a template declares (allow_httpd_$1_script_anon_write) have no default of their own on the pattern.
-  check(declared.length > 50 && !oddLoc.length && declared.some(x => x.desc) && noDefault.length < 10 && noDefault.every(x => /_script_/.test(x.name)), `${declared.length} declared in the tree's sources with their location, description and default (${noDefault.length} template-generated without one)`, { oddLoc: oddLoc.slice(0, 3).map(x => [x.name, x.loc]), noDefault: noDefault.slice(0, 5).map(x => x.name) });
+  const generated = declared.filter(x => /_script_anon_write$|_manage_all_user_content$/.test(x.name));
+  // Booleans a template declares (allow_httpd_$1_script_anon_write, $1_manage_all_user_content) get the pattern's default and description.
+  check(declared.length > 50 && !oddLoc.length && declared.some(x => x.desc) && !noDefault.length && generated.length && generated.every(x => x.desc && x.tunable),
+    `${declared.length} declared in the tree's sources with their location, description and default (${generated.length} by a template)`, { oddLoc: oddLoc.slice(0, 3).map(x => [x.name, x.loc]), noDefault: noDefault.slice(0, 5).map(x => x.name), generated: generated.slice(0, 3) });
   // CLIP's booleans.conf names booleans of modules that are off too: only the compiled ones can follow it.
   const fromConf = (r2.rows || []).filter(x => x.conf != null && x.inPolicy);
   const disagree = fromConf.filter(x => x.compiled !== x.conf);
   check(fromConf.length > 5 && !disagree.length, `booleans.conf sets ${fromConf.length} of the compiled booleans; the compiled defaults follow it (${(r2.rows || []).filter(x => x.conf != null && !x.inPolicy).length} named there are not in the policy)`, disagree.slice(0, 4).map(x => [x.name, x.conf, x.compiled, x.source]));
-  // Set one that booleans.conf doesn't name yet, away from its declared default.
-  const pick = declared.find(x => x.conf == null && x.source != null && x.on && x.on.count > 0);
-  check(pick, `a declared boolean to set: ${pick && pick.name} (declared ${pick && (pick.source ? 'on' : 'off')})`);
+  // Set one away from its declared default: one booleans.conf doesn't name yet, else (CLIP 8 names
+  // them all) one whose line there still says the declared value.
+  const pick = declared.find(x => x.conf == null && x.source != null && x.on && x.on.count > 0) || declared.find(x => x.source != null && x.conf === x.source && x.on && x.on.count > 0);
+  check(pick, `a declared boolean to set: ${pick && pick.name} (declared ${pick && (pick.source ? 'on' : 'off')}${pick && pick.conf != null ? ', named in booleans.conf' : ''})`, declared.slice(0, 3));
+  if (!pick) { b.proc.kill(); return finish(); }
   const plan = await b.conn.sendRequest('selinux/booleanSet', { name: pick.name, value: !pick.source });
   check(plan && plan.path === r2.conf.path && plan.inserted[0] === `${pick.name} = ${!pick.source ? 'true' : 'false'}` && typeof plan.line === 'number', 'booleanSet: a plan for booleans.conf', plan);
   fs.writeFileSync(plan.path, plan.text);

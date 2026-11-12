@@ -1683,7 +1683,13 @@ so far covered by the e2e tests only.
    test/booleans-test.js (npm test), policy_query_test (booleans op),
    test/booleans-e2e.js (melody: running targeted vs getsebool, CLIP
    build: declarations + booleans.conf, set one, rebuild; in clip-all as
-   `booleans`).
+   `booleans`). Found by the full regression: booleans a template declares
+   (`gen_tunable(\`$1_manage_all_user_content', false)` in userdomain.if,
+   `allow_httpd_$1_script_anon_write`) came out of the index without a
+   default, kind or description; the parser now keeps those on the bool
+   declPattern and expandGenerated copies them (doc with $N substituted)
+   onto the generated decl. CLIP 8's booleans.conf names every declared
+   boolean, so the e2e sets one whose line still says the declared value.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.

@@ -40,7 +40,9 @@
   default are marked. *Set on/off in booleans.conf* writes the tree's
   default (built on save); on a host, `setsebool -P` runs in a terminal.
   Requests `selinux/booleans`, `selinux/booleanSet`; policy_query op
-  `booleans`.
+  `booleans`. Booleans a template declares (`$1_manage_all_user_content`,
+  `allow_httpd_$1_script_anon_write`) now carry the template's default,
+  kind and description in the index (hover and the Booleans view).
 
 ## 0.18.0 (2026-11-12)
 

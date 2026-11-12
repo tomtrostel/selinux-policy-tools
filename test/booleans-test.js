@@ -105,5 +105,27 @@ check(byId.main.all(e => e.tag === 'button' && /^setsebool -P (on|off)$/.test(e.
 byId.main.all(e => e.tag === 'button' && /^setsebool -P on$/.test(e.textContent))[0].fire('click');
 check(posted[posted.length - 1].cmd === 'setsebool' && posted[posted.length - 1].value === true, 'webview: setsebool goes to the client (a terminal)');
 
+// 4. Booleans a template declares keep their default, kind and description in the index
+//    (gen_tunable(`$1_manage_all_user_content', false) in userdomain.if, called for cron).
+{
+  const { PolicyIndex } = require('../server/indexer');
+  const path = require('path');
+  const P = (rel) => path.resolve('/t', rel);
+  const idx = new PolicyIndex();
+  idx.setFile(P('policy/modules/system/userdomain.if'), [
+    '## <summary>User domains</summary>',
+    'template(`userdom_manage_home_template\',`',
+    '\tgen_require(`', '\t\ttype $1_t;', '\t\')',
+    '\t## <desc>', '\t## <p>Allow $1 to manage all user content.</p>', '\t## </desc>',
+    '\tgen_tunable(`$1_manage_all_user_content\', false)',
+    '\')',
+  ].join('\n'), true);
+  idx.setFile(P('policy/modules/services/cron.te'), 'policy_module(cron, 1.0)\ntype cron_t;\nuserdom_manage_home_template(cron)\n', true);
+  idx.rebuild();
+  const d = (idx.decls.get('cron_manage_all_user_content') || []).find(x => x.kind === 'bool');
+  check(d && d.generated && d.tunable === true && B.parseDefault(d.default) === false && d.doc && /Allow cron to manage/.test(d.doc.desc || '') && /cron\.te$/.test(d.path),
+    'index: a template-generated boolean carries its default, tunable kind and description', d);
+}
+
 console.log(failures ? `\n${failures} booleans checks FAILED` : '\nall booleans checks passed');
 process.exit(failures ? 1 : 0);

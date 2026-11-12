@@ -212,7 +212,8 @@ function parsePolicy(text) {
       return null;
     }
     if (tk.v.includes('$')) {
-      if (def) def.declPatterns.push(withWhen({ kind, pattern: tk.v }));
+      // A boolean pattern keeps its default and whether it is a tunable (gen_tunable(`$1_x', false) in a template).
+      if (def) def.declPatterns.push(withWhen(kind === 'bool' && extra ? { kind, pattern: tk.v, ...extra } : { kind, pattern: tk.v }));
       return null;
     }
     const d = { kind, name: tk.v, l: tk.l, c: tk.c, len: tk.v.length, attrs: [], ...extra };
@@ -435,10 +436,7 @@ function parsePolicy(text) {
     // gen_tunable(`$1_exec_content', ...) in a template declares a pattern (recordDecl → declPatterns).
     if (BOOL_MACROS.has(frame.name) && args[0] && /^[\w$]+$/.test(args[0])) {
       const t = frame.firstIdent;
-      if (t) {
-        const d = recordDecl('bool', t, { tunable: frame.name === 'gen_tunable', default: args[1] || '' });
-        if (d) d.doc = docAbove(commentByLine, frame.tok.l);
-      }
+      if (t) recordDecl('bool', t, { tunable: frame.name === 'gen_tunable', default: args[1] || '', doc: docAbove(commentByLine, frame.tok.l) });
     }
     if (frame.name === 'policy_module' && args[0]) out.module = args[0];
   }
