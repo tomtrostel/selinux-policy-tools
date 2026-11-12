@@ -25,3 +25,10 @@ copy, so your normal build is untouched, and shows:
 Even before building, the editor marks modules whose hard dependencies are
 off (diagnostic *link-missing*), all of them at once. `semodule_link`
 reports only one per build, and with no line.
+
+The `optional_policy` blocks the linker drops are **dimmed** in the editor,
+like inactive `ifdef` branches; hovering one says which type it needs and
+which module (off in `modules.conf`) declares it, and shows what the block
+would compile to. In a CLIP tree, **SELinux: Select Install Profile…** picks a
+kickstart, so modules packaged on their own that its hosts don't install count
+as absent too.

@@ -1615,8 +1615,9 @@ A preview is a full build of the changed tree (CLIP ~10 s).
 **Workspace trust.** Building runs the policy tree's Makefile, and the build
 settings can carry commands. In VS Code's Restricted Mode, navigation and
 diagnostics still work, but builds are off and workspace values of the
-`selinux.build.*` settings above are ignored. Trust the workspace to enable
-them.
+`selinux.build.*` settings above are ignored, as are those of
+`selinux.logins.sessions` (it names programs the login check runs `ldd` on).
+Trust the workspace to enable them.
 
 For CLIP, *Configure Build from Spec File…* with CLIP's spec
 (`packages/selinux-policy/selinux-policy.spec` on the RHEL 9 branch,

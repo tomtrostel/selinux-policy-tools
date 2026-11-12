@@ -244,7 +244,7 @@ connection.onDidChangeWatchedFiles((ev) => {
       continue;
     }
     // Kickstarts, their templates, comps.xml, CONFIG_BUILD, Makefiles (CLIP's SEPARATE_PKGS): the install profile may have changed.
-    if (/.(ks|tmpl)$|(^|[\/])(comps.xml|CONFIG_BUILD)$/.test(p) || path.basename(p) === 'Makefile') {
+    if (/\.(ks|tmpl)$|(^|[\\/])(comps\.xml|CONFIG_BUILD)$/.test(p) || path.basename(p) === 'Makefile') {
       profileCache = null;
       connection.sendNotification('selinux/inactiveChanged', {});
       continue;
@@ -285,7 +285,7 @@ function publish(doc) {
 
 /** A separately packaged module the active install profile doesn't install: said once, on its policy_module line. */
 function profileDiagnostics(f) {
-  if (!f || !/.te(.in)?$/.test(f.path || '') || !idx.isEnabled(f.module)) return [];
+  if (!f || !/\.te(\.in)?$/.test(f.path || '') || !idx.isEnabled(f.module)) return [];
   const prof = installProfiles();
   const st = prof && prof.active && prof.active.modules.get(f.module);
   if (!st || st.state !== 'absent') return [];

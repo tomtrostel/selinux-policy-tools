@@ -102,6 +102,25 @@
   later answer could overwrite an earlier one (no wrong result was seen;
   found when reading the terminal type's rule).
 
+* **User editor: modules that link with semodule/CIL.** Legacy `make
+  validate` accepted what `semodule` refuses, so a tree built fine and
+  failed to install:
+  * `role R;` written both in `kernel.te` (for the users file) and in the
+    role's module is a re-declaration for CIL. New modules no longer get the
+    line, existing ones lose it (not the roles `hll/pp` declares from base
+    only, so RHEL's `staff.te` stays), and RHEL's
+    `userdom_confined_admin_template`, which declares the role itself, is
+    avoided in trees (a note when it is the only choice).
+  * A `seusers` line without a range becomes `systemlow`, which CIL can't
+    resolve: logins now get the user's default level in MLS/MCS trees.
+  * refpolicy packages only `seusers` lines that start with `a-z` or `_`, so
+    `%group` logins in a tree were never installed: the user editor refuses
+    them (map them on the host with `semanage login`), the wrapper editor
+    notes them, and the login reports and checks read the tree's `seusers`
+    the way it gets installed.
+  (Found by the new semodule/CIL link in `test/user-e2e.js`, and reported
+  in the README under *Findings*.)
+
 ## 0.17.0 (2026-10-22)
 
 **Added**

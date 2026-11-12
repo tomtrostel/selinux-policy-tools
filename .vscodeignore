@@ -6,3 +6,4 @@ CLAUDE.md
 .gitignore
 **/__pycache__/**
 sample/**
+.claude/**

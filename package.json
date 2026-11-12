@@ -1141,7 +1141,8 @@
         "selinux.build.tree.targets",
         "selinux.build.tree.files",
         "selinux.build.tree.outputDir",
-        "selinux.build.trees"
+        "selinux.build.trees",
+        "selinux.logins.sessions"
       ]
     }
   }

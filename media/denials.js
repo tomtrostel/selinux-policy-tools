@@ -189,10 +189,12 @@
     $('status').textContent = n ? `${r.count} denial${r.count === 1 ? '' : 's'} in ${n} group${n === 1 ? '' : 's'}${rn ? ` and ${rn}` : ''}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : rn ? `${rn}${r.policy ? ` · checked against ${r.policy.label}` : ''}` : 'No denials found in the text.';
     $('status').setAttribute('title', r.policy ? `Rules from ${r.policy.label}; expected file labels from ${r.policy.fileContexts}` : '');
     if (r.notes && r.notes.length) list.append(h('ul', { class: 'notes top' }, r.notes.map(x => h('li', {}, x))));
-    const order = ['transition', 'label', 'boolean', 'constraint', 'generic', 'missing', 'allowed', 'unknown', 'error'];
+    const order = ['transition', 'label', 'boolean', 'constraint', 'generic', 'missing', 'nnp', 'invalid', 'bounds', 'allowed', 'unknown', 'error'];
+    const WORDS = { transition: 'not in its domain', label: 'wrong label', boolean: 'boolean', constraint: 'constraint', generic: 'generic label', missing: 'missing rule',
+      nnp: 'NoNewPrivileges', invalid: 'invalid context', bounds: 'typebounds', allowed: 'already allowed', unknown: 'not in this policy', error: 'error' };
     const counts = {};
     for (const g of r.groups) counts[g.v.verdict] = (counts[g.v.verdict] || 0) + 1;
-    if (n > 1) list.append(h('div', { class: 'summary muted' }, order.filter(k => counts[k]).map(k => `${counts[k]} ${({ transition: 'not in its domain', label: 'wrong label', boolean: 'boolean', constraint: 'constraint', generic: 'generic label', missing: 'missing rule', allowed: 'already allowed', unknown: 'not in this policy', error: 'error' })[k]}`).join(' · ')));
+    if (n > 1) list.append(h('div', { class: 'summary muted' }, order.filter(k => counts[k]).map(k => `${counts[k]} ${WORDS[k]}`).join(' · ')));
     refusals.forEach((x) => list.append(refusalCard(x)));
     r.groups.forEach((g, i) => list.append(card(g, i)));
   }
