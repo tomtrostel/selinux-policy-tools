@@ -15,6 +15,14 @@
   form has no place for is listed with the rule it would need; denials of
   other domains and `SELINUX_ERR` records are left out. Request
   `selinux/serviceLearn`.
+* **Session-start checks** in `selinux.checks`: `require login <logins>
+  starts [by <ways>]` and `never login <logins> starts by <ways>` hold or
+  fail as *Check Login Contexts* judges the login (context chosen, shell
+  entered, libraries, terminal, NoNewPrivileges, forced command), so a
+  build that bounces a login fails the checks (and `selinux-policy-check`
+  in CI). Ways: `ssh`, `console`, `graphical`, `cron`, `rlogin`, `systemd`,
+  `cockpit`, or a login program's domain. Completion and highlighting
+  know the new words.
 
 ## 0.18.0 (2026-11-12)
 

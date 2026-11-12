@@ -1610,7 +1610,29 @@ so far covered by the e2e tests only.
    replaced + changed(); report grouped by action, unmapped rules with a copy
    button. Tutorial service/apply.md. Tests: test/learn-test.js (npm test),
    service-test form checks, test/learn-e2e.js (melody: CLIP build, 12
-   synthetic denials → model, plan, builds; in clip-all as `learn`).
+   synthetic denials → model, plan, builds; in clip-all as `learn`). Found:
+   the ranking can pick an interface a neverallow refuses (CLIP:
+   auth_tunable_read_shadow for a shadow_t read); the build's expand step
+   says so, the e2e uses cert_t instead.
+
+21. **Session-start checks** (done, unreleased; feature 4 of the list).
+   checks.js: `require|never login <logins> starts [by <ways>]` → kind
+   login-starts {require, logins, ways, sources} with WAYS (ssh sshd_t,
+   console local_login_t, graphical xdm_t, cron crond_t, rlogin
+   remote_login_t, systemd init_t, cockpit cockpit_session_t, single-user
+   sulogin_t; a *_t name passes as is); 'login' checks may now start with
+   require (only for starts); KEYWORDS + grammar + completion (starts, by,
+   the ways). Server loginChecks: startReport() = loginContextReport of the
+   build (else the active policy) once per run; per resolved seusers line
+   the report mapping's ways filtered by sources; starts = works3 and no
+   error problem of that login + source (session-* and nocontext*);
+   require → a violation per way that doesn't start (reason = the
+   problem's text, or no valid context; a way the user lacks: "no contexts
+   line for S") and never → per way that does; checkMessage words both.
+   Tests: checks-test (parser), sessions-e2e (selinux.checks in the CLIP
+   copy: brk by ssh fails with the session reason, never by console holds,
+   graphical = no way in; after the fixes holds or names the remaining
+   kind). README Features (checks bullet), lockdown/checks.md.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.

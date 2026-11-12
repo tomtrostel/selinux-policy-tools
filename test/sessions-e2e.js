@@ -94,11 +94,22 @@ function start(ws, initOptions = {}) {
   const ownOrig = fs.existsSync(own) ? fs.readFileSync(own, 'utf8') : '';
   fs.writeFileSync(own, `system_r:sshd_t:s0\tstaff_r:brk_t:s0 staff_r:staff_t:s0\n${ownOrig.split('\n').filter(l => !/^system_r:sshd_t:/.test(l)).join('\n')}`);
 
+  // Session-start checks in selinux.checks: brk by ssh must start (it won't yet), and must not by console (it has no console line).
+  const checksPath = path.join(ws, 'selinux.checks');
+  const checksUri = URI.file(checksPath).toString();
+  fs.writeFileSync(checksPath, 'require login brk starts by ssh\nnever login brk starts by console\nrequire login brk starts by nosuch_login_t\n');
   const b = start(ws, { build: { tree: { makeArgs: args } } });
   await b.init();
   t0 = Date.now();
   let res = await b.conn.sendRequest('selinux/build', { uri: URI.file(ws).toString() });
   check(res && res.ok, `tree build with brk (${((Date.now() - t0) / 1000).toFixed(0)} s)`, res && res.diagnostics && res.diagnostics.slice(0, 3));
+  await until(() => (b.diags[checksUri] || []).length > 0, 120000);
+  const cd = () => b.diags[checksUri] || [];
+  const line0 = cd().find(d => d.range.start.line === 0), line1 = cd().find(d => d.range.start.line === 1), line2 = cd().find(d => d.range.start.line === 2);
+  check(line0 && /brk → staff_u doesn't start by ssh: .*brk_t may not be entered by running/.test(line0.message),
+    `selinux.checks: "require login brk starts by ssh" fails with the session's reason (${line0 && line0.message.slice(0, 100)}…)`, cd().map(d => [d.range.start.line, d.message.slice(0, 120)]));
+  check(line1 && /brk → staff_u starts by console login \(staff_u:staff_r:staff_t/.test(line1.message), '"never login brk starts by console" fails: the console way (default_contexts) does start, in staff_t', line1 && line1.message);
+  check(line2 && /no contexts line for nosuch_login_t/.test(line2.message), '"require login brk starts by nosuch_login_t": fails, no such way in for staff_u', line2 && line2.message);
   let rep = await b.conn.sendRequest('selinux/loginContexts', { against: 'build' });
   const brk = (rep.mappings || []).find(m => m.login === 'brk');
   const way = brk && brk.ways.find(w => w.source === 'sshd_t');
@@ -148,6 +159,10 @@ function start(ws, initOptions = {}) {
   check(after.length < mine.length, `${mine.length - after.length} of ${mine.length} problems fixed with the tree's interfaces`, after.map(p => p.kind));
   await until(() => !(b.diags[seUri] || []).some(x => x.code === 'session-entry'));
   check(!(b.diags[seUri] || []).some(x => x.code === 'session-entry'), 'and its diagnostic is gone');
+  const stillErrors = after.filter(p => p.severity === 'error');
+  await until(() => { const d = cd().find(x => x.range.start.line === 0); return stillErrors.length ? !!d : !d; }, 60000);
+  const l0 = cd().find(x => x.range.start.line === 0);
+  check(stillErrors.length ? l0 && !/entered by running/.test(l0.message) : !l0, stillErrors.length ? `"require login brk starts by ssh" still fails, now for ${stillErrors[0].kind}` : '"require login brk starts by ssh" holds after the fixes', cd().map(d => [d.range.start.line, d.message.slice(0, 120)]));
 
   // 4. The records a bounce leaves, in the denial assistant against the build.
   const log = [

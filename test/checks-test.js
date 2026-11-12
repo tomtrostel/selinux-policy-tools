@@ -53,7 +53,17 @@ check(c.kind === 'login-reaches' && same(c.logins, ['%wheel', 'alice']) && same(
 c = one('never login * may read shadow_t:file');
 check(c.kind === 'login-may' && same(c.logins, ['*']) && same(c.classes, ['file']), 'never login … may', c);
 check(one('never login __default__ maps to unconfined_u').kind === 'login-maps', 'never login … maps to');
-check(/start with 'never'/.test(error('only login alice reaches a_t').msg) && /Expected 'reaches', 'may' or 'maps to'/.test(error('never login alice runs a_t').msg), 'login errors');
+check(/start with 'never' or 'require'/.test(error('only login alice reaches a_t').msg) && /Expected 'reaches', 'may' or 'maps to'/.test(error('never login alice runs a_t').msg) && /other than 'starts' start with 'never'/.test(error('require login alice reaches a_t').msg), 'login errors');
+c = one('require login alice %ops starts by ssh console');
+check(c.kind === 'login-starts' && c.require && same(c.logins, ['alice', '%ops']) && same(c.ways, ['ssh', 'console']) && same(c.sources, ['sshd_t', 'local_login_t']), 'require login … starts by ssh console → sshd_t, local_login_t', c);
+c = one('never login %ro starts by graphical');
+check(c.kind === 'login-starts' && !c.require && same(c.sources, ['xdm_t']), 'never login … starts by graphical', c);
+c = one('require login __default__ starts');
+check(c.kind === 'login-starts' && c.require && !c.ways.length && !c.sources.length, 'starts without by: every way in', c);
+c = one('require login alice starts by cockpit_session_t');
+check(c.kind === 'login-starts' && same(c.sources, ['cockpit_session_t']), 'a login program\'s domain as the way', c);
+check(/Unknown way in 'telnet'/.test(error('require login alice starts by telnet').msg) && /Expected the way\(s\) in after 'by'/.test(error('require login alice starts by').msg) && /Unexpected 'now'/.test(error('require login alice starts now').msg), 'starts errors: unknown way, nothing after by, extra word');
+check(KEYWORDS.includes('starts') && require('../server/checks').WAYS.ssh === 'sshd_t', 'starts is a keyword; WAYS exported');
 
 /* ---------- levels ---------- */
 c = one('never container_t svirt_t may ignore levels on { file dir }');

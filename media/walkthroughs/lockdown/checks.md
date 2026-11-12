@@ -23,6 +23,7 @@ never staff_u may use sysadm_r
 never unconfined_u may log in
 never login __default__ reaches sysadm_t
 never login * may read shadow_t:file
+require login %admins starts by ssh console
 # levels (MLS / MCS)
 never container_t may ignore levels
 require container_t isolated by levels
@@ -40,7 +41,9 @@ require container_t isolated by levels
   hands out; `never login <logins> …` follows a Linux login (`alice`,
   `%group`, `__default__`, `*` = all) to its user, where its ways in land
   and what its sessions can reach (`reaches`) or do (`may`), as **Logins and
-  Users** shows it.
+  Users** shows it. `require login <logins> starts by <ways>` holds when
+  the login gets a valid context and its session starts, as **Check Login
+  Contexts** judges it — so a build that bounces a login fails the checks.
 * Levels: `only|never <domains> may ignore levels [on <classes>]` checks
   which domains pass the MLS/MCS constraints whatever the levels;
   `require <domains> isolated by levels` checks that what two processes of a

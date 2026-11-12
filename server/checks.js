@@ -21,6 +21,9 @@
  *   never login <logins> may <perms> <targets>[:<classes>]
  *                                                      … and what they may do there
  *   never login <logins> maps to <users>               the SELinux user seusers gives a login
+ *   require|never login <logins> starts [by <ways>]     the login gets a valid context and its session
+ *                                                      starts (Check Login Contexts); ways: ssh, console,
+ *                                                      graphical, cron, rlogin, systemd, cockpit, or a domain
  *   only|never <domains> may ignore levels [on <classes>]
  *                                                      domains that pass MLS/MCS constraints whatever
  *                                                      the levels (MCS: not in mcs_constrained_type)
@@ -43,7 +46,9 @@ const PERM_GROUPS = {
   execute: ['execute', 'execute_no_trans', 'entrypoint'],
 };
 const FILE_CLASSES = ['file', 'dir', 'lnk_file', 'chr_file', 'blk_file', 'sock_file', 'fifo_file'];
-const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps', 'ignore', 'levels', 'on', 'isolated', 'by'];
+const KEYWORDS = ['only', 'never', 'require', 'may', 'reaches', 'flows', 'to', 'except', 'through', 'weight', 'run', 'use', 'read', 'write', 'execute', 'any', 'login', 'log', 'in', 'maps', 'ignore', 'levels', 'on', 'isolated', 'by', 'starts'];
+/** Ways in, as written after 'starts by', and the login program's domain each stands for. */
+const WAYS = { ssh: 'sshd_t', console: 'local_login_t', graphical: 'xdm_t', cron: 'crond_t', rlogin: 'remote_login_t', systemd: 'init_t', cockpit: 'cockpit_session_t', 'single-user': 'sulogin_t' };
 
 /** Tokens with columns: words (incl. '*' and %group), braces, ':' and ','. */
 function tokens(line) {
@@ -83,11 +88,27 @@ function parseChecks(text) {
     i++;
     // never login <logins> reaches <domains> | may <perms> <targets>[:<classes>] | maps to <users>
     if (tok[i] && tok[i].v === 'login') {
-      if (kind !== 'never') { err(`'login' checks start with 'never' (never login alice reaches sysadm_t)`); return; }
+      if (kind === 'only') { err(`'login' checks start with 'never' or 'require' (never login alice reaches sysadm_t; require login alice starts by ssh)`); return; }
       i++;
-      const logins = names(['reaches', 'may', 'maps']);
+      const logins = names(['reaches', 'may', 'maps', 'starts']);
       if (!logins.length) { err('Expected one or more Linux logins (a name, %group, __default__ or *)'); return; }
       const lv = tok[i] && tok[i].v;
+      // require|never login <logins> starts [by <ways>]: the session gets a context and starts (Check Login Contexts).
+      if (lv === 'starts') {
+        i++;
+        let ways = [];
+        if (tok[i] && tok[i].v === 'by') {
+          i++;
+          ways = names([]);
+          if (!ways.length) { err(`Expected the way(s) in after 'by': ${Object.keys(WAYS).join(', ')}, or a login program's domain`); return; }
+          const bad = ways.filter(w => !WAYS[w] && !/_t$/.test(w));
+          if (bad.length) { err(`Unknown way in '${bad[0]}': ${Object.keys(WAYS).join(', ')}, or a login program's domain such as sshd_t`); return; }
+        }
+        if (i < tok.length) { err(`Unexpected '${tok[i].v}'`); return; }
+        checks.push({ id: checks.length, line: l, kind: 'login-starts', require: kind === 'require', logins, ways, sources: ways.map(w => WAYS[w] || w), text: raw.trim() });
+        return;
+      }
+      if (kind !== 'never') { err(`'login' checks other than 'starts' start with 'never' (never login alice reaches sysadm_t)`); return; }
       if (lv === 'reaches') {
         i++;
         const targets = names(['except']);
@@ -261,4 +282,4 @@ function parseChecks(text) {
   return { checks, errors };
 }
 
-module.exports = { parseChecks, PERM_GROUPS, FILE_CLASSES, KEYWORDS };
+module.exports = { parseChecks, PERM_GROUPS, FILE_CLASSES, KEYWORDS, WAYS };

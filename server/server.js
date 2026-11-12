@@ -2824,6 +2824,15 @@ async function loginChecks(checks, bin) {
   const at = (x) => ({ p: cfg.seusers, l: x.l });
   const out = [];
   let userInfo = null;
+  // The login context report (contexts, session starts) for `starts` checks, once per run.
+  let startRep;
+  const startReport = async () => {
+    if (startRep !== undefined) return startRep;
+    const pol = denialPolicies().find(p => p.build) || denialPolicies().find(p => p.active) || null;
+    startRep = null;
+    if (pol) { try { const { report } = await loginContextReport({ pol, bin }); if (report && !report.error) startRep = report; } catch (e) { log(`starts check: ${e.message}`); } }
+    return startRep;
+  };
   const reachOf = new Map(); // user|avoided domains → reach result
   const userReachFor = async (U, avoid = null) => {
     const rk = `${U}|${(avoid || []).join(' ')}`;
@@ -2870,6 +2879,28 @@ async function loginChecks(checks, bin) {
           res.ok = false;
           res.error = [dropped.length ? `The seusers line for ${dropped.join(', ')} never reaches the policy: the tree's build keeps only lines that start with a-z or _ (Rules.modular greps '^[a-z_]'); map it on the host with semanage login, or check a login the tree maps.` : '',
             groups.length ? `There is no seusers line for ${groups.join(', ')}.` : '', names.length ? `No seusers line applies to ${names.join(', ')} (there is no __default__ line).` : ''].filter(Boolean).join(' ');
+          out.push(res);
+          continue;
+        }
+        // starts [by <ways>]: the login check's verdict for the login's seusers line and each way in.
+        if (c.kind === 'login-starts') {
+          const rep = await startReport();
+          if (!rep) { res.ok = false; res.error = 'No login context report for this policy: build the tree first.'; out.push(res); continue; }
+          for (const { name, line, via } of lines) {
+            const key = line.group ? `%${line.login}` : line.login;
+            const m = (rep.mappings || []).find(x => (x.group ? `%${x.login}` : x.login) === key);
+            const base = { login: name, user: line.user, via, ...at(line) };
+            const ways = (m ? m.ways || [] : []).filter(w => !c.sources.length || c.sources.includes(w.source));
+            if (c.require) for (const s of c.sources) if (!ways.some(w => w.source === s)) res.login.push({ ...base, way: s, label: c.ways[c.sources.indexOf(s)], reason: `no contexts line for ${s} (not a way in for ${line.user})` });
+            for (const w of ways) {
+              const probs = (rep.problems || []).filter(p => p.login === key && p.source === w.source && p.severity === 'error');
+              const starts = !!w.works3 && !probs.length;
+              if (c.require && !starts) res.login.push({ ...base, way: w.source, label: w.label, reason: probs[0] ? probs[0].text : `unable to get a valid context (${w.v3 && w.v3.ctx ? `${w.v3.ctx} is picked but fails` : 'no candidate is valid'})`, cause: probs[0] ? { file: probs[0].file, l: probs[0].l } : null });
+              else if (!c.require && starts) res.login.push({ ...base, way: w.source, label: w.label, ctx: w.v3.ctx });
+            }
+          }
+          res.count = res.login.length;
+          res.ok = !res.error && !res.count;
           out.push(res);
           continue;
         }
@@ -2999,6 +3030,7 @@ function checkMessage(c, x) {
     if (c.kind === 'only-login') return `Logins mapped to other users: ${list.map(who).join(', ')}${more}`;
     if (c.kind === 'never-login' || c.kind === 'login-maps') return `${list.map(who).join(', ')}${more}`;
     const route = (v) => (v.path && v.path.length ? `: ${[v.path[0].from, ...v.path.map(s => s.to)].join(' → ')}` : ' (where it logs in)');
+    if (c.kind === 'login-starts') return (c.require ? list.map(v => `${who(v)} doesn't start by ${v.label || v.way}: ${v.reason}`) : list.map(v => `${who(v)} starts by ${v.label || v.way} (${v.ctx})`)).join('; ') + more;
     if (c.kind === 'login-reaches') return list.map(v => `${who(v)} reaches ${v.domain}${c.through ? ` without going through ${names(c.through)}` : ''}${route(v)}`).join('; ') + more;
     return list.map(v => `${who(v)} may ${c.perms === '*' ? 'access' : c.permsLabel} ${v.target} as ${v.domain}${route(v)}`).join('; ') + more;
   }
@@ -3074,8 +3106,11 @@ function checksCompletion(lineText) {
   const items = [];
   const words = lineText.trim().split(/\s+/);
   if (words.length <= 1) for (const k of ['only', 'never', 'require']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
-  if (/^\s*never\s+[a-z]*$/.test(lineText) && 'login'.startsWith(prefix)) items.push({ label: 'login', kind: CompletionItemKind.Keyword, detail: 'Linux logins: reaches, may, maps to' });
-  if (/^\s*never\s+login\b[^#]*\S\s+[a-z]*$/.test(lineText) && !/\b(may|reaches|maps)\b/.test(lineText)) for (const k of ['reaches', 'may', 'maps']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword });
+  if (/^\s*(never|require)\s+[a-z]*$/.test(lineText) && 'login'.startsWith(prefix)) items.push({ label: 'login', kind: CompletionItemKind.Keyword, detail: /^\s*require/.test(lineText) ? 'Linux logins: starts [by ssh, console, …]' : 'Linux logins: reaches, may, maps to, starts' });
+  if (/^\s*never\s+login\b[^#]*\S\s+[a-z]*$/.test(lineText) && !/\b(may|reaches|maps|starts)\b/.test(lineText)) for (const k of ['reaches', 'may', 'maps', 'starts']) if (k.startsWith(prefix)) items.push({ label: k, kind: CompletionItemKind.Keyword, detail: k === 'starts' ? 'the login gets a context and its session starts' : undefined });
+  if (/^\s*require\s+login\b[^#]*\S\s+[a-z]*$/.test(lineText) && !/\bstarts\b/.test(lineText) && 'starts'.startsWith(prefix)) items.push({ label: 'starts', kind: CompletionItemKind.Keyword, detail: 'the login gets a valid context and its session starts (Check Login Contexts)' });
+  if (/\bstarts\s+[a-z]*$/.test(lineText) && 'by'.startsWith(prefix)) items.push({ label: 'by', kind: CompletionItemKind.Keyword, detail: 'by which way in: ssh, console, graphical, cron, …' });
+  if (/\bstarts\s+by\b[^#]*$/.test(lineText)) for (const [w, d] of Object.entries(checksLib.WAYS)) if (w.startsWith(prefix)) items.push({ label: w, kind: CompletionItemKind.EnumMember, detail: d });
   if (/\bmaps\s+[a-z]*$/.test(lineText) && 'to'.startsWith(prefix)) items.push({ label: 'to', kind: CompletionItemKind.Keyword });
   if (/^\s*never\s+login\b/.test(lineText) && !/\b(may|reaches|maps)\b/.test(lineText)) {
     const cfg = loginConfig({ build: true });

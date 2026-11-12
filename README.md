@@ -1515,7 +1515,15 @@ require syslogd_t may { append create } var_log_t:file
   `%group`, `__default__`, or `*` for every seusers line. A failure names
   the login, its user and the path (`alice (via __default__) → staff_u
   reaches sysadm_t: staff_t → newrole_t → sysadm_t`), with the seusers line
-  and the steps as related locations.
+  and the steps as related locations. `require login <logins> starts [by
+  <ways>]` holds when the login gets a valid context and its session
+  starts, as *Check Login Contexts* judges it (context chosen, shell
+  entered, libraries, terminal, NoNewPrivileges, forced command); `never
+  login <logins> starts by <ways>` holds when it doesn't. Ways: `ssh`,
+  `console`, `graphical`, `cron`, `rlogin`, `systemd`, `cockpit`, or a login
+  program's domain; without `by`, every way the user has. A failure names
+  the way and the reason (`alice → staff_u doesn't start by ssh: staff_t may
+  not be entered by running /bin/bash …`).
 * `only <names> may <perms> <targets>[:<classes>]`: nobody else may;
   `never <names> may …`: none of these may (`*` = every domain);
   `never <names> reaches <names> [except through <names>]`: no transition
