@@ -38,7 +38,9 @@ class TargetHosts {
   get(id) { return this.targets.get(id) || null; }
   list() { return [...this.targets.values()].map(e => this.summary(e)); }
   summary(e) {
-    return { id: e.id, host: e.t.host, user: e.t.user, port: e.t.port, state: e.state, error: e.error || null, facts: e.facts || null, notes: e.notes || [], mirror: e.mirror ? { root: e.mirror.root, policy: e.mirror.policy, name: e.mirror.name } : null, at: e.at, label: target.describe(e.t, e.facts) };
+    const p = e.lastPush;
+    return { id: e.id, host: e.t.host, user: e.t.user, port: e.t.port, state: e.state, error: e.error || null, facts: e.facts || null, notes: e.notes || [], mirror: e.mirror ? { root: e.mirror.root, policy: e.mirror.policy, name: e.mirror.name } : null, at: e.at, label: target.describe(e.t, e.facts),
+      lastPush: p ? { at: p.at, atLocal: p.atLocal, ok: p.ok, modules: p.modules.map(m => m.name), rolledBack: !!p.rolledBack, dir: p.dir } : null };
   }
 
   /**
@@ -164,6 +166,33 @@ class TargetHosts {
       tar.on('error', (x) => { err += x.message; finish(); });
       ssh.on('close', finish);
       tar.on('close', finish);
+    });
+  }
+
+  /**
+   * Copy files to the target: `files` = [{ from (local path), as (path relative to remoteDir) }],
+   * streamed as one tar over the connection into remoteDir (created). → { ok } | { error }.
+   */
+  copyTo(id, files, remoteDir) {
+    const e = this.targets.get(id);
+    if (!e || e.state !== 'connected') return Promise.resolve({ error: `Not connected to ${id}.` });
+    return new Promise((resolve) => {
+      const staging = fs.mkdtempSync(path.join(e.dir, 'push-'));
+      try {
+        for (const f of files) { const to = path.join(staging, f.as); fs.mkdirSync(path.dirname(to), { recursive: true }); fs.copyFileSync(f.from, to); }
+      } catch (err) { fs.rmSync(staging, { recursive: true, force: true }); return resolve({ error: `Could not stage ${files.length} files: ${err.message}` }); }
+      const tar = cp.spawn('tar', ['czf', '-', '-C', staging, '.'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const ssh = cp.spawn('ssh', [...target.sshArgs(e.t, { control: e.control, knownHosts: this.knownHosts }), `mkdir -p ${target.shq(remoteDir)} && tar xzf - -C ${target.shq(remoteDir)}`], { stdio: ['pipe', 'pipe', 'pipe'] });
+      tar.stdout.pipe(ssh.stdin);
+      let err = '';
+      tar.stderr.on('data', d => { err += d; });
+      ssh.stderr.on('data', d => { err += d; });
+      ssh.stdout.on('data', () => {});
+      let code = null;
+      const finish = () => { fs.rmSync(staging, { recursive: true, force: true }); resolve(code === 0 ? { ok: true } : { error: `Copying to ${id} failed: ${err.trim().split('\n')[0] || `exit ${code}`}` }); };
+      ssh.on('error', (x) => { err += x.message; code = -1; finish(); });
+      tar.on('error', (x) => { err += x.message; });
+      ssh.on('close', (c) => { code = c; finish(); });
     });
   }
 

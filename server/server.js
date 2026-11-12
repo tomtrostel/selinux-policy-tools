@@ -3534,15 +3534,188 @@ const shqAll = (paths) => paths.map(targetLib.shq).join(' ');
 async function targetDenialsText(id, since) {
   const e = targetHosts.get(id);
   if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
-  const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
-  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(ts), timeout: 120000 });
+  // 'push' = since the last push to this target: a window covering it, then only the events stamped after it.
+  let epoch = null;
+  let ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
+  if (since === 'push') {
+    if (!e.lastPush || !e.lastPush.at) return { error: `Nothing was pushed to ${id} yet.`, since };
+    epoch = e.lastPush.at;
+    ts = targetLib.windowFor((Date.now() - e.lastPush.atLocal) / 1000 + 5);
+  }
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(ts, epoch), timeout: 120000 });
   if (r.lost) return { error: r.stderr.trim() || `Connection to ${id} lost.`, since: ts };
   const d = targetLib.parseDenialsOutput(r.stdout);
   if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode, since: ts };
+  if (epoch) { d.text = targetLib.recordsSince(d.text, epoch); d.count = d.text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length; ts = 'the last push'; }
   if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
   return { text: d.text, count: d.count, mode: d.mode, id, since: ts, status: d.count ? `Read ${d.count} records from ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` : `No denials logged on ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` };
 }
 connection.onRequest('selinux/targetDenials', async ({ id, since } = {}) => targetDenialsText(id, since));
+
+/* ----- pushing a build to a target ----- */
+
+const md5File = (p) => require('crypto').createHash('md5').update(fs.readFileSync(p)).digest('hex');
+
+/**
+ * What the last build would change on the target: { plan, fcOf } — plan = { target, name, kind
+ * (tree | module), mode, modules: [{ name, file, size, md5, state new | differs | same, priority, had,
+ * overriders }], extra (installed there, not in the build), contexts: [{ file, from, to, had }],
+ * booleans: [{ name, value, was }], build, lastPush } or { error }.
+ */
+async function targetPushPlan(id) {
+  await indexing;
+  const e = targetHosts.get(id);
+  if (!e || e.state !== 'connected') return { plan: { error: `Not connected to ${id || 'a target host'}.` } };
+  const f = e.facts || {};
+  if (!f.root) return { plan: { error: `Pushing a policy needs root on ${id} (logged in as ${e.t.user || 'your user'}).` } };
+  if (!f.policy) return { plan: { error: `${id} has no SELinux policy store to push into.` } };
+  let res, name, files, fcOf, kind;
+  if (treeRoot && !usingDevel) {
+    res = lastBuild.get(treeRoot);
+    if (!res || !res.ok || !res.workDir) return { plan: { error: 'Build the tree first: a good build is what gets pushed.' } };
+    if (res.monolithic) return { plan: { error: 'A monolithic build has no modules to push; build modular (MONOLITHIC=n).' } };
+    name = buildName(treeRoot); kind = 'tree';
+    files = fs.readdirSync(res.workDir).filter(n => n.endsWith('.pp')).map(n => ({ name: n.slice(0, -3), file: path.join(res.workDir, n) }));
+    fcOf = (m) => (m === 'base' ? path.join(res.workDir, 'base.fc') : path.join(res.workDir, 'tmp', `${m}.mod.fc`));
+  } else {
+    res = lastModule && lastBuild.get(lastModule);
+    if (!res || !res.ok || !res.workDir) return { plan: { error: 'Build the module first: a good build is what gets pushed.' } };
+    let pp = path.join(res.workDir, `${res.module}.pp`);
+    if (!fs.existsSync(pp)) {
+      // A build on save makes only the .mod: package it (as Build Current Module does, the .pp lands next to the sources too).
+      await runBuild(lastModule, true, lastModule);
+      res = lastBuild.get(lastModule);
+      if (!res || !res.ok) return { plan: { error: `Packaging ${res ? res.module : 'the module'} failed; see the SELinux Build output.` } };
+      pp = path.join(res.workDir, `${res.module}.pp`);
+      if (!fs.existsSync(pp)) return { plan: { error: `No package for ${res.module} after packaging it.` } };
+    }
+    name = f.policy.name; kind = 'module';
+    files = [{ name: res.module, file: pp }];
+    fcOf = (m) => path.join(res.workDir, 'tmp', `${m}.mod.fc`);
+  }
+  if (name !== f.policy.name) return { plan: { error: `The build is the ${name} policy but ${id} runs ${f.policy.name}: a module links only into the store it was built for.` } };
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.storeChecksumScript(name), timeout: 300000 });
+  const store = targetLib.parseStoreChecksums(r.stdout);
+  if (!store.done) return { plan: { error: `Could not read the module store on ${id}: ${r.stderr.trim().split('\n')[0] || 'the listing did not finish'}.` } };
+  const order = { differs: 0, new: 1, same: 2 };
+  const modules = files.map(x => {
+    const inst = store.modules.get(x.name);
+    const md5 = md5File(x.file);
+    const prio = inst ? Math.min(...inst.all.map(a => a.priority)) : 100;
+    const state = !inst ? 'new' : inst.all.some(a => a.md5 === md5 && a.priority === inst.priority) ? 'same' : 'differs';
+    // Installed at a higher priority too (a local override): that copy keeps winning after the push.
+    const overriders = inst ? inst.all.filter(a => a.priority > prio).map(a => a.priority) : [];
+    return { name: x.name, file: x.file, size: fs.statSync(x.file).size, md5, state, priority: prio, had: !!inst, lang: inst ? inst.lang : null, overriders };
+  }).sort((a, b) => order[a.state] - order[b.state] || a.name.localeCompare(b.name));
+  const extra = kind === 'tree' ? [...store.modules.keys()].filter(n => !files.some(x => x.name === n)).sort() : [];
+  const contexts = [];
+  if (kind === 'tree') {
+    const dir = appconfigDir(treeRoot);
+    let names = []; try { names = fs.readdirSync(dir).filter(n => { try { return fs.statSync(path.join(dir, n)).isFile(); } catch { return false; } }); } catch { /* none */ }
+    for (const n of names) {
+      const to = targetLib.installedPathOf(n, name);
+      if (!to) continue;
+      const local = readSource(path.join(dir, n));
+      const mp = e.mirror ? path.join(e.mirror.root, to.replace(/^\/etc\/selinux\//, '')) : null;
+      const remote = mp && fs.existsSync(mp) ? fs.readFileSync(mp, 'utf8') : null;
+      if (local == null || local === remote) continue;
+      contexts.push({ file: n, from: path.join(dir, n), to, had: remote != null });
+    }
+  }
+  const booleans = [];
+  if (kind === 'tree' && f.booleans) {
+    try { const br = await booleansReport('build'); for (const row of br.rows || []) if (row.compiled != null && f.booleans[row.name] != null && f.booleans[row.name] !== row.compiled) booleans.push({ name: row.name, value: row.compiled, was: f.booleans[row.name] }); } catch (x) { log(`push plan booleans: ${x.message}`); }
+  }
+  const counts = { new: 0, differs: 0, same: 0 };
+  for (const m of modules) counts[m.state]++;
+  const plan = { target: id, name, kind, mode: f.mode, modules, counts, extra, contexts, booleans: booleans.sort((a, b) => a.name.localeCompare(b.name)),
+    build: { builtAt: res.startedAt ? new Date(res.startedAt).toISOString() : null, tree: kind === 'tree' ? treeRoot : null, module: kind === 'module' ? res.module : null },
+    lastPush: targetHosts.summary(e).lastPush };
+  return { plan, fcOf };
+}
+connection.onRequest('selinux/targetPushPlan', async ({ id } = {}) => (await targetPushPlan(id)).plan);
+
+const transcriptOf = (steps) => steps.map(s => `== ${s.id}${s.rc === 'skipped' ? ' (skipped)' : s.rc != null && s.rc !== 0 ? ` (exit ${s.rc})` : ''}\n${s.out}`.replace(/\n$/, '')).join('\n');
+
+/**
+ * Push to the target ({ id, modules: [names], contexts: [files], booleans: [names], setPermissive }):
+ * the chosen files copied over the connection, then pushScript there (backup, semodule -i, context
+ * files, setsebool -P, restorecon, verify). → the push record { ok, at, dir, backupDir, modules,
+ * contexts, booleans, restoreDirs, steps, failed, transcript } or { error }.
+ */
+connection.onRequest('selinux/targetPush', async ({ id, modules = [], contexts = [], booleans = [], setPermissive = false } = {}) => {
+  const { plan, fcOf } = await targetPushPlan(id);
+  if (plan.error) return plan;
+  const e = targetHosts.get(id);
+  const mods = plan.modules.filter(m => modules.includes(m.name));
+  const ctxs = plan.contexts.filter(c => contexts.includes(c.file));
+  const bools = plan.booleans.filter(b => booleans.includes(b.name));
+  if (!mods.length && !ctxs.length && !bools.length) return { error: 'Nothing chosen to push.' };
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
+  const dir = `/root/selinux-policy-tools/push-${stamp}`;
+  const backupDir = `${dir}/backup`;
+  const copied = await targetHosts.copyTo(id, [...mods.map(m => ({ from: m.file, as: `${m.name}.pp` })), ...ctxs.map(c => ({ from: c.from, as: `contexts/${c.file}` }))], dir);
+  if (copied.error) return copied;
+  const restoreDirs = targetLib.fixedPrefixDirs(mods.flatMap(m => { const p = fcOf(m.name); const t = p && fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : ''; return filelabel.parseSpecs(t).map(s => s.spec); }));
+  const script = targetLib.pushScript({ name: plan.name, dir, backupDir, modules: mods.map(m => ({ name: m.name, priority: m.priority, had: m.had })), contexts: ctxs, booleans: bools, restoreDirs, setPermissive: !!setPermissive });
+  const t0 = Date.now();
+  const r = await targetHosts.run(id, 'sh -s', { input: script, timeout: 1800000 });
+  const steps = targetLib.parseSteps(r.stdout);
+  const push = { ok: steps.ok, at: steps.at, atLocal: Date.now(), ms: Date.now() - t0, modeBefore: steps.mode, dir, backupDir, name: plan.name, kind: plan.kind,
+    modules: mods.map(m => ({ name: m.name, priority: m.priority, had: m.had, state: m.state })), contexts: ctxs.map(c => ({ file: c.file, to: c.to, had: c.had })), booleans: bools, restoreDirs,
+    steps: steps.steps, failed: steps.failed, done: steps.done, stderr: r.stderr.trim() || null, rolledBack: false };
+  if (!steps.done) push.failed = [...push.failed, 'the script did not finish'];
+  e.lastPush = push;
+  targetProcCache.delete(id);
+  await targetHosts.refresh(id);
+  targetHosts.onChange();
+  log(`target ${id}: push ${push.ok ? 'ok' : 'FAILED'} (${mods.length} modules, ${ctxs.length} context files, ${bools.length} booleans, ${push.ms} ms)`);
+  return { ...push, transcript: transcriptOf(push.steps) };
+});
+
+/** Undo the last push to the target from its backup. → the rollback record { ok, steps, transcript } or { error }. */
+connection.onRequest('selinux/targetRollback', async ({ id } = {}) => {
+  const e = targetHosts.get(id);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
+  const p = e.lastPush;
+  if (!p) return { error: `Nothing was pushed to ${id} in this session.` };
+  if (p.rolledBack) return { error: `The last push to ${id} was rolled back already.` };
+  const script = targetLib.rollbackScript({ name: p.name, backupDir: p.backupDir, modules: p.modules, contexts: p.contexts, booleans: p.booleans, restoreDirs: p.restoreDirs });
+  const r = await targetHosts.run(id, 'sh -s', { input: script, timeout: 1800000 });
+  const steps = targetLib.parseSteps(r.stdout);
+  p.rolledBack = steps.ok;
+  targetProcCache.delete(id);
+  await targetHosts.refresh(id);
+  targetHosts.onChange();
+  return { ok: steps.ok, steps: steps.steps, failed: steps.failed, done: steps.done, stderr: r.stderr.trim() || null, transcript: transcriptOf(steps.steps), modules: p.modules.map(m => m.name) };
+});
+
+/** Restart units on the target → { ok, units: [{ unit, state }], out }. */
+connection.onRequest('selinux/targetRestart', async ({ id, units = [] } = {}) => {
+  const e = targetHosts.get(id);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
+  const list = units.filter(u => /^[\w@.:-]+$/.test(u));
+  if (!list.length) return { error: 'No units named.' };
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.restartScript(list), timeout: 300000 });
+  const states = [];
+  let rc = null;
+  for (const line of r.stdout.split('\n')) { const m = /^### rc (\d+)$/.exec(line); if (m) { rc = +m[1]; continue; } const f = line.split('\t'); if (f.length === 2 && list.includes(f[0])) states.push({ unit: f[0], state: f[1] }); }
+  targetProcCache.delete(id);
+  return { ok: rc === 0 && states.every(s => s.state === 'active'), units: states, out: r.stdout.split('\n').filter(l => !/^### rc|\t/.test(l)).join('\n').trim(), stderr: r.stderr.trim() || null, at: Math.floor(Date.now() / 1000) };
+});
+
+/** Make a domain permissive on the target, or enforcing again → { ok, permissive: [...] } or { error }. */
+connection.onRequest('selinux/targetPermissive', async ({ id, domain, on } = {}) => {
+  const e = targetHosts.get(id);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
+  if (!/^\w+$/.test(domain || '')) return { error: 'No domain named.' };
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.permissiveScript(domain, !!on), timeout: 300000 });
+  const [head, rest] = r.stdout.split(/^### rc (\d+)$/m).length >= 3 ? (() => { const parts = r.stdout.split(/^### rc (\d+)$/m); return [parts[0] + `rc=${parts[1]}`, parts[2] || '']; })() : [r.stdout, ''];
+  const rc = /rc=(\d+)/.exec(head);
+  if (!rc || +rc[1] !== 0) return { error: `semanage permissive failed on ${id}: ${head.replace(/rc=\d+$/, '').trim().split('\n')[0] || 'exit ' + (rc ? rc[1] : '?')}` };
+  if (e.facts) { e.facts.permissive = targetLib.parsePermissive(rest); targetHosts.onChange(); }
+  return { ok: true, domain, on: !!on, permissive: (e.facts && e.facts.permissive) || [] };
+});
 
 const execFileP = (cmd, args) => new Promise((resolve) => {
   require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));

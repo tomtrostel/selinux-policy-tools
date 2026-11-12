@@ -21,7 +21,7 @@
   let result = null, against = null, key = 0, loading = false, filter = '';
   let host; // undefined = the server's choice (a connected target when there is one), '' = this host, else a target id
   let since = 'today', targets = [];
-  const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week']];
+  const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week'], ['push', 'since the last push']];
   const open = new Map();
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   const card = (id, title, hint, body, defOpen) => {
@@ -53,17 +53,21 @@
     const would = r.policyDomain ? typeLink(r.policyDomain) : r.how === 'manual' ? h('span', { class: 'muted' }, 'only with setexec') : r.how === 'none' ? h('span', { class: 'bad' }, "can't start it") : r.how === 'stays' ? typeLink('init_t') : h('span', { class: 'muted' }, '?');
     const label = r.type ? h('span', {}, h('code', {}, r.type), r.generic ? h('span', { class: 'warn small', title: 'A generic file type: nothing singles this program out, so no domain of its own can be entered through it' }, ' generic') : null) : h('span', { class: 'muted' }, 'none');
     const d = r.denials;
-    const where = result.host && result.host.target ? result.host.target : 'this host';
+    const onTarget = !!(result.host && result.host.target);
+    const where = onTarget ? result.host.target : 'this host';
     const denialsCell = d ? h('div', { class: 'small' },
       h('span', { class: 'bad', title: `${d.count} denials of ${d.domains.join(', ')} since ${result.host.denials.since}${d.errors ? ` (${d.errors} SELINUX_ERR)` : ''}; classes: ${d.classes.join(', ') || '-'}; targets: ${d.targets.join(', ') || '-'}` }, `${plural(d.count, 'denial')}`),
       d.classes.length ? h('span', { class: 'muted' }, ` on ${d.classes.slice(0, 4).join(', ')}${d.classes.length > 4 ? ', …' : ''}`) : null) : null;
     const permissive = r.permissive ? h('span', { class: 'warn small', title: 'This domain is permissive on the host: its denials are logged, nothing is stopped' }, ' permissive') : null;
     const fix = d && r.module ? h('button', { class: 'primary', title: `Open the module ${r.module} in the service editor with these ${d.count} denials in its "From a permissive run" section: each becomes a setting of the form`, onclick: () => vscode.postMessage({ cmd: 'fixService', module: r.module, domain: d.domains[0], text: r.denialText || '', status: `${plural(d.count, 'denial')} of ${d.domains.join(', ')} read from ${where} (${result.host.denials.since}).` }) }, 'Fix in Service Editor…')
       : r.module ? h('button', { title: `Open the module ${r.module} in the service editor`, onclick: () => vscode.postMessage({ cmd: 'fixService', module: r.module, domain: null, text: '', status: '' }) }, 'Edit Service…') : null;
+    const dom = r.hostDomains[0] || r.policyDomain;
+    const perm = onTarget && dom && !(result.unconfined || []).includes(dom) ? h('button', { class: 'link small', title: r.permissive ? `semanage permissive -d ${dom} on ${where}: the domain is enforced again` : `semanage permissive -a ${dom} on ${where}: its denials are logged, nothing is stopped (for a test run)`,
+      onclick: () => vscode.postMessage({ cmd: 'permissive', target: result.host.target, domain: dom, on: !r.permissive }) }, r.permissive ? 'enforce again' : 'make permissive') : null;
     return h('tr', {},
       h('td', {}, h('button', { class: 'link', title: `Look up ${r.real} in File Labels`, onclick: () => vscode.postMessage({ cmd: 'lookUp', path: r.real }) }, r.exe), r.exe !== r.real ? h('div', { class: 'muted small' }, `→ ${r.real}`) : null, r.pkg ? h('div', { class: 'muted small' }, r.pkg) : null),
       h('td', {}, label),
-      h('td', {}, runs, permissive, r.differs ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'policy: '), would) : null, !r.hostDomains.length && r.type ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'would start as '), would) : null, denialsCell),
+      h('td', {}, runs, permissive, perm ? [' ', perm] : null, r.differs ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'policy: '), would) : null, !r.hostDomains.length && r.type ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'would start as '), would) : null, denialsCell),
       h('td', {}, units.length ? units : h('span', { class: 'muted small' }, r.pids.length ? `pid ${r.pids.slice(0, 3).join(', ')}${r.users.length ? ` (${r.users.join(', ')})` : ''}` : '')),
       h('td', {}, r.listens.length ? r.listens.map(l => `${l.proto} ${l.port}`).join(', ') : ''),
       h('td', {}, fix, fix ? ' ' : null, h('button', { title: `Confine ${r.real}: open the service editor with it as the program`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: r.real }) }, 'New Service…')));
@@ -97,7 +101,8 @@
       const hostSel = h('select', { title: 'Whose services and processes: this host, or a connected target host (read over its ssh connection)', onchange: (ev) => { host = ev.target.value; load(); } },
         h('option', { value: '', selected: !host || null }, 'this host'), ...targets.map(t => h('option', { value: t.id, selected: host === t.id || null }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`)));
       const sinceSel = h('select', { title: 'How far back to read the target\'s audit log for each service\'s denials', onchange: (ev) => { since = ev.target.value; load(); } }, SINCE.map(([v, l]) => h('option', { value: v, selected: since === v || null }, l)));
-      main.append(h('div', { class: 'small', id: 'hostbar' }, h('label', {}, 'Programs on ', hostSel), host ? h('label', {}, ' · denials since ', sinceSel) : null));
+      main.append(h('div', { class: 'small', id: 'hostbar' }, h('label', {}, 'Programs on ', hostSel), host ? h('label', {}, ' · denials since ', sinceSel) : null,
+        host ? h('button', { title: `Install the last build's changed modules on ${host} (with a backup), then restart its services and read the new denials`, onclick: () => vscode.postMessage({ cmd: 'pushTarget', target: host }) }, ' Push build to target…') : null));
     }
     if (!result) return;
     if (result.error) { main.append(h('div', { class: 'note bad' }, result.error)); return; }
@@ -141,6 +146,8 @@
       if (result && result.targets) targets = result.targets;
       if (result && result.host) host = result.host.target || '';
       render();
+    } else if (m.cmd === 'reload') {
+      load();
     } else if (m.cmd === 'targets') {
       targets = m.targets || [];
       if (host && !targets.some(t => t.id === host)) { host = ''; load(); } else render();

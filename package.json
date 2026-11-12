@@ -307,6 +307,11 @@
         "icon": "$(debug-disconnect)"
       },
       {
+        "command": "selinux.pushToTarget",
+        "title": "SELinux: Push Build to Target Host…",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "selinux.showBooleans",
         "title": "SELinux: Booleans…",
         "icon": "$(settings)"
@@ -1161,7 +1166,8 @@
     "test:unconfined-e2e": "node test/unconfined-e2e.js",
     "test:learn-e2e": "node test/learn-e2e.js",
     "test:booleans-e2e": "node test/booleans-e2e.js",
-    "test:target-e2e": "node test/target-e2e.js"
+    "test:target-e2e": "node test/target-e2e.js",
+    "test:target-push-e2e": "node test/target-push-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

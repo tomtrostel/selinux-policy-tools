@@ -30,6 +30,24 @@
   Editor…* opens the owning module with those denials in its *From a
   permissive run* section. Request `selinux/unconfined` takes `host` and
   `since`.
+* **Push a build to a target host and retest** (*SELinux: Push Build to
+  Target Host…*, also from *Target Host…* and the Unconfined view): the
+  last build's modules are compared with the target's policy store by
+  checksum (new, differs, unchanged), with the context files and the
+  booleans whose defaults differ; the ones picked are copied over the
+  connection and installed with `semodule -i` at their priority after a
+  backup of every module and file replaced, context files copied, booleans
+  set, the modules' directories relabeled and the install verified, with
+  the transcript in the *SELinux Target* output. An enforcing target asks
+  first (set permissive, or push anyway). *Restart Services and Read
+  Denials…* restarts the services of the pushed modules and opens the
+  denials logged since the push against the build; *Roll Back* reinstalls
+  the backup. "Since the last push" is a window in the denial assistant,
+  the Unconfined view and the learn section; a domain can be made
+  permissive on the target (and enforcing again) from the Unconfined view.
+  Requests `selinux/targetPushPlan`, `selinux/targetPush`,
+  `selinux/targetRollback`, `selinux/targetRestart`,
+  `selinux/targetPermissive`.
 
 ## 0.19.0 (2026-11-12)
 

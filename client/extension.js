@@ -492,6 +492,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.connectTarget', (arg) => connectTarget(context, typeof arg === 'string' ? arg : null)),
     vscode.commands.registerCommand('selinux.showTarget', () => showTarget(context)),
     vscode.commands.registerCommand('selinux.disconnectTarget', () => disconnectTarget()),
+    vscode.commands.registerCommand('selinux.pushToTarget', (arg) => pushToTarget(context, typeof arg === 'string' ? arg : null)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1733,8 +1734,8 @@ function refreshDenialPolicies(selected = null) {
   client.sendRequest('selinux/denialPolicies').then(r => { if (denialPanel) denialPanel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected, targets: connectedTargets() }); }).catch(() => {});
 }
 
-/** The connected targets for the webviews' "read the log from" choice: [{ id, mode, root }]. */
-const connectedTargets = () => targets.filter(t => t.state === 'connected').map(t => ({ id: t.id, mode: t.facts && t.facts.mode ? t.facts.mode.toLowerCase() : null, root: !!(t.facts && t.facts.root) }));
+/** The connected targets for the webviews' "read the log from" choice: [{ id, mode, root, pushed }]. */
+const connectedTargets = () => targets.filter(t => t.state === 'connected').map(t => ({ id: t.id, mode: t.facts && t.facts.mode ? t.facts.mode.toLowerCase() : null, root: !!(t.facts && t.facts.root), pushed: !!(t.lastPush && t.lastPush.at && !t.lastPush.rolledBack) }));
 
 /** A terminal for commands the assistant offers (shared, created on demand). */
 /**
@@ -1766,10 +1767,11 @@ function denialTerminal() {
   return vscode.window.terminals.find(t => t.name === 'SELinux Denials') || vscode.window.createTerminal('SELinux Denials');
 }
 
-function showDenials(context, text, against = null) {
+function showDenials(context, text, against = null, read = null) {
   if (denialPanel) {
     denialPanel.reveal();
     if (text) denialPanel.webview.postMessage({ cmd: 'log', text, against });
+    else if (read) client.sendRequest('selinux/denialPolicies').then(r => denialPanel && denialPanel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against, targets: connectedTargets(), read })).catch(() => {});
     else if (against) refreshDenialPolicies(against);
     return;
   }
@@ -1849,7 +1851,7 @@ function showDenials(context, text, against = null) {
     try {
       if (m.cmd === 'ready') {
         const r = await client.sendRequest('selinux/denialPolicies');
-        panel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against, targets: connectedTargets() });
+        panel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against, targets: connectedTargets(), read });
         if (text) panel.webview.postMessage({ cmd: 'log', text, against });
       } else if (m.cmd === 'analyze') {
         const result = await client.sendRequest('selinux/analyzeDenials', { text: m.text, against: m.against });
@@ -2057,6 +2059,7 @@ const FEATURES = [
   ['Target host', [
     ['selinux.connectTarget', 'plug', 'Connect to Target Host…', 'A host running SELinux, reached over ssh (password or key, kept nowhere): its policy, mode and booleans become a policy to analyze against'],
     ['selinux.showTarget', 'remote', 'Target Host…', 'The connected hosts: their facts, refresh, disconnect'],
+    ['selinux.pushToTarget', 'cloud-upload', 'Push Build to Target Host…', 'Install the last build\'s changed modules (and context files, booleans) on the target with a backup, then restart its services and read the new denials; roll back any time'],
   ]],
   ['Learn', [
     ['selinux.openTutorials', 'book', 'Open Tutorials', 'Walkthroughs of the extension and of writing policy'],
@@ -2420,6 +2423,8 @@ async function showTarget(context) {
       for (const l of lines) items.push({ label: l, id: null });
       items.push({ label: '$(refresh) Refresh', description: 'read the facts and the policy files again', id: 'refresh', t });
       items.push({ label: '$(shield) Analyze Denials against its policy…', id: 'denials', t });
+      items.push({ label: '$(cloud-upload) Push Build to It…', description: t.lastPush ? `last push: ${t.lastPush.modules.length} modules${t.lastPush.rolledBack ? ', rolled back' : t.lastPush.ok ? '' : ', failed'}` : 'the last build\'s changed modules, with a backup', id: 'push', t });
+      if (t.lastPush && !t.lastPush.rolledBack) items.push({ label: '$(history) Roll Back the Last Push', id: 'rollback', t });
       items.push({ label: '$(debug-disconnect) Disconnect', id: 'disconnect', t });
     } else {
       items.push({ label: t.error || `${t.state}…`, id: null });
@@ -2439,6 +2444,102 @@ async function showTarget(context) {
     return showTarget(context);
   }
   if (pick.id === 'denials') vscode.commands.executeCommand('selinux.analyzeDenials', { against: `target:${pick.t.id}` });
+  if (pick.id === 'push') return pushToTarget(context, pick.t.id);
+  if (pick.id === 'rollback') return rollbackTarget(pick.t.id);
+}
+
+let targetOutput = null;
+const targetLog = (text) => { if (!targetOutput) targetOutput = vscode.window.createOutputChannel('SELinux Target'); targetOutput.appendLine(text); return targetOutput; };
+
+/** Which connected target: the one given, the only one, or a pick. */
+async function pickTarget(preset, what) {
+  const live = targets.filter(t => t.state === 'connected');
+  if (preset) return live.find(t => t.id === preset) || null;
+  if (!live.length) { const c = await vscode.window.showInformationMessage(`No target host is connected to ${what}.`, 'Connect…'); if (c) vscode.commands.executeCommand('selinux.connectTarget'); return null; }
+  if (live.length === 1) return live[0];
+  const pick = await vscode.window.showQuickPick(live.map(t => ({ label: t.id, description: t.label, t })), { title: `Which target host to ${what}?` });
+  return pick ? pick.t : null;
+}
+
+/**
+ * Push the last build to a target: the plan (what differs from the target's store), a pick of
+ * what to push, the enforcing guard, the push with its transcript in the output channel, then
+ * restart + read denials, or roll back.
+ */
+async function pushToTarget(context, preset) {
+  if (!client || !client.isRunning()) return;
+  const t = await pickTarget(preset, 'push to');
+  if (!t) return;
+  const plan = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Comparing the build with ${t.id}…` }, () => client.sendRequest('selinux/targetPushPlan', { id: t.id }));
+  if (plan.error) { vscode.window.showErrorMessage(plan.error); return; }
+  const items = [];
+  const kb = (n) => `${Math.max(1, Math.round(n / 1024))} KB`;
+  const changed = plan.modules.filter(m => m.state !== 'same');
+  if (changed.length) items.push({ label: 'Modules', kind: vscode.QuickPickItemKind.Separator });
+  for (const m of changed) items.push({ label: `$(package) ${m.name}`, description: m.state === 'new' ? `new on ${t.id}` : `differs from the installed one (priority ${m.priority})`, detail: `${kb(m.size)}${m.overriders.length ? ` · a local module at priority ${m.overriders.join(', ')} overrides it on the target` : ''}`, picked: true, id: ['module', m.name] });
+  if (plan.contexts.length) items.push({ label: 'Context files', kind: vscode.QuickPickItemKind.Separator });
+  for (const c of plan.contexts) items.push({ label: `$(file) ${c.file}`, description: c.had ? `differs from ${c.to}` : `new: ${c.to}`, picked: true, id: ['context', c.file] });
+  if (plan.booleans.length) items.push({ label: 'Booleans (the build\'s defaults; the target\'s values may be deliberate)', kind: vscode.QuickPickItemKind.Separator });
+  for (const b of plan.booleans) items.push({ label: `$(settings) ${b.name} = ${b.value ? 'on' : 'off'}`, description: `${b.was ? 'on' : 'off'} on ${t.id}`, picked: false, id: ['boolean', b.name] });
+  const sameNote = `${plan.counts.same} of ${plan.modules.length} modules are already installed unchanged${plan.extra.length ? `; ${plan.extra.length} modules on the target are not in the build and stay` : ''}.`;
+  if (!items.length) { vscode.window.showInformationMessage(`Nothing to push: ${t.id} already runs this build. ${sameNote}`); return; }
+  const picked = await vscode.window.showQuickPick(items, { title: `Push the ${plan.name} build to ${t.id}${plan.mode ? ` (${plan.mode.toLowerCase()})` : ''}`, placeHolder: `${sameNote} Every pushed module is backed up first; Roll Back undoes the push.`, canPickMany: true, ignoreFocusOut: true });
+  if (!picked || !picked.length) return;
+  const sel = { modules: [], contexts: [], booleans: [] };
+  for (const p of picked) sel[`${p.id[0]}s`].push(p.id[1]);
+  let setPermissive = false;
+  if (plan.mode === 'Enforcing') {
+    const a = await vscode.window.showWarningMessage(`${t.id} is enforcing. A policy pushed by mistake could lock you out; in permissive mode the denials are only logged.`, { modal: true }, 'Set permissive, then push', 'Push anyway');
+    if (!a) return;
+    setPermissive = a.startsWith('Set');
+  }
+  const out = targetLog(`\n=== Push to ${t.id} (${new Date().toLocaleString()}): ${sel.modules.length} modules, ${sel.contexts.length} context files, ${sel.booleans.length} booleans${setPermissive ? ', setenforce 0 first' : ''}`);
+  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Pushing to ${t.id}… (semodule rebuilds the policy there)` }, () => client.sendRequest('selinux/targetPush', { id: t.id, ...sel, setPermissive }));
+  if (r.error) { out.appendLine(r.error); vscode.window.showErrorMessage(r.error); return; }
+  out.appendLine(r.transcript || '');
+  if (r.stderr) out.appendLine(`stderr: ${r.stderr}`);
+  if (!r.ok) { out.show(true); vscode.window.showErrorMessage(`The push to ${t.id} failed at: ${(r.failed || []).join(', ') || 'unknown step'}. See the SELinux Target output; Roll Back restores the backup.`, 'Roll Back').then(a => { if (a) rollbackTarget(t.id); }); return; }
+  const what = [sel.modules.length ? `${sel.modules.length} modules` : null, sel.contexts.length ? `${sel.contexts.length} context files` : null, sel.booleans.length ? `${sel.booleans.length} booleans` : null].filter(Boolean).join(', ');
+  const a = await vscode.window.showInformationMessage(`Pushed ${what} to ${t.id} in ${Math.round(r.ms / 1000)} s${r.restoreDirs.length ? `, relabeled ${r.restoreDirs.length} directories` : ''}.`, 'Restart Services and Read Denials…', 'Roll Back', 'Show Output');
+  if (a === 'Show Output') out.show(true);
+  else if (a === 'Roll Back') rollbackTarget(t.id);
+  else if (a) restartAndRead(context, t.id, sel.modules);
+}
+
+/** Restart the target's services (those of the pushed modules preselected) and open the denials logged since the push, against the build. */
+async function restartAndRead(context, id, pushedModules = []) {
+  const un = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Looking at the services on ${id}…` }, () => client.sendRequest('selinux/unconfined', { against: 'build', host: id, since: null }));
+  const units = new Map();
+  for (const r of (un.rows || [])) for (const u of r.units) if (!units.has(u.id)) units.set(u.id, { unit: u, row: r });
+  const items = [...units.values()].map(({ unit: u, row: r }) => ({ label: u.id, description: `${u.active || '?'} · ${r.real}${r.hostDomains.length ? ` as ${r.hostDomains.join(', ')}` : ''}`, picked: !!(r.module && pushedModules.includes(r.module)) || (!!r.policyDomain && pushedModules.includes(r.policyDomain.replace(/_t$/, ''))), id: u.id }))
+    .sort((a, b) => (b.picked - a.picked) || a.label.localeCompare(b.label));
+  if (!items.length) { vscode.window.showInformationMessage(`No services found on ${id}${un.error ? `: ${un.error}` : ''}.`); return; }
+  const picked = await vscode.window.showQuickPick(items, { title: `Restart on ${id}, then read the denials since the push`, placeHolder: 'The services of the pushed modules are preselected; pick none to only read the denials', canPickMany: true, ignoreFocusOut: true });
+  if (!picked) return;
+  if (picked.length) {
+    const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Restarting ${picked.length} services on ${id}…` }, () => client.sendRequest('selinux/targetRestart', { id, units: picked.map(p => p.id) }));
+    const out = targetLog(`\n=== Restart on ${id}: ${picked.map(p => p.id).join(', ')}`);
+    if (r.error) { out.appendLine(r.error); vscode.window.showErrorMessage(r.error); return; }
+    out.appendLine((r.units || []).map(u => `${u.unit}: ${u.state}`).join('\n'));
+    if (r.out) out.appendLine(r.out);
+    const down = (r.units || []).filter(u => u.state !== 'active');
+    if (down.length) vscode.window.showWarningMessage(`Not active after the restart on ${id}: ${down.map(u => `${u.unit} (${u.state})`).join(', ')}. The denials since the push may say why.`);
+  }
+  showDenials(context, null, 'build', { readFrom: id, since: 'push' });
+}
+
+/** Roll back the last push to a target from its backup. */
+async function rollbackTarget(preset) {
+  if (!client || !client.isRunning()) return;
+  const t = await pickTarget(preset, 'roll back');
+  if (!t) return;
+  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Rolling back the last push to ${t.id}…` }, () => client.sendRequest('selinux/targetRollback', { id: t.id }));
+  const out = targetLog(`\n=== Roll back on ${t.id} (${new Date().toLocaleString()})`);
+  if (r.error) { out.appendLine(r.error); vscode.window.showErrorMessage(r.error); return; }
+  out.appendLine(r.transcript || '');
+  if (r.stderr) out.appendLine(`stderr: ${r.stderr}`);
+  if (r.ok) vscode.window.showInformationMessage(`Rolled back on ${t.id}: ${r.modules.join(', ')} as before the push.`);
+  else { out.show(true); vscode.window.showErrorMessage(`The roll back on ${t.id} failed at: ${(r.failed || []).join(', ') || 'unknown step'}. See the SELinux Target output.`); }
 }
 
 async function disconnectTarget() {
@@ -2539,6 +2640,12 @@ function showReport(context, viewType) {
     try {
       if (m.cmd === 'load') {
         panel.webview.postMessage({ cmd: 'result', key: m.key, result: await client.sendRequest(def.request, { against: m.against, ...(m.params || {}) }) });
+      } else if (m.cmd === 'pushTarget') {
+        pushToTarget(context, m.target);
+      } else if (m.cmd === 'permissive') {
+        const r = await client.sendRequest('selinux/targetPermissive', { id: m.target, domain: m.domain, on: !!m.on });
+        if (r.error) vscode.window.showErrorMessage(r.error);
+        panel.webview.postMessage({ cmd: 'reload' });
       } else if (m.cmd === 'fixService') {
         // A service with denials on the target: its module in the editor, the denials in the learn section.
         showServiceEditor(context, m.module, null, { learnText: m.text, learnStatus: m.status || '' });

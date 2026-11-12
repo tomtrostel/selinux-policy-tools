@@ -1706,7 +1706,47 @@ so far covered by the e2e tests only.
    log still read locally: "It needed to go to the target host and retrieve
    those logs"), 3 services on the target with their denials and a way
    into the service editor (done, unreleased), 4 push .pp files with
-   backup/rollback and retest.
+   backup/rollback and retest (done, unreleased).
+   Piece 4: target.js storeChecksumScript(name) (md5 of each module's hll
+   as semodule -E would extract it; /var/lib/selinux/NAME/active/modules/
+   PRIO/MOD/{cil,hll,lang_ext}, hll bzip2 — verified equal to `semodule -E`
+   on melody) + parseStoreChecksums (highest priority wins, all copies
+   kept), fixedPrefixDirs(specs) (restorecon targets), installedPathOf
+   (appconfig file → /etc/selinux/NAME/… ; seusers = null, base.pp carries
+   it), pushScript (steps start/permissive/backup/install/contexts/
+   booleans/restorecon/verify/done, "### step"/"### rc", later steps
+   skipped once semodule failed), rollbackScript, parseSteps, restartScript,
+   permissiveScript, windowFor + recordsSince (since 'push' = a window
+   covering the push + only events stamped after its epoch; ausearch's
+   absolute -ts is locale-bound, so not used), denialsScript(since,
+   sinceEpoch) for the journal. targethost.copyTo (tar stream into a
+   remote dir); summary() carries lastPush. Server: targetPushPlan(id) →
+   { plan, fcOf } (tree: workDir *.pp vs the store; module: the last
+   module build's workDir .pp; name must equal the target's store; contexts
+   = appconfig files differing from the mirror; booleans = booleansReport
+   ('build') compiled vs the target's getsebool), requests
+   selinux/targetPushPlan, targetPush {id, modules, contexts, booleans,
+   setPermissive} (files to /root/selinux-policy-tools/push-<stamp>/,
+   backup in its backup/; e.lastPush; refresh after), targetRollback,
+   targetRestart {id, units}, targetPermissive {id, domain, on};
+   targetDenialsText handles since 'push'. Client: pushToTarget (plan →
+   multi-pick → enforcing modal → push → SELinux Target output → Restart
+   Services and Read Denials… / Roll Back / Show Output), restartAndRead
+   (units from selinux/unconfined against build, the pushed modules'
+   preselected → targetRestart → showDenials(…, 'build', { readFrom,
+   since: 'push' }) → the denials webview reads at once via the `read`
+   field of the policies message), rollbackTarget, pickTarget; FEATURES
+   "Push Build to Target Host…"; Target Host… entries Push / Roll Back;
+   connectedTargets() carries `pushed`. Webviews: unconfined.js Push build
+   to target… button, make permissive / enforce again per row (message
+   `permissive` → reload), since 'push'; denials.js since 'push' + `read`;
+   service.js since 'push' when a target was pushed. Tests: target-test
+   (every helper), test/target-push-e2e.js (melody, root@localhost: RHEL 9
+   tree with the spec's settings; zebra edited and rebuilt → plan differs →
+   push → store md5 equals the local pp, listed, policy file newer → since
+   'push' → restart chronyd → roll back → md5 back; the standalone
+   ~/sepol-test/mymodule → new → push → listed → roll back → gone;
+   permissive on/off for zebra_t).
    Piece 3: target.js HOST_FACTS_SCRIPT (ps/systemctl show/ss sections +
    uid), pathsScript(candidates) (quoted heredoc of ExecStart entries and
    argv0s; bare names searched on systemd's PATH_DIRS; realpath, exists,

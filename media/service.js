@@ -891,7 +891,7 @@
   const LEARN_ACTIONS = { file: 'Access level raised', label: 'Files given a type of their own', cap: 'Capabilities', self: 'Process and capabilities', net: 'Network', access: 'System access', extra: 'Interfaces added', covered: 'Already covered', unmapped: 'Not in the form: add by hand', skipped: 'Left out' };
   function learnSection() {
     if (model.user) return null;
-    const since = h('select', { title: 'How far back to read the audit log' }, [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today']].map(([v, l]) => h('option', { value: v }, l)));
+    const since = h('select', { title: 'How far back to read the audit log' }, [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ...(learnTargets.some(t => t.pushed) ? [['push', 'since the last push']] : [])].map(([v, l]) => h('option', { value: v }, l)));
     if (!learnTargets.some(t => t.id === learnFrom)) learnFrom = learnTargets.length ? learnTargets[0].id : '';
     const from = learnTargets.length ? h('select', { title: 'Whose audit log: this host (sudo ausearch in a terminal), or a connected target host (read over its ssh connection)', onchange: (e) => { learnFrom = e.target.value; render(); } },
       h('option', { value: '', selected: !learnFrom || null }, 'this host'), ...learnTargets.map(t => h('option', { value: t.id, selected: learnFrom === t.id || null }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`))) : null;

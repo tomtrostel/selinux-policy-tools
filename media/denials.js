@@ -17,7 +17,7 @@
     return e;
   }
 
-  const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week']];
+  const SINCE = [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today'], ['this-week', 'this week'], ['push', 'since the last push (a target host)']];
   const BADGE = { label: 'label', boolean: 'boolean', allowed: 'allowed', generic: 'label', missing: 'rule', unknown: 'other policy', error: 'error', transition: 'domain', constraint: 'constraint',
     nnp: 'NoNewPrivileges', invalid: 'invalid context', bounds: 'typebounds' };
 
@@ -235,7 +235,12 @@
 
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (m.cmd === 'policies') { setPolicies(m.policies, m.selected); if (m.targets) setTargets(m.targets); }
+    if (m.cmd === 'policies') {
+      setPolicies(m.policies, m.selected);
+      if (m.targets) setTargets(m.targets);
+      // Opened to read a target's log right away (after a push: the denials since it, against the build).
+      if (m.read && m.read.readFrom) { $('from').value = m.read.readFrom; if (m.read.since) $('since').value = m.read.since; vscode.postMessage({ cmd: 'ausearch', since: $('since').value, target: $('from').value, against: m.selected || null }); }
+    }
     else if (m.cmd === 'result') { if (m.result.policies) setPolicies(m.result.policies, m.result.policy && m.result.policy.id); render(m.result); }
     else if (m.cmd === 'log') { $('log').value = m.text; if (m.status) $('status').textContent = m.status; analyze(m.against || undefined); }
     else if (m.cmd === 'status') $('status').textContent = m.text;

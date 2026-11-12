@@ -187,9 +187,9 @@ function parseFacts(text) {
  * FACTS_SCRIPT; "<no matches>" is not an error.
  */
 const JOURNAL_SINCE = { recent: '-10min', 'this-hour': '-1h', boot: '-b', today: 'today', yesterday: 'yesterday', 'this-week': '-7d', 'this-month': '-31d', 'this-year': '-366d' };
-function denialsScript(since) {
+function denialsScript(since, sinceEpoch = null) {
   const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
-  const j = JOURNAL_SINCE[ts];
+  const j = sinceEpoch ? `@${Math.floor(sinceEpoch)}` : JOURNAL_SINCE[ts];
   return `
 sec() { printf '### %s\\n' "$1"; }
 sec mode; getenforce 2>/dev/null
@@ -201,6 +201,14 @@ sec journal
 ${j ? `journalctl -q ${j === '-b' ? '-b' : `--since ${shq(j)}`} 2>/dev/null </dev/null | grep -E 'pam_selinux|ssh_selinux|SELinux (security )?context'` : 'true'}
 sec done
 `;
+}
+
+/** ausearch's window word covering `ageSeconds` back. */
+const windowFor = (ageSeconds) => (ageSeconds < 540 ? 'recent' : ageSeconds < 3300 ? 'this-hour' : ageSeconds < 82800 ? 'today' : ageSeconds < 6 * 86400 ? 'this-week' : ageSeconds < 30 * 86400 ? 'this-month' : 'this-year');
+
+/** Only the audit events stamped at or after `epoch` (seconds): lines without a stamp (journal, separators) are kept. */
+function recordsSince(text, epoch) {
+  return String(text || '').split('\n').filter(l => { const m = /msg=audit\((\d+)\.\d+:\d+\)/.exec(l); return !m || +m[1] >= Math.floor(epoch); }).join('\n');
 }
 
 /** The output of denialsScript → { text (the records), count (AVC lines), mode, error }. */
@@ -263,6 +271,168 @@ function parsePaths(out) {
   return m;
 }
 
+/* ---------- pushing a policy to the target ---------- */
+
+/**
+ * The checksum of every module in the target's policy store (root only):
+ * `PRIORITY<TAB>NAME<TAB>LANG<TAB>MD5` per module, the md5 of the module as
+ * `semodule -E` would extract it (the stored hll, bzip2 or plain).
+ */
+function storeChecksumScript(name) {
+  return `
+for d in /var/lib/selinux/${shq(name)}/active/modules/*/*; do
+  [ -d "$d" ] || continue
+  n=$(basename "$d"); p=$(basename "$(dirname "$d")"); l=$(cat "$d/lang_ext" 2>/dev/null)
+  case "$p" in *[!0-9]*) continue ;; esac
+  if [ -f "$d/hll" ]; then if bzcat "$d/hll" >/dev/null 2>&1; then m=$(bzcat "$d/hll" | md5sum | cut -d' ' -f1); else m=$(md5sum < "$d/hll" | cut -d' ' -f1); fi; else m=; fi
+  printf '%s\\t%s\\t%s\\t%s\\n' "$p" "$n" "$l" "$m"
+done
+printf '### done\\n'
+`;
+}
+
+/** storeChecksumScript's output → { modules: Map name → { priority (the highest), lang, md5, all: [{ priority, lang, md5 }] }, done }. */
+function parseStoreChecksums(out) {
+  const modules = new Map();
+  let done = false;
+  for (const line of String(out || '').split('\n')) {
+    if (line === '### done') { done = true; continue; }
+    const f = line.split('\t');
+    if (f.length < 4 || !/^\d+$/.test(f[0])) continue;
+    const e = { priority: +f[0], lang: f[2], md5: f[3] || null };
+    const cur = modules.get(f[1]);
+    if (!cur) modules.set(f[1], { ...e, all: [e] });
+    else { cur.all.push(e); if (e.priority > cur.priority) Object.assign(cur, e); }
+  }
+  return { modules, done };
+}
+
+/**
+ * The directories to relabel after a push: the fixed prefix of every file
+ * context spec of the pushed modules (up to the first regex character,
+ * then to the last slash), without '/', deduplicated and without
+ * subdirectories of another one.
+ */
+function fixedPrefixDirs(specs, max = 30) {
+  const dirs = new Set();
+  for (const spec of specs) {
+    const s = String(spec || '');
+    const m = /^([^.*?+()[\]{}|^$\\]*)/.exec(s);
+    let fixed = m ? m[1] : '';
+    if (!fixed.startsWith('/')) continue;
+    const rest = s.slice(fixed.length);
+    // The fixed part is a whole path when the spec ends there or goes on with "(/" (the directory and
+    // what is under it); otherwise the regex continues inside a name, so its directory is meant — but
+    // not a top-level one like /usr (relabeling it whole is not what a module push should do).
+    if (rest && !rest.startsWith('(/')) {
+      fixed = fixed.slice(0, fixed.lastIndexOf('/') + 1).replace(/\/+$/, '') || '/';
+      if (fixed.split('/').length < 3) continue;
+    }
+    fixed = fixed.replace(/\/+$/, '');
+    if (fixed && fixed !== '/') dirs.add(fixed);
+  }
+  const sorted = [...dirs].sort();
+  const out = [];
+  for (const d of sorted) if (!out.some(o => d === o || d.startsWith(o + '/'))) out.push(d);
+  return out.slice(0, max);
+}
+
+/** Where an appconfig file of a tree build lands on an installed system (null: seusers, which base.pp carries). */
+function installedPathOf(file, name) {
+  const base = `/etc/selinux/${name}`;
+  if (file === 'seusers') return null;
+  if (file === 'setrans.conf') return `${base}/setrans.conf`;
+  if (file === 'media') return `${base}/contexts/files/media`;
+  const u = /^(.+)_default_contexts$/.exec(file);
+  if (u) return `${base}/contexts/users/${u[1]}`;
+  if (/^[\w.-]+$/.test(file)) return `${base}/contexts/${file}`;
+  return null;
+}
+
+/**
+ * The script that installs a pushed policy on the target, each step under
+ * "### step <id>" ending with "### rc <code>": the target's clock, setenforce 0
+ * when asked, a backup of every module replaced (semodule -E) and context
+ * file overwritten, semodule -i per priority, the context files copied,
+ * setsebool -P, restorecon on the pushed modules' directories, and a check of
+ * what is installed. Later steps are skipped once semodule failed.
+ * opts: { name, dir (the pushed files on the target), backupDir, modules:
+ * [{ name, priority, had }], contexts: [{ file, to, had }], booleans:
+ * [{ name, value }], restoreDirs, setPermissive }.
+ */
+function pushScript(o) {
+  const q = shq;
+  const byPrio = new Map();
+  for (const m of o.modules) { const a = byPrio.get(m.priority) || []; a.push(m); byPrio.set(m.priority, a); }
+  const lines = [
+    `step() { printf '### step %s\\n' "$1"; }`, `rc() { printf '### rc %s\\n' "$1"; }`, 'ok=1',
+    'step start', 'date +%s', 'getenforce 2>/dev/null', 'rc 0',
+  ];
+  if (o.setPermissive) lines.push('step permissive', 'setenforce 0', 'rc $?');
+  lines.push('step backup', `mkdir -p ${q(o.backupDir)}/contexts && cd ${q(o.backupDir)} || exit 1`, 'brc=0');
+  for (const m of o.modules) if (m.had) lines.push(`semodule -s ${q(o.name)} -X ${m.priority} -E ${q(m.name)} 2>&1 | grep -v '^Extracting at' ; [ -f ${q(`${m.name}.pp`)} ] || brc=1`);
+  for (const c of o.contexts) if (c.had) lines.push(`cp -p ${q(c.to)} ${q(`${o.backupDir}/contexts/${c.file}`)} || brc=1`);
+  lines.push('rc $brc', '[ $brc -eq 0 ] || ok=0');
+  lines.push('step install', 'if [ $ok = 1 ]; then');
+  for (const [prio, ms] of [...byPrio].sort((a, b) => a[0] - b[0])) lines.push(`  semodule -s ${q(o.name)} -X ${prio} -i ${ms.map(m => q(`${o.dir}/${m.name}.pp`)).join(' ')} 2>&1; r=$?; [ $r -eq 0 ] || ok=0; [ $ok = 1 ] || rc_install=$r`);
+  lines.push('  if [ $ok = 1 ]; then rc 0; else rc ${rc_install:-1}; fi', 'else rc skipped; fi');
+  lines.push('step contexts', 'if [ $ok = 1 ]; then crc=0');
+  for (const c of o.contexts) lines.push(`  mkdir -p $(dirname ${q(c.to)}) && cp -p ${q(`${o.dir}/contexts/${c.file}`)} ${q(c.to)} || crc=1`);
+  lines.push('  rc $crc', 'else rc skipped; fi');
+  lines.push('step booleans', 'if [ $ok = 1 ]; then');
+  lines.push(o.booleans.length ? `  setsebool -P ${o.booleans.map(b => q(`${b.name}=${b.value ? 1 : 0}`)).join(' ')} 2>&1; rc $?` : '  rc 0');
+  lines.push('else rc skipped; fi');
+  lines.push('step restorecon', 'if [ $ok = 1 ]; then');
+  lines.push(o.restoreDirs.length ? `  restorecon -R ${o.restoreDirs.map(q).join(' ')} 2>&1 | head -40; rc 0` : '  rc 0');
+  lines.push('else rc skipped; fi');
+  lines.push('step verify', `semodule -s ${q(o.name)} --list-modules=full 2>/dev/null | grep -E ${q(`^[0-9]+ (${o.modules.map(m => m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || 'base'}) `)}`,
+    `for f in /etc/selinux/${q(o.name)}/policy/policy.[0-9]*; do stat -c '%n %Y' "$f"; done 2>/dev/null`, 'getenforce 2>/dev/null', 'rc 0', 'step done', 'rc $((1 - ok))');
+  return lines.join('\n') + '\n';
+}
+
+/** The script undoing a push from its backup: modules reinstalled or removed, context files restored or removed, booleans set back. */
+function rollbackScript(o) {
+  const q = shq;
+  const lines = [`step() { printf '### step %s\\n' "$1"; }`, `rc() { printf '### rc %s\\n' "$1"; }`, 'ok=1', 'step start', 'date +%s', 'rc 0', 'step modules', 'mrc=0'];
+  const had = o.modules.filter(m => m.had), added = o.modules.filter(m => !m.had);
+  const byPrio = new Map();
+  for (const m of had) { const a = byPrio.get(m.priority) || []; a.push(m); byPrio.set(m.priority, a); }
+  for (const [prio, ms] of [...byPrio].sort((a, b) => a[0] - b[0])) lines.push(`semodule -s ${q(o.name)} -X ${prio} -i ${ms.map(m => q(`${o.backupDir}/${m.name}.pp`)).join(' ')} 2>&1 || mrc=1`);
+  for (const m of added) lines.push(`semodule -s ${q(o.name)} -X ${m.priority} -r ${q(m.name)} 2>&1 || mrc=1`);
+  lines.push('rc $mrc', '[ $mrc -eq 0 ] || ok=0', 'step contexts', 'crc=0');
+  for (const c of o.contexts) lines.push(c.had ? `cp -p ${q(`${o.backupDir}/contexts/${c.file}`)} ${q(c.to)} || crc=1` : `rm -f ${q(c.to)} || crc=1`);
+  lines.push('rc $crc', 'step booleans');
+  lines.push(o.booleans.length ? `setsebool -P ${o.booleans.map(b => q(`${b.name}=${b.was ? 1 : 0}`)).join(' ')} 2>&1; rc $?` : 'rc 0');
+  lines.push('step restorecon');
+  lines.push(o.restoreDirs && o.restoreDirs.length ? `restorecon -R ${o.restoreDirs.map(q).join(' ')} 2>&1 | head -40; rc 0` : 'rc 0');
+  lines.push('step verify', `semodule -s ${q(o.name)} --list-modules=full 2>/dev/null | grep -E ${q(`^[0-9]+ (${o.modules.map(m => m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || 'base'}) `)}`, 'rc 0', 'step done', 'rc $((1 - ok))');
+  return lines.join('\n') + '\n';
+}
+
+/** The output of pushScript / rollbackScript → { steps: [{ id, out, rc }], ok, done, at (the target's clock at the start), mode }. */
+function parseSteps(out) {
+  const steps = [];
+  let cur = null;
+  for (const line of String(out || '').split('\n')) {
+    let m = /^### step (\S+)$/.exec(line);
+    if (m) { cur = { id: m[1], out: '', rc: null }; steps.push(cur); continue; }
+    m = /^### rc (\S+)$/.exec(line);
+    if (m && cur) { cur.rc = m[1] === 'skipped' ? 'skipped' : +m[1]; cur.out = cur.out.replace(/\n$/, ''); continue; }
+    if (cur) cur.out += line + '\n';
+  }
+  const start = steps.find(s => s.id === 'start');
+  const startLines = start ? start.out.split('\n') : [];
+  const doneStep = steps.find(s => s.id === 'done');
+  const failed = steps.filter(s => s.rc !== 0 && s.rc !== 'skipped' && s.rc !== null && s.id !== 'done');
+  return { steps, ok: !!doneStep && doneStep.rc === 0 && !failed.length, done: !!doneStep, at: parseInt(startLines[0], 10) || null, mode: (startLines[1] || '').trim() || null, failed: failed.map(s => s.id) };
+}
+
+/** Restart units on the target and report each one's state: `UNIT<TAB>STATE` lines. */
+const restartScript = (units) => `systemctl restart ${units.map(shq).join(' ')} 2>&1; rc=$?; sleep 2\nfor u in ${units.map(shq).join(' ')}; do printf '%s\\t%s\\n' "$u" "$(systemctl is-active "$u" 2>&1)"; done\nprintf '### rc %s\\n' "$rc"\n`;
+
+/** Make a domain permissive on the target (or enforcing again), then list the permissive domains. */
+const permissiveScript = (domain, on) => `semanage permissive ${on ? '-a' : '-d'} ${shq(domain)} 2>&1; printf '### rc %s\\n' "$?"\nsemanage permissive -l -n 2>/dev/null\n`;
+
 /** One line about a target for the status bar / pickers. */
 function describe(t, facts) {
   const bits = [];
@@ -287,4 +457,4 @@ function mirrorPaths(name, policyFile) {
 /** The tar command (run on the target) that streams the mirror. */
 const mirrorCommand = (name, policyFile) => `cd /etc/selinux && tar czf - --ignore-failed-read ${mirrorPaths(name, policyFile).map(shq).join(' ')} 2>/dev/null`;
 
-module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, HOST_FACTS_SCRIPT, PATH_DIRS, pathsScript, parsePaths, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };
+module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, windowFor, recordsSince, HOST_FACTS_SCRIPT, PATH_DIRS, pathsScript, parsePaths, storeChecksumScript, parseStoreChecksums, fixedPrefixDirs, installedPathOf, pushScript, rollbackScript, parseSteps, restartScript, permissiveScript, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };

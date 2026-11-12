@@ -1701,8 +1701,35 @@ the domain it runs in there (count, classes, targets), whether that domain
 is permissive on the target, and the module that owns the domain. **Fix in
 Service Editor…** opens that module with those denials already in its
 *From a permissive run* section, so each one becomes a form setting; the
-verdict line counts the denials and names the permissive domains. Pushing a
-policy to the target is the next step of this feature.
+verdict line counts the denials and names the permissive domains.
+
+**Pushing the build to the target** (*SELinux: Push Build to Target
+Host…*, also from *Target Host…* and the Unconfined view's *Push build to
+target…*) closes the loop: the last build's module packages are compared
+with the target's policy store by checksum (the store keeps each module
+as `semodule -E` would extract it), so the picker shows only the modules
+that are new or differ, the context files of the build's appconfig that
+differ from the target's, and the booleans whose compiled default differs
+from the target's value (unticked: the target's values may be deliberate);
+the rest "already installed unchanged" is counted. The build must be the
+same policy name as the target's store (a module links only into the store
+it was built for); a standalone module goes in as is. On an enforcing
+target you are asked first: set it permissive and push, or push anyway.
+The push copies the files over the connection and runs one script there:
+a backup of every module replaced (`semodule -E`) and context file
+overwritten, `semodule -i` at each module's installed priority, the
+context files copied, `setsebool -P`, `restorecon -R` on the fixed
+directories of the pushed modules' file contexts, and a check of what is
+installed; the transcript goes to the *SELinux Target* output and later
+steps are skipped once `semodule` fails. Then **Restart Services and Read
+Denials…** restarts the target's services (those of the pushed modules
+preselected) and opens the denial assistant on the denials logged since
+the push, against the build; **Roll Back** reinstalls the backup (new
+modules removed, booleans set back). "Since the last push" is a window in
+the denial assistant, the Unconfined view and the learn section. In the
+Unconfined view a domain can be made permissive on the target for a test
+run, and enforcing again. A local module installed at a higher priority
+on the target keeps overriding a pushed one; the picker says so.
 
 ## Checking in CI: `selinux-policy-check`
 
