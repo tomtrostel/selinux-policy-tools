@@ -27,7 +27,9 @@ const spec = process.argv[3] || path.join(os.homedir(), 'sepol-test/srpm/selinux
 const variant = process.argv[4] || 'targeted';
 const modDir = process.argv[5] || path.join(os.homedir(), 'sepol-test/mymodule');
 const tc = detectToolchain(null);
-if (!tc.ok || !fs.existsSync(path.join(src, 'Rules.modular')) || !fs.existsSync(spec)) { console.log(`SKIP: ${tc.reason || `need a tree at ${src} and a spec at ${spec}`}`); process.exit(0); }
+if (!tc.ok) { console.log(`SKIP: ${tc.reason}`); process.exit(0); }
+if (!process.env.ONLY_MODULE && (!fs.existsSync(path.join(src, 'Rules.modular')) || !fs.existsSync(spec))) { console.log(`SKIP: need a tree at ${src} and a spec at ${spec} (ONLY_MODULE=1 for the standalone part alone)`); process.exit(0); }
+const T = require('../server/target');
 
 let failures = 0;
 const check = (cond, what, extra) => {
@@ -83,6 +85,15 @@ const md5 = (p) => require('crypto').createHash('md5').update(fs.readFileSync(p)
   const id = c.id;
   t0 = Date.now();
   let plan = await req('selinux/targetPushPlan', { id });
+  let builtVersion = null;
+  try { const fd = fs.openSync(res.policyBin, 'r'); const hb = Buffer.alloc(24); fs.readSync(fd, hb, 0, 24, 0); fs.closeSync(fd); builtVersion = T.policyVersionOf(hb); } catch { /* no policy.bin in the response */ }
+  if (builtVersion && c.facts.policy.version !== builtVersion) {
+    // Another kernel policy version (a RHEL 9 build for a RHEL 8 target): the tree build must be refused; a module push is tried below.
+    check(plan.error && /policy version \d+ .* runs version \d+/.test(plan.error), `a tree built here (version ${builtVersion}) is refused for ${TARGET} (version ${c.facts.policy.version}): ${plan.error}`, plan.error || plan.counts);
+    await req('selinux/targetDisconnect', { id });
+    a.proc.kill();
+    return modulePart();
+  }
   const z = plan.modules && plan.modules.find(m => m.name === 'zebra');
   check(!plan.error && plan.kind === 'tree' && plan.name === installed.name && plan.mode && plan.modules.length === res.packages && z && z.state === 'differs' && z.had && z.priority === 100 && z.lang === 'pp' && z.size > 1000 && /^[0-9a-f]{32}$/.test(z.md5) && plan.lastPush === null,
     `plan (${((Date.now() - t0) / 1000).toFixed(0)} s): ${plan.counts && plan.counts.same} same, ${plan.counts && plan.counts.differs} differ, ${plan.counts && plan.counts.new} new of ${plan.modules && plan.modules.length}; ${plan.extra && plan.extra.length} extra on the target; zebra differs`, plan.error || { counts: plan.counts, z });
@@ -166,6 +177,16 @@ async function modulePart() {
   const wasThere = m2.had;
   t0 = Date.now();
   const push2 = await req2('selinux/targetPush', { id: c2.id, modules: [mod] });
+  const install = push2.steps && push2.steps.find(s => s.id === 'install');
+  if (!push2.error && !push2.ok && install && install.rc !== 0 && /version|not supported|does not match/i.test(install.out)) {
+    // Built with another toolchain than the target's (a RHEL 9 module for RHEL 8): semodule refuses it, cleanly reported, nothing changed.
+    const listed = (await req2('selinux/targetRun', { id: c2.id, command: `semodule --list-modules=full | grep -E '^[0-9]+ ${mod} ' || true` })).stdout.trim();
+    check(push2.failed.join() === 'install' && push2.steps.filter(s => s.rc === 'skipped').length === 3 && (wasThere ? /^100 /.test(listed) : listed === ''), `the module built here does not load on ${TARGET}: the push fails at the install step and says why (${install.out.trim().split('\n')[0]}); the target is unchanged`, { failed: push2.failed, transcript: (push2.transcript || '').slice(0, 1200), listed });
+    await req2('selinux/targetRun', { id: c2.id, command: `rm -rf ${push2.dir}` });
+    await req2('selinux/targetDisconnect', { id: c2.id });
+    b.proc.kill();
+    return finish();
+  }
   check(!push2.error && push2.ok && push2.kind === 'module' && push2.modules[0].had === wasThere, `pushed ${mod} (${((Date.now() - t0) / 1000).toFixed(0)} s)`, push2.error || { failed: push2.failed, transcript: (push2.transcript || '').slice(0, 1200) });
   const listed = (await req2('selinux/targetRun', { id: c2.id, command: `semodule --list-modules=full | grep -E '^[0-9]+ ${mod} '` })).stdout.trim();
   check(/^100 /.test(listed), `the target lists ${mod}: ${listed}`);

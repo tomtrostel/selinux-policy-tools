@@ -21,6 +21,9 @@ if (process.platform !== 'linux' || !installed) { console.log('SKIP: needs Linux
 const TARGET = process.env.TARGET || 'root@localhost';
 const PASS_FILE = process.env.TARGET_PASS_FILE || null;
 const KEY_TARGET = process.env.KEY_TARGET || 'ricardo';
+// The password target is this host (root@localhost): its answers must equal the installed policy's.
+// Another host (TARGET=root@box): the same requests, judged on their own.
+const LOCAL = /@(localhost|127\.0\.0\.1|::1)$/.test(TARGET) || TARGET.endsWith(`@${os.hostname()}`) || TARGET.endsWith(`@${os.hostname().split('.')[0]}`);
 
 let failures = 0;
 const check = (cond, what, extra) => {
@@ -79,21 +82,23 @@ function start(ws) {
     check(r.targets.length === 1 && r.targets[0].state === 'error', 'the failed target is listed as an error', r.targets);
     t0 = Date.now();
     const c = await req('selinux/targetConnect', { spec: TARGET, password });
-    check(!c.error && c.state === 'connected' && c.facts && c.facts.root && c.mirror && c.mirror.name === installed.name, `connected to ${TARGET} as root (${Date.now() - t0} ms): ${c.label}`, c.error || c);
+    check(!c.error && c.state === 'connected' && c.facts && c.facts.root && c.mirror && (!LOCAL || c.mirror.name === installed.name), `connected to ${TARGET} as root (${Date.now() - t0} ms): ${c.label}${LOCAL ? '' : ' (another host)'}`, c.error || c);
+    if (c.error) return finish();
     const f = c.facts || {};
-    check(f.policy && f.policy.name === installed.name && f.policy.file === installed.policy && f.mode && f.os && f.os.id && f.policyRpm, `facts: ${f.os && f.os.pretty}, ${f.policyRpm}, ${f.mode}`, f);
+    const tname = f.policy ? f.policy.name : null;
+    check(f.policy && (!LOCAL || (f.policy.name === installed.name && f.policy.file === installed.policy)) && f.mode && f.os && f.os.id && f.policyRpm, `facts: ${f.os && f.os.pretty}, ${f.policyRpm}, ${f.mode}, policy ${tname} version ${f.policy && f.policy.version}`, f);
     check(Array.isArray(f.modules) && f.modules.length > 100 && f.modules.every(m => m.priority && m.name && m.lang) && Array.isArray(f.permissive) && f.booleans && typeof f.booleans.ssh_sysadm_login === 'boolean' && !c.notes.length,
       `root sees ${f.modules && f.modules.length} modules, ${f.permissive && f.permissive.length} permissive domains, ${f.booleans && Object.keys(f.booleans).length} booleans; no notes`, c.notes);
     const log = fs.readFileSync(logFile, 'utf8');
     check(/askpass ok/.test(log) && /noanswer ok/.test(log) && /pwfile exists during connect/.test(log) && /ControlMaster=yes/.test(log), 'the askpass helper answered the password prompt (and "no" to anything else) for the master connection', log);
     const dir = path.dirname(path.dirname(path.dirname(c.mirror.root)));
-    check(!fs.existsSync(path.join(dir, 'pw')) && (fs.statSync(dir).mode & 0o077) === 0 && fs.existsSync(c.mirror.policy) && fs.existsSync(path.join(c.mirror.root, installed.name, 'contexts', 'files', 'file_contexts')) && fs.existsSync(path.join(c.mirror.root, installed.name, 'seusers')),
+    check(!fs.existsSync(path.join(dir, 'pw')) && (fs.statSync(dir).mode & 0o077) === 0 && fs.existsSync(c.mirror.policy) && fs.existsSync(path.join(c.mirror.root, tname, 'contexts', 'files', 'file_contexts')) && fs.existsSync(path.join(c.mirror.root, tname, 'seusers')),
       'the password file is gone after the connect; the private directory holds the mirrored policy, file_contexts and seusers', { dir, mode: (fs.statSync(dir).mode & 0o777).toString(8) });
     check(a.changes.length >= 2 && a.changes[a.changes.length - 1].targets[0].state === 'connected', 'selinux/targetsChanged notified', a.changes.map(x => x.targets.map(t => t.state)));
     const id = `target:${c.id}`;
     const pols = (await req('selinux/denialPolicies')).policies;
     const tp = pols.find(p => p.id === id);
-    check(tp && /^Running on root@/.test(tp.label) && tp.label.includes(installed.name) && !tp.active && !tp.build, `the target's policy is listed: ${tp && tp.label}`, pols);
+    check(tp && /^Running on root@/.test(tp.label) && tp.label.includes(tname) && !tp.active && !tp.build, `the target's policy is listed: ${tp && tp.label}`, pols);
 
     // Same host, same policy: the answers must match the installed policy's.
     const LOG = [
@@ -104,46 +109,52 @@ function start(ws) {
     const d1 = await req('selinux/analyzeDenials', { text: LOG, against: id });
     const d0 = await req('selinux/analyzeDenials', { text: LOG, against: `installed:${installed.name}` });
     const v = (d) => (d.groups || []).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}${g.labels && g.labels.length ? `/${g.labels.map(x => `${x.path}=${x.expected}|${x.current}`).join(',')}` : ''}`);
-    check(!d1.error && d1.policy && d1.policy.id === id && v(d1).length === 3 && JSON.stringify(v(d1)) === JSON.stringify(v(d0)) && v(d1).some(x => /^sshd_t>passwd_file_t:allowed/.test(x)) && v(d1).some(x => /tmp_t:label/.test(x)),
-      `denials against the target's policy: the same verdicts as against the installed one (${v(d1).join(', ')})`, { target: v(d1), installed: v(d0), error: d1.error });
+    check(!d1.error && d1.policy && d1.policy.id === id && v(d1).length === 3 && (!LOCAL || JSON.stringify(v(d1)) === JSON.stringify(v(d0))) && v(d1).some(x => /^sshd_t>passwd_file_t:allowed/.test(x)) && v(d1).some(x => /tmp_t:label\/\/etc\/hosts=net_conf_t\|net_conf_t/.test(x)),
+      `denials against the target's policy${LOCAL ? ': the same verdicts as against the installed one' : ' (the current label from the target)'} (${v(d1).join(', ')})`, { target: v(d1), installed: v(d0), error: d1.error });
     const b1 = await req('selinux/booleans', { against: id });
     const b0 = await req('selinux/booleans', { against: `installed:${installed.name}` });
-    const diff = (b1.rows || []).filter(x => { const y = (b0.rows || []).find(z => z.name === x.name); return !y || y.running !== x.running || y.compiled !== x.compiled; });
-    check(!b1.error && b1.rows && b1.rows.length === b0.rows.length && !diff.length && b1.rows.some(x => x.running != null), `booleans against the target: ${b1.rows && b1.rows.length} rows, running values from getsebool on the target, same as here`, diff.slice(0, 3));
+    const diff = LOCAL ? (b1.rows || []).filter(x => { const y = (b0.rows || []).find(z => z.name === x.name); return !y || y.running !== x.running || y.compiled !== x.compiled; }) : [];
+    check(!b1.error && b1.rows && b1.rows.length > 100 && (!LOCAL || b1.rows.length === b0.rows.length) && !diff.length && b1.rows.filter(x => x.running != null).length > 100 && b1.rows.every(x => x.running == null || x.running === f.booleans[x.name]),
+      `booleans against the target: ${b1.rows && b1.rows.length} rows, running values from getsebool on the target${LOCAL ? ', same as here' : ''}`, diff.slice(0, 3));
     const l1 = await req('selinux/loginContexts', { against: id });
     const l0 = await req('selinux/loginContexts', { against: `installed:${installed.name}` });
     const probs = (x) => (x.problems || []).map(p => `${p.kind}:${p.login || ''}:${p.source || ''}`).sort();
-    check(!l1.error && l1.mappings && l1.mappings.length === l0.mappings.length && JSON.stringify(probs(l1)) === JSON.stringify(probs(l0)) && l1.policy && l1.policy.configDir && l1.policy.configDir.startsWith(c.mirror.root),
-      `login contexts against the target: ${l1.mappings && l1.mappings.length} logins from the mirrored seusers, ${probs(l1).length} problems as for the installed policy`, { t: probs(l1).slice(0, 5), i: probs(l0).slice(0, 5), error: l1.error, dir: l1.policy && l1.policy.configDir });
+    check(!l1.error && l1.mappings && l1.mappings.length >= 1 && (!LOCAL || (l1.mappings.length === l0.mappings.length && JSON.stringify(probs(l1)) === JSON.stringify(probs(l0)))) && l1.policy && l1.policy.configDir && l1.policy.configDir.startsWith(c.mirror.root),
+      `login contexts against the target: ${l1.mappings && l1.mappings.length} logins from the mirrored seusers, ${probs(l1).length} problems${LOCAL ? ' as for the installed policy' : ''}`, { t: probs(l1).slice(0, 5), i: probs(l0).slice(0, 5), error: l1.error, dir: l1.policy && l1.policy.configDir });
     const x1 = await req('selinux/contextFiles', { against: id });
     const x0 = await req('selinux/contextFiles', { against: `installed:${installed.name}` });
     const xp = (x) => (x.problems || []).map(p => `${p.kind}:${path.basename(p.file || '')}:${p.l || ''}`).sort();
-    check(!x1.error && x1.files && x1.files.length === x0.files.length && JSON.stringify(xp(x1)) === JSON.stringify(xp(x0)) && (x1.notes || []).some(n => /copied at the last refresh/.test(n)),
-      `context files against the target: ${x1.files && x1.files.length} files, ${xp(x1).length} problems as for the installed policy`, { t: xp(x1).slice(0, 5), i: xp(x0).slice(0, 5), notes: x1.notes, error: x1.error });
+    check(!x1.error && x1.files && x1.files.length > 10 && (!LOCAL || (x1.files.length === x0.files.length && JSON.stringify(xp(x1)) === JSON.stringify(xp(x0)))) && (x1.notes || []).some(n => /copied at the last refresh/.test(n)),
+      `context files against the target: ${x1.files && x1.files.length} files, ${xp(x1).length} problems${LOCAL ? ' as for the installed policy' : ''}`, { t: xp(x1).slice(0, 5), i: xp(x0).slice(0, 5), notes: x1.notes, error: x1.error });
     const run = await req('selinux/targetRun', { id: c.id, command: 'id -u; hostname' });
-    check(run.code === 0 && run.stdout.split('\n')[0] === '0' && run.stdout.split('\n')[1] === os.hostname(), 'a command runs on the target over the open connection', run);
+    check(run.code === 0 && run.stdout.split('\n')[0] === '0' && run.stdout.split('\n')[1] === (LOCAL ? os.hostname() : f.hostname), 'a command runs on the target over the open connection', run);
     const runIn = await req('selinux/targetRun', { id: c.id, command: 'sh -s', input: 'echo got $(cat | wc -l) lines\n' });
     check(runIn.code === 0 && /got 0 lines/.test(runIn.stdout), 'with stdin', runIn);
-    // Denials read on the target: provoke one there first (httpd_t has no entrypoint on /bin/true).
-    await req('selinux/targetRun', { id: c.id, command: 'runcon -u system_u -r system_r -t httpd_t /bin/true 2>/dev/null; sleep 1; true' });
+    // Denials read on the target: provoke one there first — chronyd run in its own domain on a config file it may not read
+    // (an entrypoint refusal, as with runcon into httpd_t on /bin/true, is not audited on every release).
+    await req('selinux/targetRun', { id: c.id, command: 'runcon -u system_u -r system_r -t chronyd_t /usr/sbin/chronyd -n -f /etc/shadow >/dev/null 2>&1; sleep 1; true' });
     t0 = Date.now();
     const dn = await req('selinux/targetDenials', { id: c.id, since: 'recent' });
-    check(!dn.error && dn.mode === f.mode && dn.count >= 1 && /scontext=\S+:httpd_t|tcontext=\S+:httpd_t|httpd_t/.test(dn.text) && /^Read \d+ records from root@/.test(dn.status) && dn.text.split('\n').every(l => !/<no matches>/.test(l)),
+    check(!dn.error && dn.mode === f.mode && dn.count >= 1 && /scontext=\S+:chronyd_t/.test(dn.text) && /^Read \d+ records from root@/.test(dn.status) && dn.text.split('\n').every(l => !/<no matches>/.test(l)),
       `the target's denials since recent: ${dn.count} records, ${dn.mode} (${Date.now() - t0} ms): ${dn.status}`, dn.error || { status: dn.status, head: (dn.text || '').slice(0, 300) });
     const da = await req('selinux/analyzeDenials', { text: dn.text, against: id });
-    check(!da.error && da.groups && da.groups.some(g => g.source === 'unconfined_t' || g.target === 'httpd_t' || g.source === 'httpd_t'), `those denials analyzed against the target's policy: ${da.groups && da.groups.length} groups`, da.error || (da.groups || []).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}`));
+    check(!da.error && da.groups && da.groups.some(g => g.source === 'chronyd_t'), `those denials analyzed against the target's policy: ${da.groups && da.groups.length} groups (${(da.groups || []).slice(0, 3).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}`).join(', ')})`, da.error || (da.groups || []).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}`));
     check(!(await req('selinux/targetDenials', { id: c.id, since: 'x; echo pwned' })).error, 'an odd since word falls back to recent');
     // The target's services and processes, with their denials.
     t0 = Date.now();
     const un = await req('selinux/unconfined', { against: id, host: c.id, since: 'recent' });
     const rows = un.rows || [];
-    check(!un.error && un.host && un.host.target === c.id && un.host.hostname === os.hostname() && rows.length > 10 && un.targets.some(t => t.id === c.id) && un.summary && un.host.denials && un.host.denials.since === 'recent' && !un.host.denials.error && Array.isArray(un.host.permissive),
+    check(!un.error && un.host && un.host.target === c.id && un.host.hostname === (LOCAL ? os.hostname() : f.hostname) && rows.length > 10 && un.targets.some(t => t.id === c.id) && un.summary && un.host.denials && un.host.denials.since === 'recent' && !un.host.denials.error && Array.isArray(un.host.permissive),
       `programs on the target (${Date.now() - t0} ms): ${rows.length} rows, ${un.summary && un.summary.unconfined} unconfined, ${un.host.denials && un.host.denials.total} denials since recent, permissive: ${un.host.permissive && un.host.permissive.length}`, un.error || { host: un.host, summary: un.summary });
-    check(rows.every(r => r.exists && r.real.startsWith('/') && 'denials' in r && 'permissive' in r && 'module' in r) && rows.some(r => r.pkg) && rows.some(r => r.listens.length) && !(un.host.limits || []).some(l => /not run to its end|could not all/.test(l)),
-      'rows resolved on the target: real paths, packages, listening ports as root; denial and permissive fields on every row', { limits: un.host.limits, sample: rows.slice(0, 2) });
+    const parts = { fields: rows.every(r => r.real.startsWith('/') && 'denials' in r && 'permissive' in r && 'module' in r), missing: rows.filter(r => !r.exists).map(r => r.real), pkgs: rows.filter(r => r.pkg).length, listening: rows.filter(r => r.listens.length).length, limits: un.host.limits };
+    // Units whose ExecStart= program is absent (dracut's on RHEL 8) stay as rows that do not exist, as on this host.
+    check(parts.fields && rows.filter(r => r.exists).length > 10 && parts.missing.every(p => /dracut|^\/usr\/libexec|^\/usr\/sbin|^\/bin|^\/usr\/bin/.test(p)) && parts.pkgs > 0 && parts.listening > 0 && !(un.host.limits || []).some(l => /not run to its end|could not all/.test(l)),
+      `rows resolved on the target: real paths, ${parts.pkgs} with packages, ${parts.listening} listening, as root; ${parts.missing.length} programs absent there; denial and permissive fields on every row`, parts);
+    const chrony = rows.find(r => r.hostDomains.includes('chronyd_t') || r.policyDomain === 'chronyd_t');
+    check(chrony && chrony.denials && chrony.denials.count >= 1 && chrony.denialText && /chronyd_t/.test(chrony.denialText) && un.host.denials.total >= 1, `the provoked denials are joined onto chronyd's row (${chrony && chrony.denials && chrony.denials.count})`, chrony && { denials: chrony.denials, module: chrony.module });
     const un0 = await req('selinux/unconfined', { against: `installed:${installed.name}`, host: '' });
-    check(!un0.error && un0.host && un0.host.target === null && un0.host.hostname === os.hostname() && Math.abs(un0.rows.length - rows.length) <= 3 && un0.rows.filter(r => r.pkg).length >= rows.filter(r => r.pkg).length - 3,
-      `this host explicitly (host ''): ${un0.rows && un0.rows.length} rows, the same programs`, un0.error || { t: rows.length, h: un0.rows && un0.rows.length });
+    check(!un0.error && un0.host && un0.host.target === null && un0.host.hostname === os.hostname() && (!LOCAL || (Math.abs(un0.rows.length - rows.length) <= 3 && un0.rows.filter(r => r.pkg).length >= rows.filter(r => r.pkg).length - 3)),
+      `this host explicitly (host ''): ${un0.rows && un0.rows.length} rows${LOCAL ? ', the same programs' : ''}`, un0.error || { t: rows.length, h: un0.rows && un0.rows.length });
     const unD = await req('selinux/unconfined', { against: `installed:${installed.name}` });
     check(!unD.error && unD.host && unD.host.target === c.id, 'without a host given, a connected target is looked at by default', unD.error || unD.host);
     t0 = Date.now();

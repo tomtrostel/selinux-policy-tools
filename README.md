@@ -2382,6 +2382,18 @@ arguments (2026-10-22).
   (`lxc_contexts`, `virtual_*_context`, `userhelper_context`) and two D-Bus
   names of services it doesn't have (tuned, timedated) are never read.
 
+### A target that logs no denials
+
+Ricardo (Rocky 8) refused every provoked access yet `ausearch` found
+nothing and setroubleshoot still reported the denials: `auditd` had
+suspended logging on 2026-10-29 when the disk ran low
+(`admin_space_left_action = SUSPEND`) and never resumed after the disk
+was freed, so the audit log had stopped two weeks earlier while the kernel
+kept auditing (the dispatcher still fed setroubleshoot). A `service auditd
+restart` fixed it. Reading a target's denials now asks about auditd and
+says so instead of "no denials logged" when it is stopped or has suspended
+logging.
+
 ### What semodule/CIL refuses that make validate accepts
 
 Trees are checked with refpolicy's `make validate` (legacy link and expand),

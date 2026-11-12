@@ -193,6 +193,9 @@ function denialsScript(since, sinceEpoch = null) {
   return `
 sec() { printf '### %s\\n' "$1"; }
 sec mode; getenforce 2>/dev/null
+sec auditd
+systemctl is-active auditd 2>/dev/null </dev/null
+journalctl -u auditd -n 8 -o cat --no-pager 2>/dev/null </dev/null | grep -iE 'suspend|low on disk|resum|Started|Stopped|Init complete' | tail -1
 sec audit
 # ausearch reads stdin when it is a pipe (it would eat the rest of this script): give it none.
 out=$(ausearch -m avc,user_avc,selinux_err -ts ${ts} --raw 2>&1 </dev/null); rc=$?
@@ -211,14 +214,22 @@ function recordsSince(text, epoch) {
   return String(text || '').split('\n').filter(l => { const m = /msg=audit\((\d+)\.\d+:\d+\)/.exec(l); return !m || +m[1] >= Math.floor(epoch); }).join('\n');
 }
 
-/** The output of denialsScript → { text (the records), count (AVC lines), mode, error }. */
+/**
+ * The output of denialsScript → { text (the records), count (AVC lines), mode, error, auditd: { active,
+ * suspended, last }, note }. The note says when nothing new can reach the audit log: auditd stopped, or
+ * logging suspended on low disk space (auditd never resumes on its own; "service auditd restart").
+ */
 function parseDenialsOutput(out) {
   const s = splitSections(out);
   const audit = (s.audit || '').replace(/^\s+|\s+$/g, '');
   const journal = (s.journal || '').trim();
   const text = [audit, journal].filter(Boolean).join('\n');
   const e = s['audit.err'] != null ? s['audit.err'].trim().split('\n')[0] : null;
-  return { text, count: text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length, mode: (s.mode || '').trim() || null,
+  const al = (s.auditd || '').trim().split('\n');
+  const auditd = { active: al[0] === 'active', last: (al[1] || '').trim() || null, suspended: /suspending logging|low on disk space/i.test(al[1] || '') };
+  const note = s.auditd == null ? null : !auditd.active ? 'auditd is not running on the target: nothing reaches its audit log (start it: systemctl start auditd).'
+    : auditd.suspended ? `auditd on the target suspended logging (${/low (on )?disk/i.test(auditd.last) ? 'low disk space' : auditd.last}) and does not resume on its own: nothing new reaches the audit log until it is restarted there (service auditd restart).` : null;
+  return { text, count: text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length, mode: (s.mode || '').trim() || null, auditd, note,
     error: e ? (/ermission denied/i.test(e) ? 'The audit log needs root on the target.' : /not found/i.test(e) ? 'ausearch is not installed on the target (audit package).' : e) : s.done == null ? 'The command did not finish on the target.' : null };
 }
 
@@ -272,6 +283,14 @@ function parsePaths(out) {
 }
 
 /* ---------- pushing a policy to the target ---------- */
+
+/** The kernel policy version a binary policy file (policy.NN) carries, from its header: magic, "SE Linux", version. null when not a policy. */
+function policyVersionOf(buf) {
+  if (!buf || buf.length < 24 || buf.readUInt32LE(0) !== 0xf97cff8c) return null;
+  const len = buf.readUInt32LE(4);
+  if (len !== 8 || buf.toString('latin1', 8, 16) !== 'SE Linux') return null;
+  return buf.readUInt32LE(16);
+}
 
 /**
  * The checksum of every module in the target's policy store (root only):
@@ -457,4 +476,4 @@ function mirrorPaths(name, policyFile) {
 /** The tar command (run on the target) that streams the mirror. */
 const mirrorCommand = (name, policyFile) => `cd /etc/selinux && tar czf - --ignore-failed-read ${mirrorPaths(name, policyFile).map(shq).join(' ')} 2>/dev/null`;
 
-module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, windowFor, recordsSince, HOST_FACTS_SCRIPT, PATH_DIRS, pathsScript, parsePaths, storeChecksumScript, parseStoreChecksums, fixedPrefixDirs, installedPathOf, pushScript, rollbackScript, parseSteps, restartScript, permissiveScript, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };
+module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, windowFor, recordsSince, HOST_FACTS_SCRIPT, PATH_DIRS, pathsScript, parsePaths, policyVersionOf, storeChecksumScript, parseStoreChecksums, fixedPrefixDirs, installedPathOf, pushScript, rollbackScript, parseSteps, restartScript, permissiveScript, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };

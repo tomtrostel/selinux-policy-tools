@@ -47,7 +47,12 @@
   permissive on the target (and enforcing again) from the Unconfined view.
   Requests `selinux/targetPushPlan`, `selinux/targetPush`,
   `selinux/targetRollback`, `selinux/targetRestart`,
-  `selinux/targetPermissive`.
+  `selinux/targetPermissive`. A tree built for another kernel policy
+  version than the target's (RHEL 9 → RHEL 8) is refused with the reason;
+  a module the target's `semodule` cannot load fails at the install step
+  with its message and nothing changed. Reading a target's denials reports
+  an `auditd` that is stopped or has suspended logging (low disk space)
+  instead of "no denials logged".
 
 ## 0.19.0 (2026-11-12)
 

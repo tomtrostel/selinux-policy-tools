@@ -3548,7 +3548,8 @@ async function targetDenialsText(id, since) {
   if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode, since: ts };
   if (epoch) { d.text = targetLib.recordsSince(d.text, epoch); d.count = d.text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length; ts = 'the last push'; }
   if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
-  return { text: d.text, count: d.count, mode: d.mode, id, since: ts, status: d.count ? `Read ${d.count} records from ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` : `No denials logged on ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` };
+  const where = `${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}`;
+  return { text: d.text, count: d.count, mode: d.mode, id, since: ts, note: d.note || null, status: `${d.count ? `Read ${d.count} records from ${id} (${where}).` : `No denials logged on ${id} (${where}).`}${d.note ? ` ${d.note}` : ''}` };
 }
 connection.onRequest('selinux/targetDenials', async ({ id, since } = {}) => targetDenialsText(id, since));
 
@@ -3594,6 +3595,12 @@ async function targetPushPlan(id) {
     fcOf = (m) => path.join(res.workDir, 'tmp', `${m}.mod.fc`);
   }
   if (name !== f.policy.name) return { plan: { error: `The build is the ${name} policy but ${id} runs ${f.policy.name}: a module links only into the store it was built for.` } };
+  // A tree built with this host's checkpolicy for another kernel policy version (RHEL 9 → a RHEL 8 target) would not load there.
+  if (kind === 'tree' && res.policyBin) {
+    let built = null;
+    try { const fd = fs.openSync(res.policyBin, 'r'); const b = Buffer.alloc(24); fs.readSync(fd, b, 0, 24, 0); fs.closeSync(fd); built = targetLib.policyVersionOf(b); } catch { /* unreadable */ }
+    if (built && f.policy.version && built !== f.policy.version) return { plan: { error: `The build is policy version ${built} (this host's toolchain) but ${id} runs version ${f.policy.version}: build it on a host with the target's toolchain, or set OUTPUT_POLICY=${f.policy.version} in the make arguments.` } };
+  }
   const r = await targetHosts.run(id, 'sh -s', { input: targetLib.storeChecksumScript(name), timeout: 300000 });
   const store = targetLib.parseStoreChecksums(r.stdout);
   if (!store.done) return { plan: { error: `Could not read the module store on ${id}: ${r.stderr.trim().split('\n')[0] || 'the listing did not finish'}.` } };
@@ -5281,7 +5288,7 @@ async function unconfinedReport(against, { host, since } = {}) {
     const d = await targetDenialsText(hostId, since);
     den.since = d.since; den.mode = d.mode || null;
     if (d.error) den.error = d.error;
-    else den.total = unconfinedLib.joinDenials(out.rows, denials.groupDenials(denials.parseDenials(d.text || '')), { permissive, lines: unconfinedLib.denialLinesBySource(d.text || '') });
+    else { den.total = unconfinedLib.joinDenials(out.rows, denials.groupDenials(denials.parseDenials(d.text || '')), { permissive, lines: unconfinedLib.denialLinesBySource(d.text || '') }); if (d.note) den.error = d.note; }
   } else unconfinedLib.joinDenials(out.rows, [], { permissive });
   const owner = new Map();
   for (const sm of serviceModules()) for (const d of sm.domains) if (!owner.has(d.domain)) owner.set(d.domain, sm.module);

@@ -108,7 +108,14 @@ const REC = 'type=AVC msg=audit(1700000000.001:1): avc:  denied  { read } for  p
 let d = T.parseDenialsOutput(`### mode\nPermissive\n### audit\n${REC}\ntype=SYSCALL msg=audit(1700000000.001:1): arch=c000003e syscall=2\n----\n${REC.replace(':1)', ':2)')}\n### journal\nNov 12 10:00:00 box sshd[1]: pam_selinux(sshd:session): Unable to get valid context for u\n### done\n`);
 check(!d.error && d.mode === 'Permissive' && d.count === 2 && d.text.split('\n').length === 5 && /pam_selinux/.test(d.text), 'parseDenialsOutput: records and journal lines joined, AVC count, mode', d);
 d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### journal\n### done\n');
-check(!d.error && d.text === '' && d.count === 0 && d.mode === 'Enforcing', 'parseDenialsOutput: nothing logged', d);
+check(!d.error && d.text === '' && d.count === 0 && d.mode === 'Enforcing' && d.note === null, 'parseDenialsOutput: nothing logged', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### auditd\nactive\nAudit daemon is suspending logging due to low disk space.\n### audit\n### journal\n### done\n');
+check(!d.error && d.auditd.active && d.auditd.suspended && /suspended logging \(low disk space\)/.test(d.note) && /service auditd restart/.test(d.note), 'parseDenialsOutput: auditd suspended logging on low disk space (ricardo, 2026-10-29) → said so', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### auditd\ninactive\n\n### audit\n### journal\n### done\n');
+check(/auditd is not running/.test(d.note) && !d.auditd.active, 'parseDenialsOutput: auditd not running → said so', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### auditd\nactive\nStarted Security Auditing Service.\n### audit\n### journal\n### done\n');
+check(d.note === null && d.auditd.active && !d.auditd.suspended, 'parseDenialsOutput: a restarted auditd is fine', d);
+check(/sec auditd\nsystemctl is-active auditd/.test(T.denialsScript('recent')) && /journalctl -u auditd -n 8 -o cat/.test(T.denialsScript('recent')), 'denialsScript: asks about auditd');
 d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### audit.err\nError opening /var/log/audit/audit.log (Permission denied)\n### journal\n### done\n');
 check(d.error === 'The audit log needs root on the target.', 'parseDenialsOutput: not root', d);
 d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### audit.err\nsh: line 3: ausearch: command not found\n### journal\n### done\n');
@@ -124,7 +131,10 @@ const pm = T.parsePaths('/usr/sbin/sshd\t/usr/sbin/sshd\t1\topenssh-server\nboot
 check(pm.done && pm.size === 4 && pm.get('/usr/sbin/sshd').pkg === 'openssh-server' && pm.get('bootctl').real === '/usr/bin/bootctl' && pm.get('/opt/x y/agent').exists === false && pm.get('/opt/x y/agent').real === null && pm.get('/bin/sh').real === '/usr/bin/bash', 'parsePaths: real path, existence, package per candidate', [...pm]);
 check(!T.parsePaths('/a\t/a\t1\t\n').done && T.parsePaths('/a\t/a\t1\t\n').get('/a').pkg === null, 'parsePaths: cut off → not done; no package → null');
 
-// 7. Pushing a build: the store checksums, the directories to relabel, where context files go, the scripts and their output.
+// 7. Pushing a build: the policy version, the store checksums,
+const hdr = Buffer.alloc(32); hdr.writeUInt32LE(0xf97cff8c, 0); hdr.writeUInt32LE(8, 4); hdr.write('SE Linux', 8, 'latin1'); hdr.writeUInt32LE(33, 16);
+check(T.policyVersionOf(hdr) === 33 && T.policyVersionOf(Buffer.from('not a policy file at all, really')) === null && T.policyVersionOf(hdr.slice(0, 10)) === null, 'policyVersionOf: the header of a kernel policy file');
+// the directories to relabel, where context files go, the scripts and their output.
 const cs = T.storeChecksumScript('targeted');
 check(/\/var\/lib\/selinux\/'targeted'\/active\/modules\/\*\/\*/.test(cs) && /bzcat "\$d\/hll"/.test(cs) && /md5sum/.test(cs) && /lang_ext/.test(cs) && /\*\[!0-9\]\*\) continue/.test(cs) && /### done/.test(cs), 'storeChecksumScript: every module of the store, the hll decompressed, non-numeric priority dirs skipped', cs);
 const st = T.parseStoreChecksums('100\tbase\tpp\taaaa\n100\tzebra\tpp\tbbbb\n400\tzebra\tcil\tcccc\n200\tcontainer\tpp\tdddd\nodd line\n### done\n');
