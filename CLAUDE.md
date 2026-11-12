@@ -1584,6 +1584,34 @@ so far covered by the e2e tests only.
    unconfined-e2e.js (melody: running targeted + CLIP build; in clip-all as
    `unconfined`).
 
+20. **Learn from a permissive run** (done, unreleased; user 2026-11-12: "do
+   all of them 3, 4, 5, and 6"). `server/learn.js` (pure)
+   learn(model, groups, opts) → { model (copy), report [{ source, target,
+   tclass, perms, count, action, text, rule?, call?, row? }], stats }: per
+   denials.groupDenials group with source D: error → skipped; other source →
+   skipped; v.verdict allowed → skipped; process on another type → unmapped
+   (helper hint); target D: capability/capability2 → caps (CAPS), SELF_RULES
+   per permission (fifo, signal /^sig/, sched, rlimit, execmem, unix*, shm/
+   sem, netlink; own sockets judged last: 'covered' when net entries exist);
+   own file type (opts.fileTypeOf) → levelFor(perms, kind) raised only
+   (custom rows untouched); X_port_t name_bind/name_connect/send/recv →
+   net.listen/connect with portStem (unreserved → corenet_*_all_unreserved_
+   ports extra); node/netif/packet → covered; generic or LABEL_TYPES target
+   with a path named after the service (/var/lib/NAME/…, /var/log/NAME.log)
+   → fileRowFor: the kind by `where` (longest), new row or the kind's row,
+   access raised; generic without such a path → unmapped (label hint);
+   else opts.suggestions (server: suggestInterfaces on the probe groups
+   against policyForRanking()) top covering → access group (accessByCall)
+   or extra (catalog interfaces) else unmapped. Server
+   `selinux/serviceLearn` {text, model, module, standalone}. Webview
+   media/service.js learnSection() (after Service): textarea, Read this
+   host's log (client readAuditLog(since, cb): sudo ausearch in the SELinux
+   Denials terminal + fs.watchFile), Open file…, Apply to the form → model
+   replaced + changed(); report grouped by action, unmapped rules with a copy
+   button. Tutorial service/apply.md. Tests: test/learn-test.js (npm test),
+   service-test form checks, test/learn-e2e.js (melody: CLIP build, 12
+   synthetic denials → model, plan, builds; in clip-all as `learn`).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1774,6 +1802,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/audittrace.js`: what a host logs for a refusal (AVC, hidden by dontaudit, SELINUX_ERR, the login program's log only).
 - `bin/selinux-policy-check.js`: the headless check runner for CI (drives server.js over stdio; static diagnostics, build, checks, login contexts, context files, dropped blocks; exit status).
 - `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
+- `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1901,6 +1930,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/unconfined-test.js` (in `npm test`) and `test/unconfined-e2e.js`
   (`npm run test:unconfined-e2e`, melody; optional tree arg; in clip-all as
   `unconfined`): what runs unconfined.
+- `test/learn-test.js` (in `npm test`) and `test/learn-e2e.js`
+  (`npm run test:learn-e2e`, melody; optional tree arg; in clip-all as
+  `learn`): learn from a permissive run.
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`

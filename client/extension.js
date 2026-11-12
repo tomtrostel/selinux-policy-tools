@@ -938,6 +938,12 @@ ${EDITOR_CSS}</style></head><body>
       else if (m.cmd === 'expand') post({ cmd: 'expanded', key: m.key, result: await client.sendRequest('selinux/expandStatements', { items: m.items }) });
       else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
+      else if (m.cmd === 'learn') post({ cmd: 'learned', result: await client.sendRequest('selinux/serviceLearn', { text: m.text, model: m.model, module: current.module, standalone: !!m.standalone }) });
+      else if (m.cmd === 'learnAusearch') readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }));
+      else if (m.cmd === 'learnFile') {
+        const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Read', title: 'Audit log of the permissive run', defaultUri: vscode.Uri.file(require('os').homedir()) });
+        if (pick && pick.length) post({ cmd: 'learnLog', text: Buffer.from(await vscode.workspace.fs.readFile(pick[0])).toString('utf8'), status: `Read ${pick[0].fsPath}` });
+      }
       else if (m.cmd === 'plan') post({ cmd: 'plan', plan: await client.sendRequest('selinux/servicePlan', { model: m.model, module: current.module, where: m.where, standalone: !!m.standalone, license: m.license }) });
       else if (m.cmd === 'open') vscode.commands.executeCommand('selinux.openLocation', m.path, m.line, 0);
       else if (m.cmd === 'apply') {
@@ -1706,6 +1712,26 @@ class PolicyExplorer {
 let denialPanel = null;
 
 /** A terminal for commands the assistant offers (shared, created on demand). */
+/**
+ * The host's AVC denials since `since` (ausearch's -ts words), read with sudo in the SELinux
+ * Denials terminal (it asks for the password there); the shell writes a file and renames it when
+ * done, and cb(text, status) gets the records (text null when there are none).
+ */
+function readAuditLog(since, cb) {
+  const out = path.join(require('os').tmpdir(), `selinux-learn-${process.pid}-${Date.now()}.log`);
+  const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
+  const t = denialTerminal();
+  t.show();
+  t.sendText(`sudo ausearch -m avc,user_avc -ts ${ts} --raw > '${out}.part'; mv -f '${out}.part' '${out}'`);
+  fs.watchFile(out, { interval: 700 }, (cur) => {
+    if (!cur.isFile()) return;
+    fs.unwatchFile(out);
+    let log = '';
+    try { log = fs.readFileSync(out, 'utf8'); fs.rmSync(out, { force: true }); } catch { /* gone */ }
+    cb(log.trim() ? log : null, log.trim() ? `Read ${log.split('\n').filter(l => /^type=AVC/.test(l)).length} AVC records (${ts}).` : `No denials logged (${ts}).`);
+  });
+}
+
 function denialTerminal() {
   return vscode.window.terminals.find(t => t.name === 'SELinux Denials') || vscode.window.createTerminal('SELinux Denials');
 }

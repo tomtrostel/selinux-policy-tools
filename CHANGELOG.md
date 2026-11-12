@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+* **Service editor: learn from a permissive run.** The form's new *From a
+  permissive run* section reads the AVC denials of the service running in
+  its new domain (this host's log with `sudo ausearch`, a file, or pasted
+  text) and maps each onto the form instead of a raw rule: a higher access
+  level on one of its file types, a new file type for its own files under a
+  generic label (`/var/lib/NAME/…`), a capability, a self permission, a
+  port to listen on or connect to, an access group, or the narrowest
+  interface as the denial assistant ranks it against the build. What the
+  form has no place for is listed with the rule it would need; denials of
+  other domains and `SELINUX_ERR` records are left out. Request
+  `selinux/serviceLearn`.
+
 ## 0.18.0 (2026-11-12)
 
 **Added**

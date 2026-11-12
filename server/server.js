@@ -2086,6 +2086,51 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
   return { ...info, isNew: false, module: mod, layer: m.layer, files: m.files, model: rec.model, kept: rec.kept, provided: rec.provided, domains: rec.domains };
 });
 
+/**
+ * Learn from a permissive run: the AVC denials of the service (text from ausearch / audit.log)
+ * mapped onto its model by server/learn.js, with the denial assistant's interface ranking for what
+ * the form's catalogs don't cover. → { model, report, stats, records, groups, notes }.
+ */
+const learnLib = require('./learn');
+connection.onRequest('selinux/serviceLearn', async ({ text, model, module: mod, standalone } = {}) => {
+  await indexing;
+  if (!treeRoot && !usingDevel) return { error: 'Open a policy source tree or a standalone module folder first.' };
+  if (!model || !/^[a-z][a-z0-9_]*$/.test(model.name || '')) return { error: 'Give the service a name first: the denials are matched by its domain (NAME_t).' };
+  const existing = mod ? serviceModules().find(x => x.module === mod) : null;
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
+  const sa = usingDevel || (canStandalone && (existing ? isStandaloneModule(existing.files.te) : !!standalone));
+  const ctx = serviceCtx(sa);
+  const { D } = service.names(model);
+  const parsed = denials.parseDenials(text || '');
+  const groups = denials.groupDenials(parsed);
+  const notes = [];
+  const mine = groups.filter(g => g.source === D);
+  if (!parsed.length) return { error: 'No audit records found in the text (AVC lines from ausearch -m avc or /var/log/audit/audit.log).' };
+  if (!mine.length) return { error: `None of the ${groups.length} denial groups has ${D} as its source domain. Run the service in its domain (permissive) and read the denials of that run.`, records: parsed.length, groups: groups.length };
+  const cat = service.catalog(ctx);
+  const ownTypes = new Set((model.files || []).map(row => service.fileType(model, row, ctx)));
+  // The denial assistant's ranking for what the form's own catalogs don't cover.
+  const bin = await policyForRanking();
+  const probe = mine.filter(g => g.kind !== 'error' && g.target !== D && !ownTypes.has(g.target) && g.tclass !== 'process' && !/_port_t$/.test(g.target) && !/^(node|netif|packet)$/.test(g.tclass) && !(denials.GENERIC_TYPES.has(g.target) && (g.paths || []).length))
+    .slice(0, 40).map(g => ({ ...g, kind: 'deny', v: { verdict: 'missing', needed: `allow ${g.source} ${g.target}:${g.tclass} { ${g.perms.join(' ')} };` } }));
+  if (probe.length && bin) await suggestInterfaces(probe, bin, notes, ['missing'], 40, 5);
+  else if (probe.length) notes.push('No compiled policy to rank interfaces against (build the tree first): accesses outside the form\'s catalogs are left for you to add.');
+  const suggestions = new Map(probe.filter(g => g.suggest).map(g => [g.key, g.suggest]));
+  const accessByCall = new Map();
+  const accessLabel = new Map();
+  for (const grp of cat.access) for (const it of grp.items) { accessLabel.set(it.id, it.label); for (const c of it.calls) accessByCall.set(c, it.id); }
+  const ports = new Set(servicePorts().map(p => p.name));
+  const res = learnLib.learn(model, mine, {
+    domain: D, execType: service.names(model).E, fileKinds: cat.fileKinds, fileTypeOf: (row) => service.fileType(model, row, ctx),
+    isGeneric: (t) => denials.GENERIC_TYPES.has(t), portStem: (t) => { const s = t.replace(/_port_t$/, ''); return ports.has(s) ? s : t === 'port_t' && ctx.has('corenet_tcp_bind_generic_port') ? 'generic' : null; },
+    has: (n) => ctx.has(n), interfaces: new Set(serviceInterfaces(ctx.condSafe).map(x => x.n)), accessByCall, accessLabel: (id) => accessLabel.get(id) || id,
+    capNames: new Set(service.CAPS.map(c => c[0])), suggestions,
+  });
+  const skipped = groups.length - mine.length;
+  if (skipped) notes.push(`${skipped} denial group${skipped > 1 ? 's' : ''} of other domains left out.`);
+  return { ...res, records: parsed.length, groups: mine.length, notes };
+});
+
 connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, standalone, license }) => {
   await indexing;
   const isNew = !mod;

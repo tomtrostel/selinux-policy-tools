@@ -886,13 +886,51 @@
     }
   }
 
+  /* ---------- learn from a permissive run ---------- */
+  let learnText = '', learnStatus = '', learnResult = null, learnOpen = false;
+  const LEARN_ACTIONS = { file: 'Access level raised', label: 'Files given a type of their own', cap: 'Capabilities', self: 'Process and capabilities', net: 'Network', access: 'System access', extra: 'Interfaces added', covered: 'Already covered', unmapped: 'Not in the form: add by hand', skipped: 'Left out' };
+  function learnSection() {
+    if (model.user) return null;
+    const since = h('select', { title: 'How far back to read the audit log' }, [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today']].map(([v, l]) => h('option', { value: v }, l)));
+    const ta = h('textarea', { rows: 5, spellcheck: 'false', placeholder: `AVC denials of ${domainName()} from a permissive run (ausearch -m avc, or /var/log/audit/audit.log)`, title: 'Paste the denials here, or read them from this host or a file', oninput: (e) => { learnText = e.target.value; } }, learnText);
+    const body = [
+      h('div', { class: 'muted' }, 'Tick ', h('b', {}, 'Permissive while testing'), ', apply, run the service through its paces, then read what it was denied: each denial becomes a setting in this form (a file type\'s access level, a capability, a port, an access group, the narrowest interface) rather than a raw rule. What the form has no place for is listed with the rule it would need.'),
+      ta,
+      h('div', { class: 'row' },
+        h('button', { title: 'Run sudo ausearch in a terminal (it asks for your password there) and put the denials in the box', onclick: () => { learnStatus = 'Waiting for ausearch in the terminal (enter your sudo password there)…'; render(); vscode.postMessage({ cmd: 'learnAusearch', since: since.value || 'recent' }); } }, 'Read this host\'s log'), since,
+        h('button', { title: 'Read the denials from a file (an audit.log copied from the host that ran the service)', onclick: () => vscode.postMessage({ cmd: 'learnFile' }) }, 'Open file…'),
+        h('button', { class: 'primary', disabled: !learnText.trim() || !(model.name || '').trim(), title: 'Map every denial of the service\'s domain onto this form', onclick: () => { learnStatus = 'Matching the denials to the form…'; render(); vscode.postMessage({ cmd: 'learn', text: learnText, model, standalone: !!info.standalone }); } }, 'Apply to the form'),
+        learnStatus ? h('span', { class: 'muted' }, learnStatus) : null),
+    ];
+    const r = learnResult;
+    if (r) {
+      if (r.error) body.push(h('div', { class: 'problem' }, r.error));
+      else {
+        body.push(h('div', {}, h('b', {}, `${r.groups} denial group${r.groups === 1 ? '' : 's'} of ${domainName()} (${r.records} records): ${r.stats.mapped} applied to the form, ${r.stats.unmapped} to add by hand, ${r.stats.skipped} left out.`)));
+        const by = new Map();
+        for (const x of r.report) { if (!by.has(x.action)) by.set(x.action, []); by.get(x.action).push(x); }
+        for (const [action, title] of Object.entries(LEARN_ACTIONS)) {
+          const items = by.get(action);
+          if (!items) continue;
+          body.push(h('details', { class: 'egroup', open: action === 'unmapped' || action === 'file' || action === 'label' ? true : null }, h('summary', {}, h('b', {}, title), h('span', { class: 'muted' }, ` ${items.length}`)),
+            h('ul', { class: 'learn' }, items.map(x => h('li', {}, h('code', {}, `${x.target}:${x.tclass} { ${x.perms.join(' ')} }`), x.count > 1 ? h('span', { class: 'muted' }, ` ×${x.count}`) : null, ' — ', x.text,
+              x.rule ? h('div', {}, h('code', { class: 'code' }, x.rule), h('button', { class: 'icon', title: 'Copy the rule', onclick: () => navigator.clipboard && navigator.clipboard.writeText(x.rule) }, '⧉')) : null)))));
+        }
+        for (const n of r.notes || []) body.push(h('div', { class: 'muted' }, n));
+      }
+    }
+    const d = section('From a permissive run', r && !r.error ? `${r.stats.mapped} applied` : 'map the denials of a test run onto this form', body, learnOpen);
+    d.addEventListener('toggle', () => { learnOpen = d.open; });
+    return d;
+  }
+
   function render() {
     const form = $('form');
     const scroll = form.scrollTop;
     grantsSlots = new Map();
     const open = [...form.querySelectorAll('.card')].map(d => d.open); // the sections (not groups inside them)
     form.textContent = '';
-    const secs = [serviceSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), learnSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     if (grantsInfo.domain !== domainName()) { grantsInfo.clear(); grantsInfo.domain = domainName(); }
@@ -941,6 +979,18 @@
     } else if (m.cmd === 'busy') {
       $('apply').disabled = true;
       $('status').textContent = m.text;
+    } else if (m.cmd === 'learnLog') {
+      if (m.text) learnText = m.text;
+      learnStatus = m.status || '';
+      learnOpen = true;
+      render();
+    } else if (m.cmd === 'learned') {
+      learnResult = m.result || { error: 'No answer.' };
+      learnStatus = '';
+      learnOpen = true;
+      if (learnResult.model) { model = learnResult.model; model.provides = model.provides || []; }
+      render();
+      if (learnResult.model) changed();
     }
   });
   $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where, standalone: !!info.standalone, license }));

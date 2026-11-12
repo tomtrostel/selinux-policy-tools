@@ -324,6 +324,16 @@ writes. It offers what the existing service modules use (taken from the
 
 * **Service:** module name and description, the program path(s) that start
   in the new domain, permissive mode while testing.
+* **From a permissive run:** with permissive on, run the service through
+  its paces, then read what it was denied (this host's log with `sudo
+  ausearch`, a file, or pasted text) and **Apply to the form**. Each denial
+  of the service's domain becomes a setting of the form rather than a raw
+  rule: a higher access level on one of its file types, a new file type for
+  its own files under a generic label (`/var/lib/NAME/…`, `/var/log/NAME.log`),
+  a capability, a self permission, a port to listen on or connect to, an
+  access group, or the narrowest interface as the denial assistant ranks it
+  against the build. What the form has no place for is listed with the rule
+  it would need; denials of other domains are left out.
 * **Files** the service owns, each a type with paths and an access level:
   runtime files (`/run`), state data (`/var/lib`), logs (create and append
   only, or full), configuration (read only by default), cache, spool,

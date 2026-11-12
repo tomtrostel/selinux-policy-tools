@@ -943,6 +943,33 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   find(e => e.attrs.class === 'keptline')[0].fire('click');
   check(last('open') && last('open').path === '/t/legacyd.te' && last('open').line === lr.kept[0].l, 'clicking a kept statement opens it');
 
+  // From a permissive run: the denials box, Apply to the form, the report and the model it changes.
+  send({ cmd: 'init', info: { ...info, isNew: true, model: { ...svc.newModel(), name: 'learnd' } } });
+  const learnSec = find(e => e.tag === 'details' && e.children[0].textContent.startsWith('From a permissive run'))[0];
+  check(learnSec && /map the denials of a test run/.test(learnSec.textContent) && buttonText('Read this host') && buttonText('Open file') && buttonText('Apply to the form').attrs.disabled !== undefined, 'learn section: box, buttons, Apply disabled until there is text');
+  const ta = learnSec.all(e => e.tag === 'textarea')[0];
+  ta.value = 'type=AVC msg=audit(1.0:1): avc:  denied  { name_bind } for  pid=1 comm="learnd" scontext=system_u:system_r:learnd_t:s0 tcontext=system_u:object_r:http_port_t:s0 tclass=tcp_socket permissive=1';
+  ta.fire('input');
+  buttonText('Read this host').fire('click');
+  check(last('learnAusearch') && last('learnAusearch').since === 'recent', 'Read this host\'s log asks the client (ausearch, last 10 minutes)');
+  send({ cmd: 'learnLog', text: ta.value, status: 'Read 1 AVC records (recent).' });
+  const applyLearn = () => find(e => e.tag === 'button' && e.textContent === 'Apply to the form')[0];
+  check(applyLearn() && applyLearn().attrs.disabled === undefined && /Read 1 AVC records/.test(byId.form.textContent), 'the log read enables Apply and shows the status');
+  applyLearn().fire('click');
+  const lm = last('learn');
+  check(lm && /name_bind/.test(lm.text) && lm.model.name === 'learnd', 'Apply to the form sends the text and the model');
+  const learnedModel = { ...lm.model, net: { listen: [{ proto: 'tcp', port: 'http' }], connect: [] }, caps: ['net_bind_service'] };
+  send({ cmd: 'learned', result: { model: learnedModel, records: 2, groups: 2, stats: { mapped: 2, unmapped: 1, skipped: 0 },
+    report: [{ source: 'learnd_t', target: 'http_port_t', tclass: 'tcp_socket', perms: ['name_bind'], count: 1, action: 'net', text: 'Listens on tcp http (http_port_t).' },
+      { source: 'learnd_t', target: 'learnd_t', tclass: 'capability', perms: ['net_bind_service'], count: 1, action: 'cap', text: 'Capability net_bind_service ticked.' },
+      { source: 'learnd_t', target: 'odd_t', tclass: 'file', perms: ['read'], count: 3, action: 'unmapped', text: 'No interface found for it.', rule: 'allow learnd_t odd_t:file { read };' }], notes: ['1 denial group of other domains left out.'] } });
+  await wait(400);
+  const ft = byId.form.textContent;
+  check(/2 denial groups of learnd_t \(2 records\): 2 applied to the form, 1 to add by hand/.test(ft) && /Not in the form: add by hand/.test(ft) && /allow learnd_t odd_t:file \{ read \};/.test(ft) && /×3/.test(ft) && /1 denial group of other domains left out/.test(ft), 'the report: counts, groups, the rule to add by hand', ft.slice(0, 600));
+  check(last('plan').model.net.listen[0].port === 'http' && last('plan').model.caps.join() === 'net_bind_service' && checkbox('Bind ports below 1024') && checkbox('Bind ports below 1024').checked, 'the model from the server replaces the form\'s and a new plan is asked for; the capability shows ticked');
+  send({ cmd: 'learned', result: { error: 'None of the 3 denial groups has learnd_t as its source domain.' } });
+  check(/None of the 3 denial groups has learnd_t/.test(byId.form.textContent), 'an error from the server is shown in the section');
+
   // Every daemon module of a real tree.
   const dir = process.argv[2];
   if (dir) await survey(dir);
