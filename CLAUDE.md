@@ -1747,6 +1747,21 @@ so far covered by the e2e tests only.
    'push' → restart chronyd → roll back → md5 back; the standalone
    ~/sepol-test/mymodule → new → push → listed → roll back → gone;
    permissive on/off for zebra_t).
+   Tested on ricardo too (user: "test all this stuff on ricardo"; root on
+   both test hosts is available through the user's untracked password
+   files): melody → root@ricardo (target-e2e with LOCAL=false judges the
+   answers on their own; the RHEL 9 tree is refused for policy version 31
+   by the policyVersionOf guard on res.policyBin's header; a RHEL 9 built
+   module fails at the install step: hll/pp can't read it, reported
+   cleanly, nothing changed) and ricardo → root@localhost (OpenSSH 8.0
+   client: the setsid/DISPLAY askpass path; ONLY_MODULE=1 push of
+   mymodule with semodule 2.9, listed, rolled back). Found: ricardo's
+   auditd had suspended logging since the 2026-10-29 disk-full episode
+   (admin_space_left_action = SUSPEND; setroubleshoot still got the
+   events); `service auditd restart` fixed it; denialsScript now reports
+   a stopped/suspended auditd (README Findings). The provoked denial for
+   the tests is `runcon … -t chronyd_t chronyd -n -f /etc/shadow` (an
+   entrypoint refusal via runcon into httpd_t is not audited on RHEL 8).
    Piece 3: target.js HOST_FACTS_SCRIPT (ps/systemctl show/ss sections +
    uid), pathsScript(candidates) (quoted heredoc of ExecStart entries and
    argv0s; bare names searched on systemd's PATH_DIRS; realpath, exists,
