@@ -23,6 +23,7 @@
  *   --no-build           static diagnostics only (no toolchain needed)
  *   --skip <list>        parts to leave out: checks,logins,contexts,dropped
  *   --json <file>        write every result as JSON
+ *   --report <file>      write the evidence report of the build (.md, or .html by the extension)
  *   --timeout <s>        for the build (default 1800)
  *   --verbose            show info-level findings and the server's log
  */
@@ -30,7 +31,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const USAGE = 'usage: selinux-policy-check [--spec FILE [--variant NAME] | --make "ARGS"] [--profile NAME] [--strict] [--no-build] [--skip a,b] [--json FILE] [--timeout S] [--verbose] <tree-or-folder>';
+const USAGE = 'usage: selinux-policy-check [--spec FILE [--variant NAME] | --make "ARGS"] [--profile NAME] [--strict] [--no-build] [--skip a,b] [--json FILE] [--report FILE.md|.html] [--timeout S] [--verbose] <tree-or-folder>';
 
 function parseArgs(argv) {
   const o = { build: true, strict: false, skip: new Set(), verbose: false, timeout: 1800, target: null };
@@ -46,6 +47,7 @@ function parseArgs(argv) {
     else if (x === '--no-build') o.build = false;
     else if (x === '--skip') for (const s of val().split(',')) o.skip.add(s.trim());
     else if (x === '--json') o.json = val();
+    else if (x === '--report') o.report = val();
     else if (x === '--timeout') o.timeout = +val() || 1800;
     else if (x === '--verbose' || x === '-v') o.verbose = true;
     else if (x === '--help' || x === '-h') o.help = true;
@@ -142,7 +144,7 @@ async function run(o) {
     res.parts.static = { files: all.files, items: all.diagnostics };
     for (const d of all.diagnostics) addProblem(res, 'static', d.severity, d.path, d.l, `[${d.code}] ${d.msg}`, o);
     res.parts.dropped = o.skip.has('dropped') ? null : { items: all.dropped, profile: all.profile };
-    if (!o.build) return res;
+    if (!o.build) { if (o.report) res.parts.report = { error: 'needs a build (--no-build given), not written' }; return res; }
     // 2. The build: trees as a whole, standalone modules one by one.
     const uriOf = (p) => URI.file(p).toString();
     const checksDone = new Promise(r => { s.onChecks = r; });
@@ -179,6 +181,15 @@ async function run(o) {
         related: (p.related || []).slice(0, 6).map(x => ({ path: x.file, l: x.l, msg: x.text })) }));
       res.parts[part] = { policy: r.policy && r.policy.label, problems, mappings: (r.mappings || []).length, sessions: (r.sessions || []).length, files: (r.files || []).length, notes: r.notes || [] };
       for (const p of problems) addProblem(res, part, p.severity, p.path, p.l, `${p.kind}: ${p.msg}`, o, p.related);
+    }
+    // 6. The evidence report (Markdown or HTML by the file's extension), from the same build.
+    if (o.report) {
+      const format = /\.html?$/i.test(o.report) ? 'html' : 'markdown';
+      const r = await withTimeout(s.conn.sendRequest('selinux/evidenceReport', { against: 'build', format }), 600000, 'the evidence report');
+      if (r.error) { res.parts.report = { error: r.error }; addProblem(res, 'report', 'error', res.tree || target, 0, r.error, o); } else {
+        fs.writeFileSync(o.report, r.text);
+        res.parts.report = { path: path.resolve(o.report), format, sections: r.sections, bytes: r.text.length };
+      }
     }
     return res;
   } finally {
@@ -239,6 +250,8 @@ function format(res, o = {}) {
     out.push(`${PART_TITLES[part]}: ${part === 'logins' ? `${count(p.mappings, 'seusers line')}, ${count(p.sessions, 'session start')}` : count(p.files, 'file')} checked, ${sums(part)}`);
     out.push(...lines(part));
   }
+  const rp = res.parts.report;
+  if (rp) out.push(rp.error ? `Evidence report: ${rp.error}` : `Evidence report: ${rp.path} (${rp.format}, ${rp.sections} sections)`);
   const d = res.parts.dropped;
   if (d && res.mode === 'tree') {
     out.push(`${PART_TITLES.dropped}: ${count(d.items.length, 'block')}${d.profile ? ` with install profile ${d.profile}` : ''}${d.items.length && !o.verbose ? ' (listed with --verbose)' : ''}`);

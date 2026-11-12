@@ -70,10 +70,21 @@ const failLine = fs.readFileSync(checksFile, 'utf8').split('\n').findIndex(l => 
 
   // 2. The check fixed, login reports skipped: passes unless the tree's own static warnings fail it (they don't without --strict).
   fs.writeFileSync(checksFile, fs.readFileSync(checksFile, 'utf8').replace(/^never init_t may read etc_t:file\n/m, ''));
-  r = run(['--skip', 'logins,contexts', '--json', json, ws]);
+  const report = path.join(pkg, 'evidence.md');
+  r = run(['--skip', 'logins,contexts', '--json', json, '--report', report, ws]);
   const res2 = fs.existsSync(json) ? JSON.parse(fs.readFileSync(json, 'utf8')) : null;
   check(r.code === 0 && res2 && !res2.failed && res2.parts.checks.failed === 0 && !res2.parts.logins && !res2.parts.contexts && /Result: OK$/m.test(r.out),
     `fixed and with --skip logins,contexts: exit 0, all checks hold (${(r.ms / 1000).toFixed(0)} s)`, { code: r.code, tail: r.out.slice(-600) });
+  // The evidence report of the same build.
+  const md = fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : '';
+  const heads = [...md.matchAll(/^## (.*)$/gm)].map(m => m[1]);
+  check(md.length > 2000 && /^# SELinux policy evidence: Last build of/.test(md) && ['Summary', 'Policy', 'Modules', 'Static analysis', 'Property checks', 'Logins: contexts and session starts', 'Context files', 'SELinux users and what their sessions reach', 'Services', 'Levels and categories'].every(h => heads.includes(h)) && res2.parts.report && res2.parts.report.sections >= 10,
+    `--report: ${path.basename(report)} with ${heads.length} sections (${md.length} bytes)`, heads);
+  check(/\| Build settings \| .*NAME=mcs/.test(md) && /\| Built \| .*packages \|/.test(md) && /base modules?, \d+ loadable modules?, \d+ modules off/.test(md) && /\| ✓ holds \| `require init_t may read etc_t:file` \|/.test(md) && /seusers lines?, \d+ session starts? checked/.test(md) && /service modules?/.test(md),
+    'the report has the build settings, modules, the checks with their results, logins and services', md.slice(0, 2500));
+  const html = path.join(pkg, 'evidence.html');
+  r = run(['--no-build', '--report', html, ws], 300000);
+  check(r.code === 0 && /Evidence report: needs a build \(--no-build given\)/.test(r.out) && !fs.existsSync(html), '--report with --no-build: says it needs a build, nothing written, the run still passes', r.out.slice(-300));
   const warnings = res2 ? res2.problems.filter(p => p.severity === 'warning').length : 0;
   if (warnings) {
     r = run(['--skip', 'logins,contexts', '--strict', '--no-build', ws]);

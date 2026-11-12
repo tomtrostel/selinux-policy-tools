@@ -1630,6 +1630,19 @@ CLIP build this host's `chronyd` and `pcp` would stay in `init_t` or not
 start at all, since CLIP has no modules for them. A filter narrows every
 group.
 
+**Evidence report** (*SELinux: Export Evidence Report…*, or
+`selinux-policy-check --report FILE`): one Markdown or HTML document about a
+policy, for the accreditation paperwork a locked-down system needs — the
+build settings (spec, variant, make arguments, install profile, when it was
+built), the modules on and off, the static findings, every property check
+with its result, every login with its ways in and session context and the
+problems found, the context files, the SELinux users with their roles,
+logins, how many domains their sessions reach and the risky abilities
+within reach, the service modules, the level constraints and who ignores
+them, and on a host the programs that run unconfined under the policy. A
+summary of the open findings comes first. Pick a tree build or an installed
+policy; the Markdown opens in the preview.
+
 ## Checking in CI: `selinux-policy-check`
 
 Everything the extension checks after a build also runs without VS Code,
@@ -1667,6 +1680,9 @@ The exit status is 0 when nothing fails, 1 when something does (errors; with
 tree, a timeout). `--json FILE` writes every finding with paths, lines and
 related lines. `--no-build` runs the static analysis alone (no toolchain
 needed, any OS). `--skip checks,logins,contexts,dropped` leaves parts out.
+`--report FILE.md` (or `.html`) writes the evidence report of the build
+(below), the same document *SELinux: Export Evidence Report…* produces,
+so every CI run leaves the paperwork behind it.
 
 Build settings: a CLIP tree finds its spec next to it (`packages/
 selinux-policy/selinux-policy*.spec`, with `SEPARATE_PKGS` from the

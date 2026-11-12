@@ -1206,7 +1206,7 @@ connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
  * drops in this configuration (and install profile), one entry per outermost block.
  */
 const SEVERITY_WORD = { 1: 'error', 2: 'warning', 3: 'info', 4: 'hint' };
-connection.onRequest('selinux/diagnoseAll', async ({ minSeverity = 'info', dropped: wantDropped = true } = {}) => {
+async function diagnoseAllNow({ minSeverity = 'info', dropped: wantDropped = true } = {}) {
   await indexing;
   const max = { error: 1, warning: 2, info: 3, hint: 4 }[minSeverity] || 3;
   const diagnostics = [];
@@ -1232,7 +1232,8 @@ connection.onRequest('selinux/diagnoseAll', async ({ minSeverity = 'info', dropp
   const prof = installProfiles();
   return { tree: treeRoot, mode: usingDevel ? 'module' : treeRoot ? 'tree' : null, files, diagnostics, dropped,
     profile: prof && prof.active ? prof.active.name : null, m4Flags: idx.m4 ? idx.m4.flags : null };
-});
+}
+connection.onRequest('selinux/diagnoseAll', async (p) => diagnoseAllNow(p || {}));
 
 /* ---------------- install profiles (CLIP kickstarts) ---------------- */
 
@@ -4179,7 +4180,7 @@ const pathOut = (r, d) => { const k = r.reached[d]; return k ? logins.pathTo(r.s
  * On this host's running policy also the accounts in /etc/passwd: people's
  * logins with the seusers line that applies, and service accounts.
  */
-connection.onRequest('selinux/logins', async ({ against } = {}) => {
+async function loginsReport(against) {
   await indexing;
   const lp = await loginPolicy(against);
   const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
@@ -4248,7 +4249,8 @@ connection.onRequest('selinux/logins', async ({ against } = {}) => {
     notes.push('A tree build: its seusers and contexts are shown; the accounts of the system it will run on are not known here.');
   }
   return { policy: { id: pol.id, label: pol.label, configDir: cfg.dir, host: cfg.host }, policies, users, mappings, seusersFile: seText == null ? null : cfg.seusers, accounts, notes };
-});
+}
+connection.onRequest('selinux/logins', async ({ against } = {}) => loginsReport(against));
 
 /* ---------------- login contexts: "Unable to get valid context" before a host sees it ---------------- */
 
@@ -4957,7 +4959,7 @@ async function hostProcessFacts() {
  * sorted so programs without a domain of their own come first. → unconfined.assemble()'s result +
  * { policies, policy, host: { hostname, processes, units, limits }, locs }.
  */
-connection.onRequest('selinux/unconfined', async ({ against } = {}) => {
+async function unconfinedReport(against) {
   await indexing;
   if (process.platform === 'win32') return { error: 'Looking at a host\'s processes needs a Linux host (use Remote-SSH).', policies: [], policy: null };
   const lp = await loginPolicy(against);

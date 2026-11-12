@@ -23,6 +23,14 @@
   in CI). Ways: `ssh`, `console`, `graphical`, `cron`, `rlogin`, `systemd`,
   `cockpit`, or a login program's domain. Completion and highlighting
   know the new words.
+* **Evidence report** (*SELinux: Export Evidence Report…*,
+  `selinux-policy-check --report FILE.md|.html`): one document about a
+  policy for the accreditation paperwork: build settings and modules,
+  static findings, every property check with its result, every login with
+  its ways in and session context, context files, SELinux users with what
+  their sessions reach, services, levels, and the programs that run
+  unconfined on the host; the open findings summarized first. Request
+  `selinux/evidenceReport`.
 
 ## 0.18.0 (2026-11-12)
 

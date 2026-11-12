@@ -1634,6 +1634,31 @@ so far covered by the e2e tests only.
    graphical = no way in; after the fixes holds or names the remaining
    kind). README Features (checks bullet), lockdown/checks.md.
 
+22. **Evidence report** (done, unreleased; feature 5). `server/evidence.js`
+   (pure): buildDoc(facts) → document model { title, subtitle, generated,
+   sections: [{ title, items: [{ p } | { note } | { pre } | { list } |
+   { table: { head, rows, empty } }] }] } with a Summary first (open
+   findings: static errors, failing checks, login errors, context errors,
+   unconfined programs); renderMarkdown / renderHtml / render(doc, format).
+   Server evidenceFacts(against): loginPolicy; identity (tree, VERSION,
+   treeCfg makeArgs, install profile, lastBuild startedAt/ms/packages,
+   hostname, package.json version), modules (idx.moduleKinds counts,
+   APPS_MODS, profile installed/absent), static (diagnoseAllNow — the
+   diagnoseAll handler factored into a function), checks (checksState,
+   runChecks() when stale; checkMessage per failing), logins
+   (loginContextReport: mappings with ways → ctx/works, problems), context
+   files (contextFilesReport), users (loginsReport — the selinux/logins
+   handler factored out), services (serviceModules), levels (policy_query
+   levels: held = groups with no bypassed constraint), unconfined
+   (unconfinedReport — factored out; Linux, running or tree build); every
+   part that fails becomes a note. Request `selinux/evidenceReport`
+   {against, format} → { text, format, sections, findings }. Client
+   selinux.exportReport (policy pick, save dialog .md/.html, markdown
+   preview), FEATURES "Export Evidence Report…" (Compare and preview). CLI
+   `--report FILE` after the build (format by extension). Tests:
+   test/evidence-test.js (npm test), check-cli-e2e (--report on the CLIP
+   copy: sections, settings, checks, logins, services; --no-build HTML).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1825,6 +1850,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `bin/selinux-policy-check.js`: the headless check runner for CI (drives server.js over stdio; static diagnostics, build, checks, login contexts, context files, dropped blocks; exit status).
 - `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
+- `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
