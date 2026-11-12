@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-11-12: **v0.18.0 released** (GitHub release `v0.18.0`;
+Status as of 2026-11-12: **v0.19.0 released** (GitHub release `v0.19.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -62,7 +62,12 @@ tree's interfaces, SELINUX_ERR verdicts in the denial assistant), step 16
 step 17 (dropped optional blocks dimmed, CLIP install profiles), the user
 editor CIL fixes, the 2026-11-11 review pass, step 18 (headless check runner
 for CI) and step 19 (what runs unconfined on this host); none tried
-interactively yet. The release build is installed on melody.
+interactively yet.
+0.19.0 (released 2026-11-12 at the user's request, before trying it
+interactively): step 20 (learn from a permissive run), step 21
+(session-start checks), step 22 (evidence report + CLI --report), step 23
+(Booleans view) and the template-generated booleans fix; full clip-all
+green on melody and ricardo. The release build is installed on melody.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
