@@ -287,6 +287,16 @@
         "icon": "$(unlock)"
       },
       {
+        "command": "selinux.exportReport",
+        "title": "SELinux: Export Evidence Report…",
+        "icon": "$(book)"
+      },
+      {
+        "command": "selinux.showBooleans",
+        "title": "SELinux: Booleans…",
+        "icon": "$(settings)"
+      },
+      {
         "command": "selinux.newUser",
         "title": "SELinux: New User…",
         "icon": "$(person-add)"
@@ -1094,7 +1104,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/localmods-test.js && node test/loginctx-test.js && node test/sessions-test.js && node test/ctxfiles-test.js && node test/kickstart-test.js && node test/check-cli-test.js && node test/unconfined-test.js && node test/learn-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/localmods-test.js && node test/loginctx-test.js && node test/sessions-test.js && node test/ctxfiles-test.js && node test/kickstart-test.js && node test/check-cli-test.js && node test/unconfined-test.js && node test/learn-test.js && node test/evidence-test.js && node test/booleans-test.js && node test/walkthrough-test.js",
     "check": "node bin/selinux-policy-check.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
@@ -1134,7 +1144,8 @@
     "test:profile-e2e": "node test/profile-e2e.js",
     "test:check-cli-e2e": "node test/check-cli-e2e.js",
     "test:unconfined-e2e": "node test/unconfined-e2e.js",
-    "test:learn-e2e": "node test/learn-e2e.js"
+    "test:learn-e2e": "node test/learn-e2e.js",
+    "test:booleans-e2e": "node test/booleans-e2e.js"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1",

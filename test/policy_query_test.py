@@ -140,9 +140,10 @@ class FClass(Named):
 
 
 class FRule(object):
-    def __init__(self, rt, s, t, c, perms=None, default=None, cond=None):
+    def __init__(self, rt, s, t, c, perms=None, default=None, cond=None, block=True):
         self.ruletype, self.source, self.target, self.tclass = Named(rt), Named(s), Named(t), Named(c)
         self._perms, self.default, self._cond = perms, Named(default) if default else None, cond
+        self.conditional_block = block
 
     @property
     def perms(self):
@@ -477,7 +478,31 @@ RULES.extend([
     FRule("allow", "wrap_t", "staff_t", "fd", ["use"]),
 ])
 SELinuxPolicy.roles = lambda self: [FRole("system_r", ["init_t", "container_t", "svirt_t", "setrans_t"]), FRole("staff_r", ["staff_t", "wrap_t"]), FRole("object_r", [])]
+
+
+class FCondExpr(object):
+    """A conditional expression over one boolean (setools' ConditionalExpr: .booleans, .evaluate(**values))."""
+    def __init__(self, name):
+        self.name, self.booleans = name, [Named(name)]
+
+    def evaluate(self, **values):
+        return bool(values.get(self.name, False))
+
+    def __str__(self):
+        return self.name
+
+
+# Rules under some_bool (default off): one in its true block, one in its false block.
+RULES.extend([
+    FRule("allow", "staff_t", "wrap_t", "fd", ["use"], cond=FCondExpr("some_bool")),
+    FRule("allow", "staff_t", "wrap_t", "fifo_file", ["read"], cond=FCondExpr("some_bool"), block=False),
+])
 idx2 = policy_query.Index(path)
+BO = idx2.booleans()
+check(set(BO) == {"some_bool"} and BO["some_bool"]["default"] is False and BO["some_bool"]["on"]["count"] == 1 and BO["some_bool"]["on"]["domains"] == ["staff_t"]
+      and BO["some_bool"]["on"]["rules"][0]["c"] == "fd" and BO["some_bool"]["off"]["count"] == 1 and BO["some_bool"]["off"]["rules"][0]["c"] == "fifo_file" and BO["some_bool"]["mixed"] == 0 and BO["some_bool"]["exprs"] == ["some_bool"],
+      "booleans(): the default, the rules its true and false blocks switch, the expression", BO)
+check(idx2.booleans(["nosuch"]) == {} and idx2.booleans(["some_bool"], sample=0)["some_bool"]["on"]["rules"] == [], "booleans(): names filter, sample size")
 check(idx2.computed_type("type_transition", "init_t", "devpts_t", "chr_file", {}) == "sshd_devpts_t" and idx2.computed_type("type_change", "staff_t", "sshd_devpts_t", "chr_file", {}) == "staff_devpts_t"
       and idx2.computed_type("type_change", "init_t", "sshd_devpts_t", "chr_file", {}) is None, "computed types: type_transition and type_change; none without a rule")
 n1, n2 = idx2.nnp_check("init_t", "staff_t", {}), idx2.nnp_check("init_t", "container_t", {})

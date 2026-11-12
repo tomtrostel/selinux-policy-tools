@@ -781,6 +781,41 @@ class Index:
     def rule_active(self, i, states):
         return i not in self.conds or self.cond_active(i, states)
 
+    def booleans(self, names=None, sample=12):
+        """Each boolean's default and what it switches: the conditional rules that become active
+        when it is true (on) or false (off), other booleans at their defaults; `mixed` counts rules
+        whose activity also depends on another boolean's value. → {name: {default, on: {count,
+        domains, rules}, off: {...}, mixed, exprs}}."""
+        want = set(names) if names else None
+        out = {}
+        for b, d in self.bool_defaults.items():
+            if want is None or b in want:
+                out[b] = {"default": d, "on": {"count": 0, "domains": set(), "rules": []}, "off": {"count": 0, "domains": set(), "rules": []}, "mixed": 0, "exprs": set()}
+        for i, (expr, block) in self.conds.items():
+            bs = [str(x) for x in expr.booleans]
+            for b in bs:
+                if b not in out:
+                    continue
+                e = out[b]
+                e["exprs"].add(str(expr))
+                base = {str(x): self.bool_defaults.get(str(x), False) for x in expr.booleans}
+                on = expr.evaluate(**dict(base, **{b: True})) == block
+                off = expr.evaluate(**dict(base, **{b: False})) == block
+                if on == off:
+                    e["mixed"] += 1
+                    continue
+                side = e["on"] if on else e["off"]
+                side["count"] += 1
+                r = self.rules[i]
+                side["domains"].add(r["s"])
+                if len(side["rules"]) < sample:
+                    side["rules"].append(r)
+        for e in out.values():
+            for k in ("on", "off"):
+                e[k]["domains"] = sorted(e[k]["domains"])[:12]
+            e["exprs"] = sorted(e["exprs"])[:6]
+        return out
+
     def computed_type(self, rt, s, t, c, states, rule=False):
         """The type a type_transition / type_change rule gives (s, t, c), or None (unnamed rules only);
         rule: (type, the rule) instead."""
@@ -1655,6 +1690,8 @@ def main():
                 resp.update(hits=hits)
             elif req.get("op") == "names":
                 resp.update(types=sorted(idx.names(req.get("names", []))))
+            elif req.get("op") == "booleans":
+                resp.update(booleans=idx.booleans(req.get("names"), req.get("sample", 12)))
             elif req.get("op") == "access":
                 resp.update(access=idx.reach_access(set(req.get("domains", [])), req["t"], req.get("classes") or [], req.get("perms") or "*"))
             elif req.get("op") == "check":

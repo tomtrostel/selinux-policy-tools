@@ -31,6 +31,16 @@
   their sessions reach, services, levels, and the programs that run
   unconfined on the host; the open findings summarized first. Request
   `selinux/evidenceReport`.
+* **Booleans** (*SELinux: Booleans…*): every boolean of a policy with what
+  it switches on or off (the conditional rules of the compiled policy, the
+  domains they are for) and where its value comes from: the `gen_tunable`
+  / `gen_bool` declaration with its description, `booleans.conf` (the
+  tree's defaults or the spec's overlay), the compiled default, and the
+  running value on this host; the ones changed from their declared
+  default are marked. *Set on/off in booleans.conf* writes the tree's
+  default (built on save); on a host, `setsebool -P` runs in a terminal.
+  Requests `selinux/booleans`, `selinux/booleanSet`; policy_query op
+  `booleans`.
 
 ## 0.18.0 (2026-11-12)
 

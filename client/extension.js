@@ -479,6 +479,8 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.checkLoginContexts', () => showLoginContexts(context)),
     vscode.commands.registerCommand('selinux.checkContextFiles', () => showContextFiles(context)),
     vscode.commands.registerCommand('selinux.showUnconfined', () => showUnconfined(context)),
+    vscode.commands.registerCommand('selinux.exportReport', () => exportReport()),
+    vscode.commands.registerCommand('selinux.showBooleans', () => showBooleans(context)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1980,6 +1982,7 @@ const FEATURES = [
     ['selinux.transitionGraph', 'type-hierarchy', 'Domain Transition Graph', 'Which domains a domain starts, and which start it'],
     ['selinux.showLogins', 'person', 'Logins and Users…', 'Who logs in as which SELinux user, and what their sessions can reach'],
     ['selinux.showLevels', 'layers', 'Levels and Categories…', 'MLS/MCS: may one context access another (type rules and constraints), and which domains ignore levels'],
+    ['selinux.showBooleans', 'settings', 'Booleans…', 'Every boolean: what it switches on or off, its declared, booleans.conf, compiled and running values; set it in the tree or on the host'],
     ['selinux.findModule', 'go-to-file', 'Open Module…', 'A module\'s .te, .if or .fc file'],
     ['selinux.showExpanded', 'unfold', 'Show Expanded Policy', 'What the module in the editor compiles to'],
   ]],
@@ -2011,6 +2014,7 @@ const FEATURES = [
     ['selinux.compareWith', 'git-branch', 'Compare with…', 'Another branch, tag, commit or saved build'],
     ['selinux.compareInstalled', 'server', 'Compare Build with Installed Policy', 'The build against a policy installed on this host'],
     ['selinux.compareHostChanges', 'diff', 'Compare Host\'s Local Changes…', 'What semanage and semodule changed on a host (file contexts, ports, booleans, logins, modules), against your policy; write them into its source'],
+    ['selinux.exportReport', 'book', 'Export Evidence Report…', 'One Markdown or HTML document about a policy: build settings, modules, static findings, property checks, logins, context files, users, services, levels, this host\'s programs'],
     ['selinux.previewModule', 'eye', 'Preview Turning a Module Off/On…', 'What a lockdown change would remove or add, before you make it'],
   ]],
   ['Learn', [
@@ -2247,9 +2251,45 @@ const REPORTS = {
   selinuxLoginContexts: { title: 'Login Contexts', script: 'loginctx.js', request: 'selinux/loginContexts' },
   selinuxContextFiles: { title: 'Context Files', script: 'ctxfiles.js', request: 'selinux/contextFiles' },
   selinuxUnconfined: { title: 'Unconfined Programs', script: 'unconfined.js', request: 'selinux/unconfined' },
+  selinuxBooleans: { title: 'Booleans', script: 'booleans.js', request: 'selinux/booleans' },
 };
+/** Booleans: every boolean with where its value comes from and what it switches; set it in booleans.conf or with setsebool. */
+function showBooleans(context) { showReport(context, 'selinuxBooleans'); }
 /** Unconfined Programs: this host's services and processes without a domain of their own (server/unconfined.js). */
 function showUnconfined(context) { showReport(context, 'selinuxUnconfined'); }
+
+/**
+ * Evidence report: one Markdown or HTML document about a policy (build settings, modules, static
+ * findings, property checks, logins, context files, users, services, levels, this host's programs),
+ * for the paperwork a locked-down system needs (server/evidence.js).
+ */
+async function exportReport() {
+  const pols = await client.sendRequest('selinux/denialPolicies');
+  const list = (pols && pols.policies) || [];
+  if (!list.length) { vscode.window.showInformationMessage('No policy to report on: build the tree, or open this on a host with an installed policy.'); return; }
+  let against = list.find(p => p.build) ? list.find(p => p.build).id : list[0].id;
+  if (list.length > 1) {
+    const pick = await vscode.window.showQuickPick(list.map(p => ({ label: p.label, description: p.build ? 'the workspace build' : p.active ? 'running here' : '', id: p.id })), { placeHolder: 'Report on which policy?' });
+    if (!pick) return;
+    against = pick.id;
+  }
+  const folders = vscode.workspace.workspaceFolders || [];
+  const def = vscode.Uri.joinPath(folders.length ? folders[0].uri : vscode.Uri.file(require('os').homedir()), `selinux-evidence-${new Date().toISOString().slice(0, 10)}.md`);
+  const uri = await vscode.window.showSaveDialog({ defaultUri: def, filters: { Markdown: ['md'], HTML: ['html'] }, title: 'Save the evidence report' });
+  if (!uri) return;
+  const format = /\.html?$/i.test(uri.path) ? 'html' : 'markdown';
+  await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'SELinux: gathering the evidence report…' }, async () => {
+    const r = await client.sendRequest('selinux/evidenceReport', { against, format });
+    if (r.error) { vscode.window.showWarningMessage(`Evidence report: ${r.error}`); return; }
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(r.text, 'utf8'));
+    const open = 'Open';
+    const b = await vscode.window.showInformationMessage(`Evidence report written: ${uri.fsPath} (${r.sections} sections${r.findings ? `, ${r.findings} open finding${r.findings > 1 ? 's' : ''}` : ''}).`, open);
+    if (b === open) {
+      if (format === 'markdown') { try { await vscode.commands.executeCommand('markdown.showPreview', uri); return; } catch { /* no preview */ } }
+      vscode.window.showTextDocument(uri);
+    }
+  });
+}
 /** Login Contexts: does every login get a valid context for each way in (server/loginctx.js). */
 function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'); }
 
@@ -2355,6 +2395,17 @@ function showReport(context, viewType) {
         showServiceEditor(context, null, { exec: m.exec });
       } else if (m.cmd === 'lookUp') {
         vscode.commands.executeCommand('selinux.lookUpFile', m.path);
+      } else if (m.cmd === 'set') {
+        const plan = await client.sendRequest('selinux/booleanSet', { name: m.name, value: !!m.value });
+        if (plan && plan.path && plan.text != null) {
+          // The plan is applied at once (one line in booleans.conf), then the tree builds on save.
+          await applyDenialFix(plan);
+          panel.webview.postMessage({ cmd: 'applied', name: m.name });
+        } else panel.webview.postMessage({ cmd: 'setPlan', name: m.name, plan });
+      } else if (m.cmd === 'setsebool') {
+        const t = denialTerminal();
+        t.show();
+        t.sendText(`sudo setsebool -P ${m.name} ${m.value ? 'on' : 'off'}`);
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });

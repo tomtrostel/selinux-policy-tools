@@ -5004,6 +5004,158 @@ async function unconfinedReport(against) {
   const locs = {};
   for (const d of new Set(out.rows.flatMap(r => [r.policyDomain, ...r.hostDomains]).filter(Boolean))) { const l = sourceLocation(d, ['type']); if (l) locs[d] = l; }
   return { ...out, policies, policy, locs, host: { hostname: facts.hostname, processes: facts.processes.length, units: facts.units.length, limits: facts.limits } };
+}
+connection.onRequest('selinux/unconfined', async ({ against } = {}) => unconfinedReport(against));
+
+/* ---------------- booleans ---------------- */
+
+const booleansLib = require('./booleans');
+
+/** The booleans.conf a tree build reads: the spec overlay for policy/booleans.conf, else the tree's own file. */
+function booleansConfPath() {
+  if (!treeRoot || usingDevel) return null;
+  const o = treeCfg().files && treeCfg().files['policy/booleans.conf'];
+  const src = o ? [].concat(o).map(s => resolveOverlay(treeRoot, s)).pop() : null;
+  if (typeof src === 'string') return src;
+  if (src) return null; // generated from several sources: not a file to edit
+  const own = path.join(treeRoot, 'policy', 'booleans.conf');
+  return own;
+}
+
+/**
+ * The policy's booleans ({ against }): each with its declaration (the tree's gen_tunable / gen_bool:
+ * description, default as written, module), booleans.conf's value, the compiled default, the running
+ * value (the running policy), and what it switches on or off (policy_query booleans). → { rows,
+ * summary, policies, policy, conf: { path, exists, editable } }.
+ */
+async function booleansReport(against) {
+  await indexing;
+  const lp = await loginPolicy(against);
+  const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
+  const policy = lp.pol ? { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active } : null;
+  if (lp.error) return { error: lp.error, policies, policy };
+  const r = await policyQuery.request({ op: 'booleans', bin: lp.bin });
+  if (r.error) return { error: `Policy query failed: ${r.error}`, policies, policy };
+  const decls = new Map();
+  for (const [name, list] of idx.decls) {
+    const d = list.find(x => x.kind === 'bool' && /\.te(\.in)?$/.test(x.path || ''));
+    if (!d) continue;
+    const f = idx.files.get(d.path);
+    decls.set(name, { path: d.path, l: d.l, c: d.c, module: f ? f.module : null, desc: (d.doc && (d.doc.desc || d.doc.summary)) || '', tunable: !!d.tunable, default: d.default || '' });
+  }
+  const confPath = lp.pol.build ? booleansConfPath() : null;
+  const confText = confPath ? readSource(confPath) : null;
+  const compiled = {};
+  const effects = {};
+  for (const [name, e] of Object.entries(r.booleans || {})) { compiled[name] = e.default; effects[name] = { on: e.on, off: e.off, mixed: e.mixed, exprs: e.exprs }; }
+  const out = booleansLib.assemble({ decls: lp.pol.build ? decls : new Map(), conf: booleansLib.parseConf(confText), compiled, running: lp.pol.active ? runningBooleans() : null, effects });
+  for (const row of out.rows) { const e = effects[row.name]; if (e) row.exprs = e.exprs; }
+  return { ...out, policies, policy, conf: { path: confPath, exists: confText != null, editable: !!confPath && !!lp.pol.build } };
+}
+connection.onRequest('selinux/booleans', async ({ against } = {}) => booleansReport(against));
+
+/** A boolean's value written into the tree's booleans.conf: { path, text, line, inserted } for applyDenialFix, or { already }. */
+connection.onRequest('selinux/booleanSet', async ({ name, value } = {}) => {
+  await indexing;
+  if (!/^[\w.-]+$/.test(name || '')) return { error: 'No boolean named.' };
+  const p = booleansConfPath();
+  if (!p) return { error: treeRoot ? 'This tree\'s booleans.conf is generated from several sources (the spec); set the boolean in those.' : 'Setting a boolean needs a policy tree (booleans.conf); on a host use setsebool -P.' };
+  const text = readSource(p) || '';
+  const r = booleansLib.setInConf(text, name, !!value);
+  if (!r) return { already: true, path: p };
+  return { path: p, text: r.text, line: r.line, inserted: [`${name} = ${value ? 'true' : 'false'}`], created: !fs.existsSync(p) };
+});
+
+/* ---------------- evidence report ---------------- */
+
+const evidence = require('./evidence');
+
+/**
+ * The facts of one policy for server/evidence.js: identity and build settings, modules, static
+ * findings, property checks, logins and session starts, context files, users and what they reach,
+ * services, levels, and (on a Linux host) what runs unconfined under it. Each part that fails is a
+ * note, not a failure of the report.
+ */
+async function evidenceFacts(against) {
+  const lp = await loginPolicy(against);
+  if (lp.error) return { error: lp.error };
+  const pol = lp.pol;
+  const inTree = !!pol.build && !!treeRoot && !usingDevel;
+  const res = inTree ? lastBuild.get(treeRoot) : null;
+  const notes = [];
+  const cfg = inTree ? treeCfg() : null;
+  const prof = inTree ? installProfiles() : null;
+  const f = { generated: new Date().toISOString(), notes, policy: {
+    label: pol.label, tree: inTree ? treeRoot : null, version: inTree ? (readSource(path.join(treeRoot, 'VERSION')) || '').trim() : '',
+    makeArgs: cfg ? cfg.makeArgs || [] : null, profile: prof && prof.active ? prof.active.name : null,
+    builtAt: res && res.startedAt ? new Date(res.startedAt).toISOString() : null, ms: res ? res.ms : null, packages: res ? res.packages : null,
+    hostname: require('os').hostname(), host: pol.active ? 'the running policy' : pol.build ? null : `installed under /etc/selinux/${pol.name}`, extensionVersion: require('../package.json').version } };
+  if (inTree && idx.moduleKinds) {
+    const kinds = [...idx.moduleKinds.values()];
+    const apps = (cfg.makeArgs || []).map(a => /^APPS_MODS=(.*)$/.exec(a)).filter(Boolean).flatMap(m => m[1].split(/\s+/).filter(Boolean));
+    f.modules = { base: kinds.filter(k => k === 'base').length, module: kinds.filter(k => k === 'module').length, off: kinds.filter(k => k === 'off').length, apps };
+    if (prof && prof.active) {
+      const mods = [...prof.active.modules];
+      f.modules.installed = mods.filter(([, s]) => s.state === 'installed').map(([m]) => m);
+      f.modules.absent = mods.filter(([, s]) => s.state === 'absent').map(([m]) => m);
+    }
+  }
+  if (inTree) {
+    const all = await diagnoseAllNow({ minSeverity: 'info', dropped: true });
+    f.static = { files: all.files, dropped: all.dropped.length, diagnostics: all.diagnostics.map(d => ({ ...d, rel: path.relative(treeRoot, d.path).split(path.sep).join('/') })) };
+  }
+  if (inTree || usingDevel) {
+    const cp = checksPath();
+    if (cp) {
+      const exists = fs.existsSync(cp);
+      if (exists && (!checksState.parsed || checksState.path !== cp || !checksState.results)) { try { await runChecks(); } catch (e) { notes.push(`Property checks: ${e.message}`); } }
+      const s = checksState;
+      f.checks = { path: path.relative(treeRoot || roots[0], cp).split(path.sep).join('/'), exists, note: s.note,
+        items: s.parsed && s.path === cp ? s.parsed.checks.map(c => { const x = s.results && s.results.get(c.id); return { text: c.text, ok: !!(x && x.ok), message: x && !x.ok && !x.error ? checkMessage(c, x) : '', error: x && x.error ? x.error : (x ? null : 'not checked') }; }) : [] };
+    }
+  }
+  try {
+    const { report, error } = await loginContextReport(lp);
+    if (report && !report.error && !error) {
+      const who = (m) => (m.group ? `%${m.login}` : m.login);
+      f.logins = { sessions: (report.sessions || []).length,
+        mappings: (report.mappings || []).map(m => ({ login: who(m), user: m.user, ways: (m.ways || []).map(w => ({ label: w.label, ctx: (w.v3 && w.v3.ctx) || null, works: !!w.works3 && !(report.problems || []).some(p => p.severity === 'error' && p.login === who(m) && p.source === w.source) })) })),
+        problems: (report.problems || []).map(p => ({ severity: p.severity, login: p.login || '', way: p.way || '', kind: p.kind, text: p.text })) };
+    } else notes.push(`Login contexts: ${error || (report && report.error) || 'no report'}`);
+  } catch (e) { notes.push(`Login contexts: ${e.message}`); }
+  try {
+    const { report, error } = await contextFilesReport(lp);
+    if (report && !error) f.contexts = { files: report.files || [], problems: (report.problems || []).map(p => ({ severity: p.severity, kind: p.kind, text: p.text })) };
+    else notes.push(`Context files: ${error || 'no report'}`);
+  } catch (e) { notes.push(`Context files: ${e.message}`); }
+  try {
+    const lr = await loginsReport(pol.id);
+    if (!lr.error) f.users = (lr.users || []).map(u => ({ name: u.name, roles: u.roles, range: u.range, logins: (u.logins || []).map(x => (x.group ? `%${x.login}` : x.login)), reached: u.reached, abilities: (u.abilities || []).map(a => `${a.label} (as ${a.domain})`) }));
+    else notes.push(`Users: ${lr.error}`);
+  } catch (e) { notes.push(`Users: ${e.message}`); }
+  if (inTree) f.services = serviceModules().map(m => ({ module: m.module, layer: m.layer, domains: (m.domains || []).map(d => (typeof d === 'string' ? d : d.domain || d.name || JSON.stringify(d))) }));
+  try {
+    const r = await policyQuery.request({ op: 'levels', bin: lp.bin });
+    if (!r.error) {
+      const groups = (r.groups || []).filter(g => (g.constraints || []).length);
+      f.levels = { kind: r.kind, constraints: (r.constraints || []).length, held: (r.groups || []).filter(g => !(g.constraints || []).length).reduce((n, g) => n + (g.domains || []).length, 0), bypass: groups.reduce((n, g) => n + (g.domains || []).length, 0), groups };
+    } else notes.push(`Levels: ${r.error}`);
+  } catch (e) { notes.push(`Levels: ${e.message}`); }
+  if (process.platform !== 'win32' && (pol.active || inTree)) {
+    try { const u = await unconfinedReport(pol.id); if (!u.error) f.unconfined = { summary: u.summary, rows: u.rows }; else notes.push(`Programs on this host: ${u.error}`); } catch (e) { notes.push(`Programs on this host: ${e.message}`); }
+  }
+  return f;
+}
+
+connection.onRequest('selinux/evidenceReport', async ({ against, format } = {}) => {
+  await indexing;
+  const f = await evidenceFacts(against);
+  if (f.error) return { error: f.error };
+  const doc = evidence.buildDoc(f);
+  const fmt = format === 'html' ? 'html' : 'markdown';
+  const summary = doc.sections[0].items[0].p;
+  const findings = /^Open findings: /.test(summary) ? summary.replace(/^Open findings: /, '').replace(/\.$/, '').split('; ').length : 0;
+  return { text: evidence.render(doc, fmt), format: fmt, sections: doc.sections.length, findings, policy: { label: f.policy.label } };
 });
 
 /* ---------------- a host's local changes (semanage, semodule -i) ---------------- */

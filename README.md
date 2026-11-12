@@ -1630,6 +1630,20 @@ CLIP build this host's `chronyd` and `pcp` would stay in `init_t` or not
 start at all, since CLIP has no modules for them. A filter narrows every
 group.
 
+**Booleans** (*SELinux: Booleans…*): every boolean of a policy in one
+table — what it switches on or off (the conditional rules of the compiled
+policy and the domains they are for, with the other booleans at their
+defaults; *show the rules* lists them), and where its value comes from: its
+`gen_tunable` / `gen_bool` declaration with the description (a link to the
+source), `booleans.conf` (the tree's defaults, or the spec's overlay for
+RHEL trees), the compiled default, and the running value on this host.
+Booleans set away from their declared default, or changed on the host, are
+marked; a filter and *all / on / off / changed* narrow the table. In a tree
+build **Set on/off in booleans.conf** writes the tree's default (built on
+save); on a host **setsebool -P** runs in a terminal with sudo. Booleans
+that `booleans.conf` names but the policy doesn't have, and compiled ones
+the sources don't declare, are counted in the summary.
+
 **Evidence report** (*SELinux: Export Evidence Report…*, or
 `selinux-policy-check --report FILE`): one Markdown or HTML document about a
 policy, for the accreditation paperwork a locked-down system needs — the

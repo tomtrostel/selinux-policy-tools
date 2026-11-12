@@ -1659,6 +1659,32 @@ so far covered by the e2e tests only.
    test/evidence-test.js (npm test), check-cli-e2e (--report on the CLIP
    copy: sections, settings, checks, logins, services; --no-build HTML).
 
+23. **Booleans view** (done, unreleased; feature 6). policy_query op
+   `booleans` {names?, sample}: per boolean the default and, over
+   self.conds, the rules active only when it is true (on) / false (off)
+   with the other booleans at their defaults, `mixed` for rules that also
+   depend on others, exprs. `server/booleans.js` (pure): parseConf
+   (booleans.conf `name = true|false|1|0|on|off`), parseDefault,
+   assemble({decls, conf, compiled, running, effects}) → rows {source
+   (declared), conf, compiled, running, effective (running ?? compiled ??
+   conf ?? source), changed (conf ≠ source, or running ≠ compiled),
+   declared/inPolicy, on/off/mixed} + summary, setInConf (rewrite the line
+   or append before trailing blanks, CRLF kept). Server booleansConfPath()
+   (spec overlay for policy/booleans.conf if one file, else the tree's;
+   null when generated from several), booleansReport(against) (decls from
+   idx.decls kind bool with doc desc, tunable, default; running values
+   for the active policy), requests `selinux/booleans` and
+   `selinux/booleanSet` {name, value} → applyDenialFix plan. Client:
+   REPORTS entry selinuxBooleans (showReport: set → booleanSet +
+   applyDenialFix, setsebool → terminal), command selinux.showBooleans,
+   FEATURES "Booleans…" (Look into a policy). Webview media/booleans.js:
+   summary line, filter + show all/on/off/changed, rows with sources,
+   switches (show the rules), Set in booleans.conf / setsebool -P. Tests:
+   test/booleans-test.js (npm test), policy_query_test (booleans op),
+   test/booleans-e2e.js (melody: running targeted vs getsebool, CLIP
+   build: declarations + booleans.conf, set one, rebuild; in clip-all as
+   `booleans`).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1851,6 +1877,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
 - `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
+- `server/booleans.js`: booleans (booleans.conf parsing, the rows from declarations / conf / compiled / running values, setting a value); `media/booleans.js` the Booleans webview.
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1981,6 +2008,11 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/learn-test.js` (in `npm test`) and `test/learn-e2e.js`
   (`npm run test:learn-e2e`, melody; optional tree arg; in clip-all as
   `learn`): learn from a permissive run.
+- `test/evidence-test.js` (in `npm test`): the evidence report (its e2e is
+  check-cli-e2e's `--report`).
+- `test/booleans-test.js` (in `npm test`) and `test/booleans-e2e.js`
+  (`npm run test:booleans-e2e`, melody; optional tree arg; in clip-all as
+  `booleans`): the Booleans view.
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
