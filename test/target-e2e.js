@@ -124,6 +124,15 @@ function start(ws) {
     check(run.code === 0 && run.stdout.split('\n')[0] === '0' && run.stdout.split('\n')[1] === os.hostname(), 'a command runs on the target over the open connection', run);
     const runIn = await req('selinux/targetRun', { id: c.id, command: 'sh -s', input: 'echo got $(cat | wc -l) lines\n' });
     check(runIn.code === 0 && /got 0 lines/.test(runIn.stdout), 'with stdin', runIn);
+    // Denials read on the target: provoke one there first (httpd_t has no entrypoint on /bin/true).
+    await req('selinux/targetRun', { id: c.id, command: 'runcon -u system_u -r system_r -t httpd_t /bin/true 2>/dev/null; sleep 1; true' });
+    t0 = Date.now();
+    const dn = await req('selinux/targetDenials', { id: c.id, since: 'recent' });
+    check(!dn.error && dn.mode === f.mode && dn.count >= 1 && /scontext=\S+:httpd_t|tcontext=\S+:httpd_t|httpd_t/.test(dn.text) && /^Read \d+ records from root@/.test(dn.status) && dn.text.split('\n').every(l => !/<no matches>/.test(l)),
+      `the target's denials since recent: ${dn.count} records, ${dn.mode} (${Date.now() - t0} ms): ${dn.status}`, dn.error || { status: dn.status, head: (dn.text || '').slice(0, 300) });
+    const da = await req('selinux/analyzeDenials', { text: dn.text, against: id });
+    check(!da.error && da.groups && da.groups.some(g => g.source === 'unconfined_t' || g.target === 'httpd_t' || g.source === 'httpd_t'), `those denials analyzed against the target's policy: ${da.groups && da.groups.length} groups`, da.error || (da.groups || []).map(g => `${g.source}>${g.target}:${g.v && g.v.verdict}`));
+    check(!(await req('selinux/targetDenials', { id: c.id, since: 'x; echo pwned' })).error, 'an odd since word falls back to recent');
     t0 = Date.now();
     const rf = await req('selinux/targetRefresh', { id: c.id });
     check(!rf.error && rf.state === 'connected' && rf.facts.modules.length === f.modules.length && fs.existsSync(rf.mirror.policy), `refresh (${Date.now() - t0} ms)`, rf.error);
@@ -148,6 +157,9 @@ function start(ws) {
     check(!b.error && b.rows.length > 100 && b.rows.filter(x => x.running != null).length > 100 && b.policy.id === id, `booleans against ${KEY_TARGET}: ${b.rows && b.rows.length} rows with running values`, b.error || b.summary);
     const l = await req('selinux/loginContexts', { against: id });
     check(!l.error && l.mappings && l.mappings.length >= 1, `login contexts against ${KEY_TARGET}: ${l.mappings && l.mappings.length} logins`, l.error);
+    const dn = await req('selinux/targetDenials', { id: c.id, since: 'recent' });
+    if (!f.root) check(dn.error && /needs root/.test(dn.error), `denials as a plain user on ${KEY_TARGET}: refused, says it needs root`, dn);
+    else check(!dn.error && typeof dn.text === 'string', `denials read on ${KEY_TARGET}: ${dn.count}`, dn.error);
     const d = await req('selinux/analyzeDenials', { text: 'type=AVC msg=audit(1700000000.003:3): avc:  denied  { write } for  pid=3 comm="httpd" path="/etc/hosts" dev="dm-0" ino=3 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:tmp_t:s0 tclass=file permissive=0', against: id });
     const g = d.groups && d.groups[0];
     check(!d.error && g && g.v && g.v.verdict === 'label' && g.labels && g.labels.some(x => x.path === '/etc/hosts' && x.current === 'net_conf_t'), `a label verdict with the current label read on ${KEY_TARGET} (stat over ssh)`, d.error || g);

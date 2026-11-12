@@ -932,6 +932,7 @@ ${EDITOR_CSS}</style></head><body>
     current.domain = info.model.domain || null;
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
     post({ cmd: 'init', info, keep });
+    post({ cmd: 'targets', targets: connectedTargets() });
   };
   // A new-service form opened again for another program (from the denial assistant) starts over with it.
   panel.prefill = (p) => { current.prefill = p; load(); };
@@ -952,7 +953,7 @@ ${EDITOR_CSS}</style></head><body>
       else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
       else if (m.cmd === 'learn') post({ cmd: 'learned', result: await client.sendRequest('selinux/serviceLearn', { text: m.text, model: m.model, module: current.module, standalone: !!m.standalone }) });
-      else if (m.cmd === 'learnAusearch') readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }));
+      else if (m.cmd === 'learnAusearch') { if (m.target) post({ cmd: 'learnLog', text: null, status: `Reading the log of ${m.target}…` }); readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }), m.target || null); }
       else if (m.cmd === 'learnFile') {
         const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Read', title: 'Audit log of the permissive run', defaultUri: vscode.Uri.file(require('os').homedir()) });
         if (pick && pick.length) post({ cmd: 'learnLog', text: Buffer.from(await vscode.workspace.fs.readFile(pick[0])).toString('utf8'), status: `Read ${pick[0].fsPath}` });
@@ -1727,8 +1728,11 @@ let denialPanel = null;
 /** The denial panel's policy list read again (a target connected or gone), `selected` picked when given. */
 function refreshDenialPolicies(selected = null) {
   if (!denialPanel || !client || !client.isRunning()) return;
-  client.sendRequest('selinux/denialPolicies').then(r => { if (denialPanel) denialPanel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected }); }).catch(() => {});
+  client.sendRequest('selinux/denialPolicies').then(r => { if (denialPanel) denialPanel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected, targets: connectedTargets() }); }).catch(() => {});
 }
+
+/** The connected targets for the webviews' "read the log from" choice: [{ id, mode, root }]. */
+const connectedTargets = () => targets.filter(t => t.state === 'connected').map(t => ({ id: t.id, mode: t.facts && t.facts.mode ? t.facts.mode.toLowerCase() : null, root: !!(t.facts && t.facts.root) }));
 
 /** A terminal for commands the assistant offers (shared, created on demand). */
 /**
@@ -1736,9 +1740,14 @@ function refreshDenialPolicies(selected = null) {
  * Denials terminal (it asks for the password there); the shell writes a file and renames it when
  * done, and cb(text, status) gets the records (text null when there are none).
  */
-function readAuditLog(since, cb) {
-  const out = path.join(require('os').tmpdir(), `selinux-learn-${process.pid}-${Date.now()}.log`);
+function readAuditLog(since, cb, target = null) {
   const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
+  if (target) {
+    // A target host: over its ssh connection, through the server (no terminal, no sudo).
+    client.sendRequest('selinux/targetDenials', { id: target, since: ts }).then(r => cb(r.error ? null : r.text || null, r.error || r.status)).catch(e => cb(null, e.message));
+    return;
+  }
+  const out = path.join(require('os').tmpdir(), `selinux-learn-${process.pid}-${Date.now()}.log`);
   const t = denialTerminal();
   t.show();
   t.sendText(`sudo ausearch -m avc,user_avc -ts ${ts} --raw > '${out}.part'; mv -f '${out}.part' '${out}'`);
@@ -1820,7 +1829,7 @@ function showDenials(context, text, against = null) {
 </style></head><body>
 <div id="bar">
   <span id="title">Denials</span>
-  <button id="host">Read from this host</button><select id="since"></select>
+  <label>Read from <select id="from"><option value="">this host</option></select></label><button id="host">Read</button><select id="since"></select>
   <button id="openFile">Open log file…</button>
   <label>Check against <select id="against"></select></label>
   <span id="status"></span>
@@ -1838,11 +1847,19 @@ function showDenials(context, text, against = null) {
     try {
       if (m.cmd === 'ready') {
         const r = await client.sendRequest('selinux/denialPolicies');
-        panel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against });
+        panel.webview.postMessage({ cmd: 'policies', policies: r.policies, selected: against, targets: connectedTargets() });
         if (text) panel.webview.postMessage({ cmd: 'log', text, against });
       } else if (m.cmd === 'analyze') {
         const result = await client.sendRequest('selinux/analyzeDenials', { text: m.text, against: m.against });
         panel.webview.postMessage({ cmd: 'result', result });
+      } else if (m.cmd === 'ausearch' && m.target) {
+        // A target host: over its ssh connection, through the server.
+        stopWatch();
+        panel.webview.postMessage({ cmd: 'status', text: `Reading the log of ${m.target}…` });
+        const r = await client.sendRequest('selinux/targetDenials', { id: m.target, since: m.since });
+        if (r.error) panel.webview.postMessage({ cmd: 'status', text: r.error });
+        else if (!r.text) panel.webview.postMessage({ cmd: 'status', text: r.status });
+        else panel.webview.postMessage({ cmd: 'log', text: r.text, against: m.against || null, status: r.status });
       } else if (m.cmd === 'ausearch') {
         // The audit log needs root: run ausearch with sudo in a terminal (it asks for the password
         // there); the shell, not sudo, writes the file, and renames it when done.
@@ -2325,6 +2342,7 @@ function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'
 function targetsChanged(p) {
   targets = (p && p.targets) || [];
   refreshDenialPolicies();
+  for (const sp of servicePanels.values()) sp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
   if (!targetStatus) return;
   const live = targets.filter(t => t.state === 'connected');
   const t = live[0] || targets.find(x => x.state === 'connecting') || targets.find(x => x.state === 'lost' || x.state === 'error');

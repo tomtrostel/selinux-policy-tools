@@ -17,6 +17,11 @@
   Requests `selinux/targetConnect`, `selinux/targetDisconnect`,
   `selinux/targetRefresh`, `selinux/targets`, `selinux/targetRun`;
   notification `selinux/targetsChanged`.
+* **Denials from a target host**: the denial assistant's *Read from* choice
+  and the service editor's *From a permissive run* section read the
+  target's audit log (`ausearch`, plus the login programs' refusals from
+  its journal) over the ssh connection, with no terminal or sudo, and check
+  the denials against the target's policy. Request `selinux/targetDenials`.
 
 ## 0.19.0 (2026-11-12)
 

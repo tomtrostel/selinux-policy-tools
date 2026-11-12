@@ -179,6 +179,41 @@ function parseFacts(text) {
   return facts;
 }
 
+/**
+ * The command that reads a target's denials since `since` (ausearch's -ts
+ * words, recent by default): AVC, USER_AVC and SELINUX_ERR records raw, and
+ * the login programs' own refusals from the journal (they never reach the
+ * audit log). Each part under a "### key" line, errors under key.err like
+ * FACTS_SCRIPT; "<no matches>" is not an error.
+ */
+const JOURNAL_SINCE = { recent: '-10min', 'this-hour': '-1h', boot: '-b', today: 'today', yesterday: 'yesterday', 'this-week': '-7d', 'this-month': '-31d', 'this-year': '-366d' };
+function denialsScript(since) {
+  const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
+  const j = JOURNAL_SINCE[ts];
+  return `
+sec() { printf '### %s\\n' "$1"; }
+sec mode; getenforce 2>/dev/null
+sec audit
+# ausearch reads stdin when it is a pipe (it would eat the rest of this script): give it none.
+out=$(ausearch -m avc,user_avc,selinux_err -ts ${ts} --raw 2>&1 </dev/null); rc=$?
+if [ $rc -eq 0 ] || printf '%s' "$out" | grep -q '<no matches>'; then printf '%s\\n' "$out" | grep -v '<no matches>'; else sec audit.err; printf '%s\\n' "$out" | head -3; fi
+sec journal
+${j ? `journalctl -q ${j === '-b' ? '-b' : `--since ${shq(j)}`} 2>/dev/null </dev/null | grep -E 'pam_selinux|ssh_selinux|SELinux (security )?context'` : 'true'}
+sec done
+`;
+}
+
+/** The output of denialsScript → { text (the records), count (AVC lines), mode, error }. */
+function parseDenialsOutput(out) {
+  const s = splitSections(out);
+  const audit = (s.audit || '').replace(/^\s+|\s+$/g, '');
+  const journal = (s.journal || '').trim();
+  const text = [audit, journal].filter(Boolean).join('\n');
+  const e = s['audit.err'] != null ? s['audit.err'].trim().split('\n')[0] : null;
+  return { text, count: text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length, mode: (s.mode || '').trim() || null,
+    error: e ? (/ermission denied/i.test(e) ? 'The audit log needs root on the target.' : /not found/i.test(e) ? 'ausearch is not installed on the target (audit package).' : e) : s.done == null ? 'The command did not finish on the target.' : null };
+}
+
 /** One line about a target for the status bar / pickers. */
 function describe(t, facts) {
   const bits = [];
@@ -203,4 +238,4 @@ function mirrorPaths(name, policyFile) {
 /** The tar command (run on the target) that streams the mirror. */
 const mirrorCommand = (name, policyFile) => `cd /etc/selinux && tar czf - --ignore-failed-read ${mirrorPaths(name, policyFile).map(shq).join(' ')} 2>/dev/null`;
 
-module.exports = { parseSpec, targetId, sshDest, shq, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };
+module.exports = { parseSpec, targetId, sshDest, shq, denialsScript, parseDenialsOutput, JOURNAL_SINCE, sshArgs, ASKPASS_SCRIPT, FACTS_SCRIPT, splitSections, parseOsRelease, parseConfig, parseModules, parsePermissive, parseBooleans, parsePolicyFiles, parseFacts, describe, mirrorPaths, mirrorCommand };

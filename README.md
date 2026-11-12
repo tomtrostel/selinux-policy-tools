@@ -1680,8 +1680,17 @@ Check Login Contexts, Check Context Files, Levels and Categories and the
 File Labels lookup, exactly like a policy installed here; denial label
 verdicts stat the files on the target. *Refresh* reads everything again;
 *Disconnect* closes the connection and removes the copies (the server does
-the same when it exits). Reading the target's denials, listing its
-services and pushing a policy to it are the next steps of this feature.
+the same when it exits).
+
+With a target connected, the denial assistant's **Read from** choice and
+the service editor's *From a permissive run* section offer the target next
+to "this host": the denials logged there (`ausearch`, plus the login
+programs' refusals from its journal) are read over the ssh connection, no
+terminal or sudo involved, and the assistant checks them against the
+target's policy. Reading the audit log needs root on the target; as another
+user the panel says so. The status line names the host, how far back it
+looked and its current mode. Listing the target's services and pushing a
+policy to it are the next steps of this feature.
 
 ## Checking in CI: `selinux-policy-check`
 

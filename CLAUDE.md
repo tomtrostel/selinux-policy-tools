@@ -1702,8 +1702,27 @@ so far covered by the e2e tests only.
    services running and see what needs to be changed … push compiled policy
    changes to that server in order to retest"; plan agreed, "lets try this
    starting with 1"). Four pieces: 1 connect (done, unreleased), 2 denials
-   from the target, 3 services on the target with their denials and a way
+   from the target (done, unreleased; the user tried piece 1 and found the
+   log still read locally: "It needed to go to the target host and retrieve
+   those logs"), 3 services on the target with their denials and a way
    into the service editor, 4 push .pp files with backup/rollback and retest.
+   Piece 2: target.js denialsScript(since) (`sh -s`: getenforce, `ausearch
+   -m avc,user_avc,selinux_err -ts <since> --raw` ("<no matches>" is not an
+   error), journalctl --since per JOURNAL_SINCE grep pam_selinux|
+   ssh_selinux|SELinux context; sections like FACTS_SCRIPT) and
+   parseDenialsOutput → { text, count, mode, error (needs root / no
+   ausearch / cut off) }; request `selinux/targetDenials` {id, since} →
+   { text, count, mode, id, status } | { error } (a changed mode updates
+   the facts + targetsChanged). Client readAuditLog(since, cb, target) goes
+   through that request for a target; the denial panel's `ausearch`
+   message carries `target` (+ against `target:<id>`), the service editor's
+   `learnAusearch` too; `connectedTargets()` [{id, mode, root}] rides on
+   the `policies` message (denials.js setTargets: the `from` select, the
+   Read button's title) and a `targets` message to every service panel
+   (service.js learnTargets/learnFrom: a "Read from" select before the
+   button, "Read its log"). e2e: a denial provoked on the target as root
+   (`runcon -t httpd_t /bin/true`: no entrypoint), read back since recent
+   and analyzed; a plain user on ricardo is told it needs root.
    Piece 1: `server/target.js` (pure): parseSpec (user@host[:port]; neither
    part may start with '-'; default user root for passwords, null = ssh's
    choice for keys), targetId/sshDest, sshArgs (ControlPath; master:

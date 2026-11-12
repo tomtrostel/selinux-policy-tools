@@ -887,17 +887,22 @@
   }
 
   /* ---------- learn from a permissive run ---------- */
-  let learnText = '', learnStatus = '', learnResult = null, learnOpen = false;
+  let learnText = '', learnStatus = '', learnResult = null, learnOpen = false, learnTargets = [], learnFrom = '';
   const LEARN_ACTIONS = { file: 'Access level raised', label: 'Files given a type of their own', cap: 'Capabilities', self: 'Process and capabilities', net: 'Network', access: 'System access', extra: 'Interfaces added', covered: 'Already covered', unmapped: 'Not in the form: add by hand', skipped: 'Left out' };
   function learnSection() {
     if (model.user) return null;
     const since = h('select', { title: 'How far back to read the audit log' }, [['recent', 'last 10 minutes'], ['this-hour', 'this hour'], ['boot', 'since boot'], ['today', 'today']].map(([v, l]) => h('option', { value: v }, l)));
+    if (!learnTargets.some(t => t.id === learnFrom)) learnFrom = learnTargets.length ? learnTargets[0].id : '';
+    const from = learnTargets.length ? h('select', { title: 'Whose audit log: this host (sudo ausearch in a terminal), or a connected target host (read over its ssh connection)', onchange: (e) => { learnFrom = e.target.value; render(); } },
+      h('option', { value: '', selected: !learnFrom || null }, 'this host'), ...learnTargets.map(t => h('option', { value: t.id, selected: learnFrom === t.id || null }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`))) : null;
     const ta = h('textarea', { rows: 5, spellcheck: 'false', placeholder: `AVC denials of ${domainName()} from a permissive run (ausearch -m avc, or /var/log/audit/audit.log)`, title: 'Paste the denials here, or read them from this host or a file', oninput: (e) => { learnText = e.target.value; } }, learnText);
     const body = [
       h('div', { class: 'muted' }, 'Tick ', h('b', {}, 'Permissive while testing'), ', apply, run the service through its paces, then read what it was denied: each denial becomes a setting in this form (a file type\'s access level, a capability, a port, an access group, the narrowest interface) rather than a raw rule. What the form has no place for is listed with the rule it would need.'),
       ta,
       h('div', { class: 'row' },
-        h('button', { title: 'Run sudo ausearch in a terminal (it asks for your password there) and put the denials in the box', onclick: () => { learnStatus = 'Waiting for ausearch in the terminal (enter your sudo password there)…'; render(); vscode.postMessage({ cmd: 'learnAusearch', since: since.value || 'recent' }); } }, 'Read this host\'s log'), since,
+        from ? h('span', { class: 'muted' }, 'Read from ') : null, from,
+        h('button', { title: learnFrom ? `Read the denials logged on ${learnFrom} over its ssh connection (ausearch there)` : 'Run sudo ausearch in a terminal (it asks for your password there) and put the denials in the box',
+          onclick: () => { learnStatus = learnFrom ? `Reading the log of ${learnFrom}…` : 'Waiting for ausearch in the terminal (enter your sudo password there)…'; render(); vscode.postMessage({ cmd: 'learnAusearch', since: since.value || 'recent', target: learnFrom || null }); } }, learnFrom ? 'Read its log' : 'Read this host\'s log'), since,
         h('button', { title: 'Read the denials from a file (an audit.log copied from the host that ran the service)', onclick: () => vscode.postMessage({ cmd: 'learnFile' }) }, 'Open file…'),
         h('button', { class: 'primary', disabled: !learnText.trim() || !(model.name || '').trim(), title: 'Map every denial of the service\'s domain onto this form', onclick: () => { learnStatus = 'Matching the denials to the form…'; render(); vscode.postMessage({ cmd: 'learn', text: learnText, model, standalone: !!info.standalone }); } }, 'Apply to the form'),
         learnStatus ? h('span', { class: 'muted' }, learnStatus) : null),
@@ -984,6 +989,9 @@
       learnStatus = m.status || '';
       learnOpen = true;
       render();
+    } else if (m.cmd === 'targets') {
+      learnTargets = m.targets || [];
+      if (learnOpen) render();
     } else if (m.cmd === 'learned') {
       learnResult = m.result || { error: 'No answer.' };
       learnStatus = '';

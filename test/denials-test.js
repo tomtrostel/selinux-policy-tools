@@ -322,7 +322,7 @@ class El {
 }
 const text = (s) => ({ nodeType: 3, textContent: s });
 const byId = {};
-for (const id of ['list', 'status', 'against', 'log', 'analyze', 'host', 'since', 'openFile', 'title']) byId[id] = new El(id);
+for (const id of ['list', 'status', 'against', 'log', 'analyze', 'host', 'since', 'openFile', 'title', 'from']) byId[id] = new El(id);
 const posted = [];
 const winListeners = [];
 const wctx = {
@@ -414,7 +414,7 @@ byId.against.value = 'build'; byId.against.fire('change');
 check(last('analyze').against === 'build', 'changing the policy analyzes again');
 send({ cmd: 'log', text: 'x avc:  denied', source: 'this host' });
 check(byId.log.value === 'x avc:  denied' && last('analyze').text === 'x avc:  denied', 'a log from the host fills the box and is analyzed');
-const untitled = [byId.analyze, byId.host, byId.openFile, byId.against, byId.since].filter(e => !e.attrs.title).map(e => e.tag);
+const untitled = [byId.analyze, byId.host, byId.openFile, byId.against, byId.since, byId.from].filter(e => !e.attrs.title).map(e => e.tag);
 check(!untitled.length, 'every control has hover help', untitled);
 
 // Phase 4 cards: no policy for a program (New Service…), a constraint, pairs, a new interface.

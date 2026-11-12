@@ -3527,6 +3527,21 @@ connection.onRequest('selinux/targets', async () => ({ targets: targetHosts.list
 connection.onRequest('selinux/targetRun', async ({ id, command, input } = {}) => targetHosts.run(id, command, { input: input == null ? null : String(input) }));
 /** Shell-quoted paths for a command on a target. */
 const shqAll = (paths) => paths.map(targetLib.shq).join(' ');
+/**
+ * The target's denials since `since` (ausearch -ts words): { text, count, mode, status } or { error }.
+ * ausearch + the journal's login refusals, run as the connected user (root reads the audit log).
+ */
+connection.onRequest('selinux/targetDenials', async ({ id, since } = {}) => {
+  const e = targetHosts.get(id);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(since), timeout: 120000 });
+  if (r.lost) return { error: r.stderr.trim() || `Connection to ${id} lost.` };
+  const d = targetLib.parseDenialsOutput(r.stdout);
+  if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode };
+  if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
+  const ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
+  return { text: d.text, count: d.count, mode: d.mode, id, status: d.count ? `Read ${d.count} records from ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` : `No denials logged on ${id} (${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}).` };
+});
 
 const execFileP = (cmd, args) => new Promise((resolve) => {
   require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));

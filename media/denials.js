@@ -24,6 +24,7 @@
   const tip = (id, text) => $(id).setAttribute('title', text);
   tip('analyze', 'Read the denials in the box and check each group against the chosen policy');
   tip('host', 'Run ausearch in a terminal (sudo asks for your password there) and analyze what it finds');
+  tip('from', 'Whose audit log: this host (ausearch with sudo in a terminal), or a connected target host (read over its ssh connection)');
   tip('openFile', 'Analyze a saved audit log (e.g. a copy of /var/log/audit/audit.log, or ausearch output from another machine)');
   tip('against', 'The policy that decides whether access is allowed or allowed under a boolean: normally the one running on the host that logged the denials');
   tip('since', 'How far back ausearch looks');
@@ -47,7 +48,15 @@
     vscode.postMessage({ cmd: 'analyze', text, against: against || $('against').value || null });
   }
   $('analyze').addEventListener('click', () => analyze());
-  $('host').addEventListener('click', () => vscode.postMessage({ cmd: 'ausearch', since: $('since').value }));
+  $('host').addEventListener('click', () => vscode.postMessage({ cmd: 'ausearch', since: $('since').value, target: $('from').value || null, against: $('from').value ? `target:${$('from').value}` : null }));
+  // Which host's log to read: this one, or a connected target (its policy is then the one to check against).
+  function setTargets(list) {
+    const sel = $('from');
+    const keep = sel.value;
+    sel.replaceChildren(h('option', { value: '' }, 'this host'), ...(list || []).map(t => h('option', { value: t.id }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`)));
+    sel.value = (list || []).some(t => t.id === keep) ? keep : (list || []).length ? list[0].id : '';
+    $('host').title = sel.value ? `Read the denials logged on ${sel.value} over its ssh connection (ausearch there) and analyze them` : 'Run ausearch in a terminal (sudo asks for your password there) and analyze what it finds';
+  }
   $('openFile').addEventListener('click', () => vscode.postMessage({ cmd: 'openFile' }));
   $('against').addEventListener('change', () => { if ($('log').value.trim()) analyze(); });
   const rerender = () => { if (last) render(last); };
@@ -226,9 +235,9 @@
 
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (m.cmd === 'policies') setPolicies(m.policies, m.selected);
+    if (m.cmd === 'policies') { setPolicies(m.policies, m.selected); if (m.targets) setTargets(m.targets); }
     else if (m.cmd === 'result') { if (m.result.policies) setPolicies(m.result.policies, m.result.policy && m.result.policy.id); render(m.result); }
-    else if (m.cmd === 'log') { $('log').value = m.text; analyze(m.against || undefined); }
+    else if (m.cmd === 'log') { $('log').value = m.text; if (m.status) $('status').textContent = m.status; analyze(m.against || undefined); }
     else if (m.cmd === 'status') $('status').textContent = m.text;
     else if (m.cmd === 'fixPlan') { fixes.set(m.key, { plan: m.plan }); opened.set(m.key, true); rerender(); }
     else if (m.cmd === 'applied') { fixes.set(m.key, { applied: m.path }); rerender(); }

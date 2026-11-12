@@ -100,5 +100,20 @@ check(/^### %s/.test('### %s') && /sec hostname/.test(T.FACTS_SCRIPT) && /semodu
   'FACTS_SCRIPT: gathers everything in one run, ends with done, never sudo');
 check(Object.keys(T.splitSections('### a\n1\n2\n### b\n### a\n3\n')).join() === 'a,b' && T.splitSections('### a\n1\n2\n### b\n').a === '1\n2' && T.splitSections('### a\n1\n### b\n').b === '', 'splitSections');
 
+// 5. Denials read on the target.
+const ds = T.denialsScript('this-hour');
+check(/ausearch -m avc,user_avc,selinux_err -ts this-hour --raw/.test(ds) && /journalctl -q --since '-1h'/.test(ds) && /pam_selinux\|ssh_selinux/.test(ds) && /sec mode; getenforce/.test(ds) && /sec done/.test(ds), 'denialsScript: ausearch raw since the words given, the journal for the login programs, the mode', ds);
+check(/-ts recent --raw/.test(T.denialsScript('x; rm -rf /')) && /-ts recent --raw/.test(T.denialsScript(null)) && /journalctl -q -b /.test(T.denialsScript('boot')) && /\ntrue\n/.test(T.denialsScript('yesterday-ish')), 'denialsScript: odd words fall back to recent; boot uses -b; no journal for unknown words');
+const REC = 'type=AVC msg=audit(1700000000.001:1): avc:  denied  { read } for  pid=1 comm="x" scontext=system_u:system_r:a_t:s0 tcontext=system_u:object_r:b_t:s0 tclass=file permissive=1';
+let d = T.parseDenialsOutput(`### mode\nPermissive\n### audit\n${REC}\ntype=SYSCALL msg=audit(1700000000.001:1): arch=c000003e syscall=2\n----\n${REC.replace(':1)', ':2)')}\n### journal\nNov 12 10:00:00 box sshd[1]: pam_selinux(sshd:session): Unable to get valid context for u\n### done\n`);
+check(!d.error && d.mode === 'Permissive' && d.count === 2 && d.text.split('\n').length === 5 && /pam_selinux/.test(d.text), 'parseDenialsOutput: records and journal lines joined, AVC count, mode', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### journal\n### done\n');
+check(!d.error && d.text === '' && d.count === 0 && d.mode === 'Enforcing', 'parseDenialsOutput: nothing logged', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### audit.err\nError opening /var/log/audit/audit.log (Permission denied)\n### journal\n### done\n');
+check(d.error === 'The audit log needs root on the target.', 'parseDenialsOutput: not root', d);
+d = T.parseDenialsOutput('### mode\nEnforcing\n### audit\n### audit.err\nsh: line 3: ausearch: command not found\n### journal\n### done\n');
+check(/not installed/.test(d.error), 'parseDenialsOutput: no ausearch', d);
+check(/did not finish/.test(T.parseDenialsOutput('### mode\nEnforcing\n### audit\n').error), 'parseDenialsOutput: cut off');
+
 console.log(failures ? `\n${failures} target checks FAILED` : '\nall target checks passed');
 process.exit(failures ? 1 : 0);
