@@ -1199,6 +1199,41 @@ connection.onRequest('selinux/inactiveRanges', async ({ uri }) => {
   return out;
 });
 
+/*
+ * Every file's static diagnostics at once (the editor gets them per open document): for the
+ * headless check runner (bin/selinux-policy-check.js) and anything else that wants the whole
+ * tree. Files of excluded trees are left out. `dropped`: the optional_policy blocks the linker
+ * drops in this configuration (and install profile), one entry per outermost block.
+ */
+const SEVERITY_WORD = { 1: 'error', 2: 'warning', 3: 'info', 4: 'hint' };
+connection.onRequest('selinux/diagnoseAll', async ({ minSeverity = 'info', dropped: wantDropped = true } = {}) => {
+  await indexing;
+  const max = { error: 1, warning: 2, info: 3, hint: 4 }[minSeverity] || 3;
+  const diagnostics = [];
+  const dropped = [];
+  let files = 0;
+  for (const f of idx.files.values()) {
+    if (inExcludedTree(f.path)) continue;
+    files++;
+    for (const d of diagnose(idx, f, settings.diagnostics)) {
+      if (d.severity > max) continue;
+      diagnostics.push({ path: f.path, l: d.l, c: d.c, severity: SEVERITY_WORD[d.severity] || 'info', code: d.code, msg: d.msg });
+    }
+    for (const d of profileDiagnostics(f)) if (max >= 3) diagnostics.push({ path: f.path, l: d.range.start.line, c: d.range.start.character, severity: 'info', code: d.code, msg: d.message });
+    if (wantDropped) {
+      for (const d of droppedBlocksOf(f)) {
+        if (d.parent) continue;
+        dropped.push({ path: f.path, l: d.l, endL: d.endL, missing: d.missing.map(x => ({ name: x.name, modules: x.modules, via: x.via })), reason: droppedReason(d) });
+      }
+    }
+  }
+  diagnostics.sort((a, b) => a.path.localeCompare(b.path) || a.l - b.l || a.c - b.c);
+  dropped.sort((a, b) => a.path.localeCompare(b.path) || a.l - b.l);
+  const prof = installProfiles();
+  return { tree: treeRoot, mode: usingDevel ? 'module' : treeRoot ? 'tree' : null, files, diagnostics, dropped,
+    profile: prof && prof.active ? prof.active.name : null, m4Flags: idx.m4 ? idx.m4.flags : null };
+});
+
 /* ---------------- install profiles (CLIP kickstarts) ---------------- */
 
 /*

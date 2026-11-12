@@ -1588,6 +1588,90 @@ Example on CLIP: turning `cron` off still links, but 22 optional blocks in
 turning `mta` off fails to link because `postfix` needs `mail_spool_t`.
 A preview is a full build of the changed tree (CLIP ~10 s).
 
+## Checking in CI: `selinux-policy-check`
+
+Everything the extension checks after a build also runs without VS Code,
+so a policy repository can refuse a commit that compiles but breaks a
+login, fails a property check or ships a context that won't load:
+
+```
+node bin/selinux-policy-check.js [options] <policy tree | folder of standalone modules>
+```
+
+(`bin/selinux-policy-check.js` is in the extension's install directory, e.g.
+`~/.vscode-server/extensions/tomtrostel.selinux-policy-tools-*/bin/`, and in
+a checkout of the repository: `npm run check -- <tree>`.) It starts the
+language server on that folder, the way the editor does, and reports in
+order:
+
+1. **Static analysis** of every source file: the diagnostics the editor
+   shows (unknown interfaces, permissions and classes, missing `require`s,
+   link errors from `modules.conf`, port clashes, `gen_user` problems).
+2. **Build**: the tree's own Makefile (`base.pp modules validate`) with the
+   build settings; compile and link errors with their source lines.
+   Standalone modules are built one by one against the devel headers.
+3. **Property checks** (`selinux.checks`): each failing assertion with its
+   line, the violating rules traced to source with `--verbose`.
+4. **Login contexts and session starts** against the build and the tree's
+   `appconfig` files: every error and warning of *Check Login Contexts*,
+   on its `seusers` or contexts line.
+5. **Context files**: *Check Context Files* on the build.
+6. **Dropped optional blocks**: how many `optional_policy` blocks the linker
+   drops in this configuration (listed with `--verbose`; with
+   `--profile <kickstart>` on a CLIP tree, the install profile counts).
+
+The exit status is 0 when nothing fails, 1 when something does (errors; with
+`--strict` warnings too), 2 when it couldn't check (no toolchain, not a
+tree, a timeout). `--json FILE` writes every finding with paths, lines and
+related lines. `--no-build` runs the static analysis alone (no toolchain
+needed, any OS). `--skip checks,logins,contexts,dropped` leaves parts out.
+
+Build settings: a CLIP tree finds its spec next to it (`packages/
+selinux-policy/selinux-policy*.spec`, with `SEPARATE_PKGS` from the
+Makefile beside it); a RHEL/Fedora tree takes `--spec <selinux-policy.spec>
+--variant targeted` (what *Configure Build from Spec File…* reads); anything
+else `--make "NAME=… TYPE=…"` or the tree's `build.conf`.
+
+Example on the CLIP RHEL 9 tree (90 packages, ~2 minutes with the login
+reports):
+
+```
+selinux-policy-check: /src/CLIP/packages/selinux-policy/selinux-policy (policy tree, built with selinux-policy.spec)
+Static analysis: 1251 files, 4 warnings
+  warning policy/modules/services/ssh.if:160 [missing-require] 'ssh_server' is used …
+Build: ok, 90 packages (98 s)
+Property checks: 12 checks, all hold
+Login contexts and session starts: 5 seusers lines, 14 session starts checked, 2 errors, 1 warning
+  error   config/appconfig-mcs/seusers:3 nocontext: staff (staff_u) can't log in by cron jobs …
+Context files: 23 files checked, 1 warning
+Dropped optional blocks: 639 blocks (listed with --verbose)
+Result: FAIL (2 problems)
+```
+
+A GitHub Actions job for a policy repository (the toolchain is RHEL's, so
+run it in a Rocky/Alma container; `selinux-policy-devel` brings the
+Makefile and m4 support files, `python3-setools` the policy queries):
+
+```yaml
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y make m4 gawk python3 python3-setools checkpolicy policycoreutils policycoreutils-devel selinux-policy-devel nodejs git
+      - run: git clone --depth 1 https://github.com/tomtrostel/selinux-policy-tools /opt/spt && (cd /opt/spt && npm ci --omit=dev)
+      - run: node /opt/spt/bin/selinux-policy-check.js --strict --json report.json packages/selinux-policy/selinux-policy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: selinux-policy-report, path: report.json }
+```
+
+(Session starts are checked with the container's shells, libraries and
+mounts, so a `nosuid` or NoNewPrivileges finding needs a look on a real
+host; the context, entrypoint, terminal and role checks are the policy's
+alone.)
+
 ## Settings
 
 | Setting | Default | Purpose |
@@ -2558,6 +2642,7 @@ npm run test:levels-e2e   # Levels and Categories, level and isolation checks
 npm run test:hostmods-e2e # a host's local changes: compare, write into a tree, rebuild
 npm run test:tutorial     # the practice module
 npm run test:denials-bench  # interface suggestion ranking benchmark
+npm run test:check-cli-e2e  # the headless runner (selinux-policy-check) on a CLIP copy and a module folder
 npm run test:clip-all     # all tree tests on CLIP RHEL 8 and RHEL 9, plus a diagnostics survey of each
 ```
 

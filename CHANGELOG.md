@@ -91,6 +91,16 @@
   Mako templates (with `CONFIG_BUILD`'s values) and `@group` lines through
   comps.xml are followed. Blocks needing a module the profile leaves out are
   dimmed, and that module gets an info note.
+* **`selinux-policy-check`: the checks without VS Code, for CI**
+  (`bin/selinux-policy-check.js <tree>`; README *Checking in CI*). It runs
+  the language server on a policy tree (or a folder of standalone modules)
+  and reports the static diagnostics of every file, the build, the property
+  checks, login contexts and session starts, context files and the dropped
+  optional blocks, with file:line for each finding; exit 1 when something
+  fails (`--strict`: warnings too), `--json` for the full results,
+  `--no-build` for the static analysis alone (any OS). A CLIP tree finds
+  its spec itself; RHEL trees take `--spec … --variant …`. New server
+  request `selinux/diagnoseAll`.
 
 **Fixed**
 

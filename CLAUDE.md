@@ -58,8 +58,10 @@ changes, a lockdown tutorial step; the user tried it before the release
 Unreleased: step 15 (logins that bounce: session starts, fixes from the
 tree's interfaces, SELINUX_ERR verdicts in the denial assistant) and step 16
 (restricted logins: what they run, silent failures, which edit broke it)
-and step 17 (dropped optional blocks dimmed, CLIP install profiles); none
-tried interactively yet.
+and step 17 (dropped optional blocks dimmed, CLIP install profiles) and
+step 18 (headless check runner for CI); none tried interactively yet. A
+fresh build with everything up to the 2026-11-11 review pass is installed
+on melody.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1506,6 +1508,43 @@ so far covered by the e2e tests only.
    refuses". user-e2e: CIL link (build.cilBuild), duplicate-role repair of
    every user module, base's selinuxuser lines; passes on CLIP 8/9, RHEL
    9/10 (RHEL 10 fix: xserver state from dist/<variant>/modules.conf).
+   Review pass 2026-11-11 (user: "check this vscode extension and see if
+   we need to correct anything. I want it perfect"): full regression green
+   (clip-all melody 40/40 + ricardo 20/20, RHEL 9/10 build/user/service
+   e2e, loginctx-survey installed); fixed a `.claude/` lock file shipped in
+   the vsix (.vscodeignore), `selinux.logins.sessions` made a restricted
+   configuration (ldd runs on the programs it names), two unescaped regexes
+   in server.js, the denial summary line for nnp/invalid/bounds, the missing
+   CHANGELOG entry for the CIL fixes; `sample/` stays untracked (user's
+   call, gitignored).
+
+18. **Headless check runner for CI** (done, unreleased; the user picked it
+   and step 19 from a list of suggestions 2026-11-11: "Do 1 and 2").
+   `bin/selinux-policy-check.js` (package.json `bin`, `npm run check`):
+   spawns server.js over stdio on the folder (trusted, onSave off, build
+   settings from `--make`, `--spec [--variant]` via specconfig, or a CLIP
+   spec found next to the tree like test/clip-args.js), waits for indexing,
+   `selinux/selectInstallProfile` for `--profile`, new request
+   `selinux/diagnoseAll` {minSeverity, dropped} → every file's static
+   diagnostics (+ profile-not-installed) and the outermost dropped blocks,
+   then `selinux/build` on the tree (or each .te of a module folder, one
+   level deep), the checks file's published diagnostics after the
+   `selinux/checks` notification (promise set up before the build: runChecks
+   can finish before the build response), `selinux/loginContexts` and
+   `selinux/contextFiles` {against: 'build'}. Exit 0 / 1 (errors; `--strict`
+   warnings too) / 2 (unable: no tree, bad profile, toolchain, timeout);
+   `--json`, `--no-build` (static only, also on a bare policy/ dir, mode
+   'sources'), `--skip checks,logins,contexts,dropped`, `--verbose` (info
+   lines, related lines, the dropped list). `format()` is pure. README
+   "Checking in CI" with a GitHub Actions example (rockylinux:9 container;
+   not run in CI anywhere yet). Tests: test/check-cli-test.js (npm test;
+   also a static run on the lsp-e2e workspace: myapp's 4 warnings, exit 0,
+   --strict 1), test/check-cli-e2e.js (melody: CLIP copy laid out with its
+   spec, a failing check added → exit 1 with the line and traced rule; fixed
+   + --skip → 0; --strict on the tree's 4 warnings → 1; --no-build 2 s;
+   unknown profile → 2; ~/sepol-test/mymodule → built; in clip-all as
+   `check-cli`). Found: CLIP 9's stock tree fails the run on its own login
+   errors (cron contexts, README Findings), as intended.
 
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
@@ -1695,6 +1734,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/sessions.js`: session starts after the context is picked (entrypoint, libraries, inherited terminal, NoNewPrivileges/nosuid, forced command, startup scripts, what the sessions run, typebounds).
 - `server/kickstart.js`: install profiles from CLIP kickstarts (%packages, %include, Mako .tmpl, comps groups, separately packaged modules).
 - `server/audittrace.js`: what a host logs for a refusal (AVC, hidden by dontaudit, SELINUX_ERR, the login program's log only).
+- `bin/selinux-policy-check.js`: the headless check runner for CI (drives server.js over stdio; static diagnostics, build, checks, login contexts, context files, dropped blocks; exit status).
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1816,6 +1856,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/kickstart-test.js` (in `npm test`) and `test/profile-e2e.js`
   (`npm run test:profile-e2e`, melody; optional tree arg, needs CLIP's
   layout around it; in clip-all as `profile`).
+- `test/check-cli-test.js` (in `npm test`) and `test/check-cli-e2e.js`
+  (`npm run test:check-cli-e2e`, melody; optional tree arg; in clip-all as
+  `check-cli`): the headless runner.
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`
