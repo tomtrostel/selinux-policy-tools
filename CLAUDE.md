@@ -59,9 +59,9 @@ Unreleased: step 15 (logins that bounce: session starts, fixes from the
 tree's interfaces, SELINUX_ERR verdicts in the denial assistant) and step 16
 (restricted logins: what they run, silent failures, which edit broke it)
 and step 17 (dropped optional blocks dimmed, CLIP install profiles) and
-step 18 (headless check runner for CI); none tried interactively yet. A
-fresh build with everything up to the 2026-11-11 review pass is installed
-on melody.
+step 18 (headless check runner for CI) and step 19 (what runs unconfined on
+this host); none tried interactively yet. A fresh build with everything up
+to step 19 is installed on melody.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -1546,6 +1546,43 @@ so far covered by the e2e tests only.
    `check-cli`). Found: CLIP 9's stock tree fails the run on its own login
    errors (cron contexts, README Findings), as intended.
 
+19. **What runs unconfined on this host** (done, unreleased; "Do 1 and 2").
+   `server/unconfined.js` (pure): parsePs (`ps -eo pid=,ppid=,user=,label=,
+   comm=,args=`; kernel threads out; seuser/type from the label), parseUnits
+   (`systemctl show -p Id,ExecStart,MainPID,ActiveState,SubState,
+   FragmentPath,User,NoNewPrivileges '*.service'`; every `path=` of
+   ExecStart), parseSs (`ss -lntuHp`; pids only where ss may look),
+   startsAsFrom(transitions out of init_t, canExec) → per exec type {domain,
+   how: auto | stays (execute_no_trans → init_t) | manual (entrypoint, setexec
+   only) | none}, assemble(facts) → rows per real path: units (user@ /
+   user-runtime-dir@ left out), pids/users/hostDomains from ps (processes
+   without a unit count only as system_u or unlabeled, ppid 1 or in the
+   unconfined set: users' sessions are not services), label, generic
+   (GENERIC_EXEC), pkg, policyDomain/how, listens, verdict unconfined |
+   confined | nostart | unknown (host domain first, else the policy's; for a
+   unit row the policy's answer wins when it differs, `differs` shown either
+   way), summary, the unconfined set (unconfined_domain_type via policy_query
+   `names` + UNCONFINED_NAMES present). Server: hostProcessFacts() (15 s
+   cache, `limits` notes: not root → ports only for own processes, argv0
+   instead of /proc/PID/exe), request `selinux/unconfined` {against}
+   (loginPolicy; expectedContexts for the labels; policy_query `transitions`
+   init_t out, `avc` init_t execute/execute_no_trans per type, `names`; rpm
+   -qf 8 at a time; locs via sourceLocation). Client: REPORTS entry
+   selinuxUnconfined (showReport; messages newService → showServiceEditor
+   prefill exec, lookUp → selinux.lookUpFile), command
+   selinux.showUnconfined, FEATURES "What Runs Unconfined…" (Write policy).
+   Webview media/unconfined.js: verdict line, filter, groups Run unconfined /
+   The policy can't start them / Confined / Not labeled or not running, rows
+   with New Service… and the program name → File Labels, domain links.
+   Findings on melody (RHEL 9 targeted): 62 programs from 57 services; udev_t,
+   xserver_t, rpm & co are in unconfined_domain_type (Fedora's choice), so
+   "unconfined" lists them truthfully; against the CLIP build chronyd, pcp,
+   lsmd, switcheroo… would stay in init_t/initrc_t or not start (no modules).
+   Tests: test/unconfined-test.js (npm test: parsers on sampled output,
+   verdicts under two policies, sessions filtered, webview), test/
+   unconfined-e2e.js (melody: running targeted + CLIP build; in clip-all as
+   `unconfined`).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -1735,6 +1772,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/kickstart.js`: install profiles from CLIP kickstarts (%packages, %include, Mako .tmpl, comps groups, separately packaged modules).
 - `server/audittrace.js`: what a host logs for a refusal (AVC, hidden by dontaudit, SELINUX_ERR, the login program's log only).
 - `bin/selinux-policy-check.js`: the headless check runner for CI (drives server.js over stdio; static diagnostics, build, checks, login contexts, context files, dropped blocks; exit status).
+- `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
 - `server/ctxfiles.js`: context files (file_contexts, .local, home lines as genhomedircon writes them, the application context files); `media/ctxfiles.js` the Context Files webview.
 - `server/localmods.js`: a host's local changes (semanage export parsing,
   comparison, fixes); `media/hostmods.js` the Host Changes webview.
@@ -1859,6 +1897,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/check-cli-test.js` (in `npm test`) and `test/check-cli-e2e.js`
   (`npm run test:check-cli-e2e`, melody; optional tree arg; in clip-all as
   `check-cli`): the headless runner.
+- `test/unconfined-test.js` (in `npm test`) and `test/unconfined-e2e.js`
+  (`npm run test:unconfined-e2e`, melody; optional tree arg; in clip-all as
+  `unconfined`): what runs unconfined.
 - `test/restricted-e2e.js` (`npm run test:restricted-e2e`, melody/ricardo;
   optional tree arg; in clip-all as `restricted`).
 - `test/ctxfiles-test.js` (in `npm test`), `test/ctxfiles-e2e.js`

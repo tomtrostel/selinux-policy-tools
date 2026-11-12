@@ -478,6 +478,7 @@ function activate(context) {
     vscode.commands.registerCommand('selinux.editWrapper', () => editWrapperCommand(context)),
     vscode.commands.registerCommand('selinux.checkLoginContexts', () => showLoginContexts(context)),
     vscode.commands.registerCommand('selinux.checkContextFiles', () => showContextFiles(context)),
+    vscode.commands.registerCommand('selinux.showUnconfined', () => showUnconfined(context)),
     vscode.commands.registerCommand('selinux.showLevels', (arg) => showLevels(context, arg && typeof arg === 'object' && arg.source ? arg : null)),
     vscode.commands.registerCommand('selinux.compareHostChanges', () => showHostChanges(context)),
     vscode.commands.registerCommand('selinux.lookUpFile', async (arg) => {
@@ -1958,6 +1959,7 @@ const FEATURES = [
   ]],
   ['Write policy', [
     ['selinux.newService', 'add', 'New Service…', 'Confine a program: its domain, files, network and rights, in a form'],
+    ['selinux.showUnconfined', 'unlock', 'What Runs Unconfined…', 'This host\'s services and processes without a domain of their own, under the running policy or a tree build; each a click from a new service module'],
     ['selinux.editService', 'edit', 'Edit Service…', 'Open an existing service module in the form'],
     ['selinux.newUser', 'person-add', 'New User…', 'An SELinux user and role, its logins and ways in'],
     ['selinux.editUser', 'account', 'Edit User…', 'Open an existing user\'s role module in the form'],
@@ -2218,7 +2220,10 @@ const reportPanels = new Map();
 const REPORTS = {
   selinuxLoginContexts: { title: 'Login Contexts', script: 'loginctx.js', request: 'selinux/loginContexts' },
   selinuxContextFiles: { title: 'Context Files', script: 'ctxfiles.js', request: 'selinux/contextFiles' },
+  selinuxUnconfined: { title: 'Unconfined Programs', script: 'unconfined.js', request: 'selinux/unconfined' },
 };
+/** Unconfined Programs: this host's services and processes without a domain of their own (server/unconfined.js). */
+function showUnconfined(context) { showReport(context, 'selinuxUnconfined'); }
 /** Login Contexts: does every login get a valid context for each way in (server/loginctx.js). */
 function showLoginContexts(context) { showReport(context, 'selinuxLoginContexts'); }
 
@@ -2320,6 +2325,10 @@ function showReport(context, viewType) {
       } else if (m.cmd === 'applyFix') {
         await applyDenialFix(m.plan);
         panel.webview.postMessage({ cmd: 'applied', key: m.key, path: m.plan.path });
+      } else if (m.cmd === 'newService') {
+        showServiceEditor(context, null, { exec: m.exec });
+      } else if (m.cmd === 'lookUp') {
+        vscode.commands.executeCommand('selinux.lookUpFile', m.path);
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });

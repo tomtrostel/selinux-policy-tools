@@ -101,6 +101,13 @@
   `--no-build` for the static analysis alone (any OS). A CLIP tree finds
   its spec itself; RHEL trees take `--spec … --variant …`. New server
   request `selinux/diagnoseAll`.
+* **What runs unconfined** (*SELinux: What Runs Unconfined…*): this host's
+  services and processes, each with its label, the domain it runs in here
+  and the one the chosen policy would start it in (`type_transition` from
+  `init_t`), its units, package and listening ports; programs in a domain
+  that confines nothing first, each a click from *New Service…*. Against a
+  tree build it shows what the lockdown would do to this host's services
+  (stay in `init_t`, or not start at all).
 
 **Fixed**
 

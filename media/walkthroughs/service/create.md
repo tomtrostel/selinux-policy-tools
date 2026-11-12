@@ -4,6 +4,11 @@
 opens a form on the left and a live preview of the files on the right. The
 preview is updated as you type, and any problems are listed above it.
 
+Not sure what to confine first? **SELinux: What Runs Unconfined…** lists this
+host's services and processes with the domain each runs in, the ones without
+a domain of their own first; **New Service…** on a row opens this form with
+that program filled in.
+
 **Service** section:
 
 * **Module** (in a tree workspace): **In the policy tree** makes the module

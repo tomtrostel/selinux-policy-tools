@@ -4849,6 +4849,81 @@ connection.onRequest('selinux/fileTypeInfo', async ({ against, type } = {}) => {
   return { ...r, policy: { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build }, locs, traceable: !!lp.pol.build };
 });
 
+/* ---------------- what runs unconfined on this host ---------------- */
+
+const unconfinedLib = require('./unconfined');
+let hostProcCache = { at: 0, facts: null };
+
+/** This host's services and processes (ps, systemctl show, ss), cached for 15 s. */
+async function hostProcessFacts() {
+  if (hostProcCache.facts && Date.now() - hostProcCache.at < 15000) return hostProcCache.facts;
+  const ps = await execFileP('ps', ['-eo', 'pid=,ppid=,user:32=,label=,comm=,args=']); // user:32: not cut to 8 characters ("libstor+")
+  const units = await execFileP('systemctl', ['show', '--no-pager', '-p', 'Id,ExecStart,MainPID,ActiveState,SubState,FragmentPath,User,NoNewPrivileges', '*.service']);
+  const ss = await execFileP('ss', ['-lntuHp']);
+  const limits = [];
+  if (ps.err) limits.push(`ps failed (${(ps.stderr || ps.err.message).trim().split('\n')[0]}): no running processes listed.`);
+  if (units.err && !units.stdout.trim()) limits.push('systemctl show failed (no systemd here?): only running processes are listed, not the services that could start.');
+  if (ss.err && !ss.stdout.trim()) limits.push('ss failed: no listening ports.');
+  else if (process.getuid && process.getuid() !== 0) limits.push("Listening ports are known only for processes the server's user owns (ss -p needs root for the rest), and programs are taken from each process's command line (/proc/PID/exe is root's).");
+  const facts = { processes: unconfinedLib.parsePs(ps.stdout), units: unconfinedLib.parseUnits(units.stdout), sockets: unconfinedLib.parseSs(ss.stdout), limits, hostname: require('os').hostname() };
+  hostProcCache = { at: Date.now(), facts };
+  return facts;
+}
+
+/**
+ * What runs unconfined on this host, judged by a policy ({ against }): the services systemd
+ * starts and the processes running now, the label each program gets, the domain it runs in here
+ * and the one the policy would start it in (type_transition from init_t on the program's type),
+ * sorted so programs without a domain of their own come first. → unconfined.assemble()'s result +
+ * { policies, policy, host: { hostname, processes, units, limits }, locs }.
+ */
+connection.onRequest('selinux/unconfined', async ({ against } = {}) => {
+  await indexing;
+  if (process.platform === 'win32') return { error: 'Looking at a host\'s processes needs a Linux host (use Remote-SSH).', policies: [], policy: null };
+  const lp = await loginPolicy(against);
+  const policies = lp.policies.map(({ id, label, active, build: b }) => ({ id, label, active, build: !!b }));
+  const policy = lp.pol ? { id: lp.pol.id, label: lp.pol.label, build: !!lp.pol.build, active: !!lp.pol.active } : null;
+  if (lp.error) return { error: lp.error, policies, policy };
+  const facts = await hostProcessFacts();
+  const realpath = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+  const exists = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+  // A bare program name in ExecStart= (systemd searches its own PATH).
+  const PATH_DIRS = ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'];
+  const which = (n) => (/^[\w.+-]+$/.test(n) ? PATH_DIRS.map(d => `${d}/${n}`).find(exists) || null : null);
+  const paths = new Set();
+  for (const u of facts.units) for (const p of u.exec) { const q = p.startsWith('/') ? p : which(p); if (q) paths.add(realpath(q)); }
+  for (const p of facts.processes) if (p.argv0.startsWith('/') && (p.ppid === 1 || facts.units.some(u => u.mainPid === p.pid))) paths.add(realpath(p.argv0));
+  // Processes in domains that confine nothing come in too, whichever their parent: the set is known after the policy answers, so take every candidate now.
+  const unc0 = new Set(unconfinedLib.UNCONFINED_NAMES);
+  for (const p of facts.processes) if (p.argv0.startsWith('/') && p.type && unc0.has(p.type)) paths.add(realpath(p.argv0));
+  const labels = await expectedContexts(lp.pol, [...paths], 'file');
+  const typeOf = (ctx) => (ctx ? ctx.split(':')[2] : null);
+  const labelOf = (p) => typeOf(labels.get(p));
+  const types = [...new Set([...labels.values()].map(typeOf).filter(Boolean))];
+  // The policy: transitions out of init_t, whether init_t may run each type at all, and the domains that confine nothing.
+  const tr = await policyQuery.request({ op: 'transitions', bin: lp.bin, name: 'init_t', dir: 'out' });
+  if (tr.error) return { error: `Policy query failed: ${tr.error}`, policies, policy };
+  const av = types.length ? await policyQuery.request({ op: 'avc', bin: lp.bin, checks: types.map(t => ({ s: 'init_t', t, c: 'file', perms: ['execute', 'execute_no_trans'] })), bools: lp.pol.active ? runningBooleans() : {} }) : { results: [] };
+  const canExec = new Map();
+  for (const r of (av.results || [])) if (!r.unknown && r.perms) canExec.set(r.t, { execute: r.perms.execute && r.perms.execute.status === 'allowed', noTrans: r.perms.execute_no_trans && r.perms.execute_no_trans.status === 'allowed' });
+  const unconfined = new Set();
+  for (const n of ['unconfined_domain_type', ...unconfinedLib.UNCONFINED_NAMES]) {
+    const r = await policyQuery.request({ op: 'names', bin: lp.bin, names: [n] });
+    if (!r.error) for (const t of r.types || []) unconfined.add(t);
+  }
+  // Packages, a few rpm queries at a time.
+  const pkgs = new Map();
+  const list = [...paths].filter(exists);
+  for (let i = 0; i < list.length; i += 8) {
+    await Promise.all(list.slice(i, i + 8).map(async (p) => { const q = await execFileP('rpm', ['-qf', '--qf', '%{NAME}\n', '--', p]); if (!q.err) pkgs.set(p, q.stdout.trim().split('\n')[0] || null); }));
+  }
+  const out = unconfinedLib.assemble({ processes: facts.processes, units: facts.units, sockets: facts.sockets, labelOf, unconfined, exists, realpath, which, pkgOf: (p) => pkgs.get(p) || null,
+    startsAs: unconfinedLib.startsAsFrom(tr.transitions || [], (t) => canExec.get(t) || null) });
+  const locs = {};
+  for (const d of new Set(out.rows.flatMap(r => [r.policyDomain, ...r.hostDomains]).filter(Boolean))) { const l = sourceLocation(d, ['type']); if (l) locs[d] = l; }
+  return { ...out, policies, policy, locs, host: { hostname: facts.hostname, processes: facts.processes.length, units: facts.units.length, limits: facts.limits } };
+});
+
 /* ---------------- a host's local changes (semanage, semodule -i) ---------------- */
 
 const localmods = require('./localmods');

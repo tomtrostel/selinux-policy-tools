@@ -13,7 +13,7 @@ const path = require('path');
 const { detectToolchain } = require('../server/build');
 const { clipArgs } = require('./clip-args');
 
-const TESTS = ['build-tree', 'checks', 'diff', 'preview', 'filelabel', 'logins', 'loginctx', 'sessions', 'restricted', 'ctxfiles', 'denials', 'service', 'user', 'wrapper', 'package', 'levels', 'hostmods', 'profile', 'multi-tree', 'check-cli'];
+const TESTS = ['build-tree', 'checks', 'diff', 'preview', 'filelabel', 'logins', 'loginctx', 'sessions', 'restricted', 'ctxfiles', 'denials', 'service', 'user', 'wrapper', 'package', 'levels', 'hostmods', 'profile', 'multi-tree', 'check-cli', 'unconfined'];
 const BASELINE = path.join(__dirname, 'survey-baseline.json');
 
 const args = process.argv.slice(2);

@@ -1588,6 +1588,30 @@ Example on CLIP: turning `cron` off still links, but 22 optional blocks in
 turning `mta` off fails to link because `postfix` needs `mail_spool_t`.
 A preview is a full build of the changed tree (CLIP ~10 s).
 
+**What runs unconfined** (*SELinux: What Runs Unconfined…*): where a lockdown
+starts. The report lists this host's services (every `systemd` service unit,
+started or not) and the processes running now, and for each program:
+
+* the **label** its file gets under the chosen policy, flagged *generic* when
+  it is `bin_t`, `usr_t` or another type nothing singles the program out with;
+* the domain it **runs as** here (`ps -Z`) and the one the policy **would start
+  it in**: the `type_transition` from `init_t` on the program's type; *stays in
+  init_t* when there is none but `init_t` may execute it; *can't start it*
+  when `init_t` may not run that label at all (a service that would fail to
+  start under that policy);
+* its service units with their state, `User=` and `NoNewPrivileges`, its
+  package, and the ports it listens on (`ss -p` tells them only for processes
+  the server's user owns; everything else needs no root).
+
+Programs in a domain that confines nothing (`unconfined_service_t`,
+`initrc_t`, `init_t` itself, anything in `unconfined_domain_type`) come
+first; **New Service…** on a row opens the service editor with that program,
+and the program's name opens it in *File Labels*. Pick a tree build as the
+policy to see what the lockdown would do to this host's services: under a
+CLIP build this host's `chronyd` and `pcp` would stay in `init_t` or not
+start at all, since CLIP has no modules for them. A filter narrows every
+group.
+
 ## Checking in CI: `selinux-policy-check`
 
 Everything the extension checks after a build also runs without VS Code,
