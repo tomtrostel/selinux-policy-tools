@@ -72,8 +72,8 @@ check(by(st).exercise.state === 'done' && by(st).denials.state === 'todo' && /7 
 st = C.steps({ ...pushed, denials: { count: 0, since: 'today', error: 'auditd on the target suspended logging (low disk space)', text: '' } });
 check(by(st).denials.state === 'bad' && /suspended logging/.test(by(st).denials.text), 'an audit log that cannot be read: bad, with the reason');
 st = C.steps({ ...pushed, services: [{ real: '/usr/sbin/mydaemon', units: [unit], pids: [42], hostDomains: ['mydaemon_t'], listens: [], permissive: false }], exercise: { ran: [{ cmd: 'curl x', code: 0 }] } });
-check(by(st).verify.state === 'done' && /mydaemon_t is enforced on root@box, the service runs in it and nothing was denied since today/.test(by(st).verify.text) && st.filter(s => s.state === 'done').length === 8 && by(st).permissive.state === 'todo',
-  'enforced, running in its domain, nothing denied, pushed: verified (permissive is the only open step, as it should be)', states(st));
+check(by(st).verify.state === 'done' && /mydaemon_t is enforced on root@box, the service runs in it and nothing was denied since today/.test(by(st).verify.text) && st.filter(s => s.state === 'done').length === 9 && by(st).permissive.state === 'done' && /enforced again on root@box: the test run is over/.test(by(st).permissive.text),
+  'enforced, running in its domain, nothing denied, pushed: verified, and every step green (permissive counts as done once the run is over)', states(st));
 st = C.steps({ ...pushed, target: { ...target, mode: 'Permissive' }, services: [{ real: '/usr/sbin/mydaemon', units: [unit], pids: [42], hostDomains: ['mydaemon_t'], listens: [], permissive: false }] });
 check(by(st).permissive.state === 'done' && /permissive as a whole/.test(by(st).permissive.text) && by(st).verify.state === 'todo' && /Enforce mydaemon_t/.test(by(st).verify.text), 'a permissive host: the domain counts as permissive; not verified');
 

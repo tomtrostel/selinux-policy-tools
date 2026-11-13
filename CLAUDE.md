@@ -1964,7 +1964,11 @@ so far covered by the e2e tests only.
    nothing denied), status since the last verify; the target left as
    found). Found: a denial provoked earlier the same day (target-e2e's
    chronyd_t on /etc/shadow) kept "today" at 1 denial, hence the
-   since-the-last-verify window.
+   since-the-last-verify window. User feedback on httpd (2026-11-12): the
+   client dropped the exercise results on the way to confineStatus (fixed),
+   and after a successful verify every step should be green: the
+   permissive step is done once verify is done (text "enforced again … the
+   test run is over"), with Make permissive offered for another round.
 
 27. **Labels on the host** (done, unreleased; idea 3: "ok do 3 and 4").
    `server/labels.js` (pure): coverageScript(programs, dirs, paths) (`rpm

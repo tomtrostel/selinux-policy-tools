@@ -102,8 +102,12 @@ function steps(facts) {
   const clean = d && !d.error && !d.note && d.count === 0;
   const runs = D && doms.includes(D);
   if (!m || !t) add('verify', 'skip', 'Needs a target.');
-  else if (enforced && runs && clean && p && p.state === 'same') add('verify', 'done', `${D} is enforced on ${t.id}, the service runs in it and nothing was denied since ${d.since}.`);
-  else add('verify', 'todo', [p && p.state !== 'same' ? 'push the build' : null, !runs ? 'start the service in its domain' : null, !enforced ? `enforce ${D}` : null, !clean ? 'get the denials to zero' : null].filter(Boolean).join(', ').replace(/^./, c => c.toUpperCase()) + '. Enforce and verify does it in one go: enforce the domain, restart, exercise, read what was denied.');
+  else if (enforced && runs && clean && p && p.state === 'same') {
+    add('verify', 'done', `${D} is enforced on ${t.id}, the service runs in it and nothing was denied since ${d.since}.`);
+    // The test run is over and the domain is enforced again: that is what the permissive step was for.
+    const ps = out.find(s => s.id === 'permissive');
+    if (ps && ps.state === 'todo') { ps.state = 'done'; ps.text = `${D} is enforced again on ${t.id}: the test run is over. Make it permissive again to test more changes.`; }
+  } else add('verify', 'todo', [p && p.state !== 'same' ? 'push the build' : null, !runs ? 'start the service in its domain' : null, !enforced ? `enforce ${D}` : null, !clean ? 'get the denials to zero' : null].filter(Boolean).join(', ').replace(/^./, c => c.toUpperCase()) + '. Enforce and verify does it in one go: enforce the domain, restart, exercise, read what was denied.');
   return out;
 }
 

@@ -35,7 +35,9 @@
   Requests `selinux/confineStatus`, `selinux/confineExercise`,
   `selinux/confineVerify`; `selinux/targetDenials` takes `since: 'verify'`.
   (The panel's exercise results reach the status request, so the step
-  turns green once the commands ran; found by the user on httpd.)
+  turns green once the commands ran; found by the user on httpd. Once
+  enforce-and-verify succeeds every step is done, the permissive one
+  included: the test run is over, and its button offers another one.)
 * **Service editor: Labels on the host.** For the module's program, on this
   host or a connected target host (as root over ssh): the package's files
   the policy leaves under a generic label, each with the file kind that

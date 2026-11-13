@@ -67,6 +67,7 @@
       case 'permissive':
         if (step.state === 'todo' && D) out.push(btn('Make permissive', `semanage permissive -a ${D} on ${target}: its denials are logged, nothing is stopped`, () => run('permissive', { domain: D, on: true }), true));
         else if (step.state === 'done' && r.target && (r.target.permissive || []).includes(D)) out.push(btn('Enforce again', `semanage permissive -d ${D} on ${target}`, () => run('permissive', { domain: D, on: false })));
+        else if (step.state === 'done' && D && r.target && r.target.mode !== 'Permissive') out.push(btn('Make permissive', `semanage permissive -a ${D} on ${target}: for another test run after more changes`, () => run('permissive', { domain: D, on: true })));
         break;
       case 'running':
         if (r.units && r.units.length) out.push(btn(`Restart ${r.units.join(', ')}`, `systemctl restart on ${target}, so the service starts under the pushed policy`, () => run('restart', { units: r.units }), step.state === 'todo'));
