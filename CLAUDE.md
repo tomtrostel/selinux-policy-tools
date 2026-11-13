@@ -1915,6 +1915,57 @@ so far covered by the e2e tests only.
    root@localhost with ports: udp 323 → chronyd_port_t, tcp 22 → ssh_port_t
    + net_bind_service; `TARGET`/`TARGET_PASS_FILE` as target-e2e).
 
+26. **Confinement checklist** (done, unreleased; idea 2 of the five: "ok lets
+   do number 2"). `server/confine.js` (pure): steps(facts) → nine steps
+   {id, title, state done|todo|bad|unknown|skip, text}: module (serviceModules
+   entry: name, domain, files, layer, standalone), build (the tree's last
+   build in a tree workspace else the module's; stale = module files newer
+   than res.startedAt; the first error), target (connected, root), push
+   (the module's state in targetPushPlan: same/differs/new; plan errors are
+   the step's text; absent → unknown "part of base?"), permissive (the
+   target as a whole, or the domain in facts.permissive), running (the
+   module's rows of unconfinedReport(`target:<id>`, {host, since}): units,
+   pids, hostDomains, listens → done when a process runs in the domain,
+   todo when in another domain or not running, unknown when no program is
+   found), exercise (the webview's last run, passed back as `exercise`),
+   denials (the rows' denial counts since the window; auditd notes → bad),
+   verify (done when enforced + running in the domain + 0 denials + pushed
+   same). verdict(result) for a verify run. Server: confineModule/
+   confineBuild, targetSetPermissive/targetRestartUnits/targetExercise/
+   targetDomainDenials (shared with the target handlers' logic), requests
+   `selinux/confineStatus` {module, target, since, exercise} (→ facts +
+   steps + units + programs; ~19 s on RHEL 9 with 435 modules: the push
+   plan's store checksums + the unconfined report), `selinux/confineExercise`
+   {target, commands} (one `targetHosts.run` per line, # comments and blanks
+   skipped, 50 max, last 20 output lines each), `selinux/confineVerify`
+   {module, target, units, commands, programs} (the target's `date +%s` as
+   the epoch, e.lastVerify, enforce if permissive, restart, exercise, 1.5 s,
+   denials of the domain since the epoch (recordsSince), fresh
+   hostProcessFacts → running {pids, domains}); targetDenialsText since
+   'verify' like 'push'. Client: showConfine(context, module, target)
+   (confinePanels per module; REPORT_CSS factored out of showReport and
+   shared; exercise text in workspaceState `selinux.confine.exercise.<mod>`;
+   messages load/build/connect/editService/newService/open/push (targetPush
+   of that module alone, transcript to SELinux Target)/permissive/restart/
+   exercise/saveExercise/applyDenials (showServiceEditor with learnText)/
+   verify), command selinux.confineService (module name, explorer node or a
+   pick), FEATURES "Confine a Service…", targetsChanged and build
+   notifications reach the panels; the service editor's bar button
+   Checklist… (hidden for new services and users); Unconfined view rows
+   Checklist… (with the view's host). Webview media/confine.js: Target and
+   Denials-since selects (verify window offered after a verify and chosen
+   then), the steps as cards with marks and actions, the exercise textarea
+   with results, the verify verdict with problems, denials and command
+   outputs. Tests: test/confine-test.js (npm test: every state of every
+   step, verdicts), test/confine-e2e.js (melody, RHEL 9 tree + spec,
+   root@localhost, chronyd: steps before/after the build and with the
+   target, permissive on, exercise with a failing command, enforce and
+   verify (chronyd_t enforced, chronyd.service restarted, chronyc answers,
+   nothing denied), status since the last verify; the target left as
+   found). Found: a denial provoked earlier the same day (target-e2e's
+   chronyd_t on /etc/shadow) kept "today" at 1 denial, hence the
+   since-the-last-verify window.
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -2107,6 +2158,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
 - `server/prefill.js`: prefill the service form from a program on a host (the facts script, its parser, the draft of a model from package, unit, sockets, D-Bus/cron/xinetd and libraries).
+- `server/confine.js`: the confinement checklist (nine steps with states from the gathered facts, the verdict of an enforce-and-verify run); `media/confine.js` its webview.
 - `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
 - `server/booleans.js`: booleans (booleans.conf parsing, the rows from declarations / conf / compiled / running values, setting a value); `media/booleans.js` the Booleans webview.
 - `server/target.js`: target hosts, pure (host spec, ssh arguments, the askpass helper, the facts script and its parsers, the mirror command); `server/targethost.js` the connections (ssh ControlMaster per target, commands over it, the mirrored /etc/selinux).
@@ -2244,6 +2296,9 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
   (`npm run test:prefill-e2e`, melody; optional tree arg; env TARGET and
   TARGET_PASS_FILE for the target part; not in clip-all): prefill from the
   host.
+- `test/confine-test.js` (in `npm test`) and `test/confine-e2e.js`
+  (`npm run test:confine-e2e`, melody; `[tree [spec [variant]]]`, env
+  TARGET and TARGET_PASS_FILE; not in clip-all): the confinement checklist.
 - `test/evidence-test.js` (in `npm test`): the evidence report (its e2e is
   check-cli-e2e's `--report`).
 - `test/booleans-test.js` (in `npm test`) and `test/booleans-e2e.js`

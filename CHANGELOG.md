@@ -19,6 +19,21 @@
   nothing already set is removed. *New Service…* from the Unconfined view
   and the denial assistant does it at once. Request
   `selinux/servicePrefill`.
+* **Confinement checklist** (*SELinux: Confine a Service…*, *Checklist…* in
+  the service editor's bar and on the rows of What Runs Unconfined): one
+  panel per service module with the loop as nine steps, each with its state
+  and action: policy written, built (sources changed since the build are
+  noticed), target host connected, pushed to the target (same / differs /
+  new, from the push plan), permissive for the test run (`semanage
+  permissive` on the target), running in its domain (processes, domain,
+  ports on the target), exercised (commands kept per service in the
+  workspace, run on the target as root, output shown), denials read into
+  the form (since today, the last push or the last verify; *Apply to the
+  form…* opens the service editor with them), and *Enforce and verify*: the
+  domain enforced again, the services restarted, the exercise commands run,
+  the denials since then and the service's domain read, as one verdict.
+  Requests `selinux/confineStatus`, `selinux/confineExercise`,
+  `selinux/confineVerify`; `selinux/targetDenials` takes `since: 'verify'`.
 * **Service plan: paths another module labels.** A new or edited module
   whose `.fc` labels a path another module's `.fc` already labels (same
   spec and file flag, another type) is refused with that module and line;

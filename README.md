@@ -343,6 +343,20 @@ writes. It offers what the existing service modules use (taken from the
   *New Service…* from the Unconfined view and the denial assistant does
   this at once for the program chosen there. A path another module's `.fc`
   already labels is refused by the plan (setfiles would refuse the build).
+* **Checklist** (*Checklist…* in the editor's bar, *SELinux: Confine a
+  Service…*, or *Checklist…* on a row of What Runs Unconfined): the loop from
+  a written module to a service running enforced on a test host with nothing
+  denied, as nine steps with their state and the action that moves each on:
+  policy written, built (sources changed since?), target host connected,
+  pushed to the target (the build's module the same as, differing from, or
+  new to the target's store), permissive for the test run, running in its
+  domain (the processes, their domain, the ports), exercised (commands you
+  keep per service, run on the target as root, with their output), denials
+  read into the form (*Apply to the form…* opens the editor with them), and
+  **Enforce and verify**: the domain enforced again, the services restarted,
+  the exercise commands run, then the denials since then and the domain the
+  service runs in, as one verdict. Denials can be read since the last push
+  or since the last verify.
 * **From a permissive run:** with permissive on, run the service through
   its paces, then read what it was denied (this host's log with `sudo
   ausearch`, a file, or pasted text) and **Apply to the form**. Each denial

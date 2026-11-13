@@ -3624,19 +3624,24 @@ const shqAll = (paths) => paths.map(targetLib.shq).join(' ');
 async function targetDenialsText(id, since) {
   const e = targetHosts.get(id);
   if (!e || e.state !== 'connected') return { error: `Not connected to ${id || 'a target host'}.` };
-  // 'push' = since the last push to this target: a window covering it, then only the events stamped after it.
+  // 'push' = since the last push to this target, 'verify' = since the last enforce-and-verify there: a window
+  // covering it, then only the events stamped after it.
   let epoch = null;
   let ts = /^[\w-]+$/.test(since || '') ? since : 'recent';
   if (since === 'push') {
     if (!e.lastPush || !e.lastPush.at) return { error: `Nothing was pushed to ${id} yet.`, since };
     epoch = e.lastPush.at;
     ts = targetLib.windowFor((Date.now() - e.lastPush.atLocal) / 1000 + 5);
+  } else if (since === 'verify') {
+    if (!e.lastVerify || !e.lastVerify.at) return { error: `Nothing was verified on ${id} yet.`, since };
+    epoch = e.lastVerify.at;
+    ts = targetLib.windowFor((Date.now() - e.lastVerify.atLocal) / 1000 + 5);
   }
   const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(ts, epoch), timeout: 120000 });
   if (r.lost) return { error: r.stderr.trim() || `Connection to ${id} lost.`, since: ts };
   const d = targetLib.parseDenialsOutput(r.stdout);
   if (d.error) return { error: `${id}: ${d.error}`, mode: d.mode, since: ts };
-  if (epoch) { d.text = targetLib.recordsSince(d.text, epoch); d.count = d.text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length; ts = 'the last push'; }
+  if (epoch) { d.text = targetLib.recordsSince(d.text, epoch); d.count = d.text.split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l)).length; ts = since === 'verify' ? 'the last verify' : 'the last push'; }
   if (d.mode && e.facts && e.facts.mode !== d.mode) { e.facts.mode = d.mode; targetHosts.onChange(); }
   const where = `${ts}${d.mode ? `, ${d.mode.toLowerCase()}` : ''}`;
   return { text: d.text, count: d.count, mode: d.mode, id, since: ts, note: d.note || null, status: `${d.count ? `Read ${d.count} records from ${id} (${where}).` : `No denials logged on ${id} (${where}).`}${d.note ? ` ${d.note}` : ''}` };
@@ -3816,6 +3821,143 @@ connection.onRequest('selinux/targetPermissive', async ({ id, domain, on } = {})
 
 const execFileP = (cmd, args) => new Promise((resolve) => {
   require('child_process').execFile(cmd, args, { maxBuffer: 16 << 20 }, (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') }));
+});
+
+/* ----- the confinement checklist (server/confine.js) ----- */
+const confineLib = require('./confine');
+
+/** The service module named: { name, domain, files, layer, standalone } or null. */
+function confineModule(mod) {
+  const m = serviceModules().find(x => x.module === mod);
+  if (!m || !m.domains.length) return null;
+  return { name: m.module, domain: m.domains[0].domain, files: m.files, layer: m.layer || null, standalone: !!(m.files.te && isStandaloneModule(m.files.te)) };
+}
+/** The build the module would be pushed from (the tree's in a tree workspace, else the module's own), and whether its sources changed since. */
+function confineBuild(m) {
+  const tree = !!treeRoot && !usingDevel;
+  const key = tree ? treeRoot : m.files.te;
+  const res = key && lastBuild.get(key);
+  if (!res) return null;
+  const at = res.startedAt || null;
+  const stale = [];
+  if (at) for (const f of Object.values(m.files)) { try { if (f && fs.statSync(f).mtimeMs > at) stale.push(path.basename(f)); } catch { /* gone */ } }
+  const err = res.ok ? null : ((res.diagnostics || []).find(d => d.severity === 'error' || d.severity === 1) || {}).msg || null;
+  return { kind: tree ? 'tree' : 'module', ok: !!res.ok, at, stale, error: err, packaged: tree || !!(res.workDir && fs.existsSync(path.join(res.workDir, `${res.module}.pp`))) };
+}
+/** semanage permissive on the target for a domain → { ok, error }. Updates the target's facts. */
+async function targetSetPermissive(e, id, domain, on) {
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.permissiveScript(domain, !!on), timeout: 300000 });
+  const parts = r.stdout.split(/^### rc (\d+)$/m);
+  const rc = parts.length >= 3 ? +parts[1] : null;
+  if (rc !== 0) return { ok: false, error: `semanage permissive failed on ${id}: ${(parts[0] || r.stdout).trim().split('\n').filter(Boolean).slice(-1)[0] || (r.stderr || '').trim().split('\n')[0] || `exit ${rc == null ? '?' : rc}`}` };
+  if (e.facts) { e.facts.permissive = targetLib.parsePermissive(parts[2] || ''); targetHosts.onChange(); }
+  return { ok: true };
+}
+/** Restart units on the target → { ok, units: [{ unit, state }], error, out }. */
+async function targetRestartUnits(id, units) {
+  const list = units.filter(u => /^[\w@.:-]+$/.test(u));
+  if (!list.length) return { ok: true, units: [], out: '' };
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.restartScript(list), timeout: 300000 });
+  const states = [];
+  let rc = null;
+  for (const line of r.stdout.split('\n')) { const m = /^### rc (\d+)$/.exec(line); if (m) { rc = +m[1]; continue; } const f = line.split('\t'); if (f.length === 2 && list.includes(f[0])) states.push({ unit: f[0], state: f[1] }); }
+  targetProcCache.delete(id);
+  return { ok: rc === 0 && states.every(s => s.state === 'active'), units: states, out: r.stdout.split('\n').filter(l => !/^### rc|\t/.test(l)).join('\n').trim(), error: r.lost ? `Connection to ${id} lost.` : null };
+}
+/** Run commands on the target one after the other → [{ cmd, code, out (last 20 lines), ms }]. */
+async function targetExercise(id, commands) {
+  const ran = [];
+  for (const cmd of commands.map(c => String(c).trim()).filter(c => c && !c.startsWith('#')).slice(0, 50)) {
+    const t0 = Date.now();
+    const r = await targetHosts.run(id, cmd, { timeout: 120000 });
+    ran.push({ cmd, code: r.lost ? 255 : r.code, out: `${r.stdout}${r.stderr ? `\n${r.stderr}` : ''}`.trim().split('\n').slice(-20).join('\n'), ms: Date.now() - t0 });
+    if (r.lost) break;
+  }
+  targetProcCache.delete(id);
+  return ran;
+}
+/** The target's audit records of a domain since an epoch of the target's clock → { count, text, error, note }. */
+async function targetDomainDenials(id, domain, epoch, ageSeconds) {
+  const r = await targetHosts.run(id, 'sh -s', { input: targetLib.denialsScript(targetLib.windowFor(ageSeconds + 5), epoch), timeout: 120000 });
+  if (r.lost) return { count: 0, text: '', error: `Connection to ${id} lost.` };
+  const d = targetLib.parseDenialsOutput(r.stdout);
+  if (d.error) return { count: 0, text: '', error: `${id}: ${d.error}` };
+  const re = new RegExp(`\\b(scontext|oldcontext)=\\S*:${domain}:`);
+  const lines = targetLib.recordsSince(d.text, epoch).split('\n').filter(l => /^type=(AVC|USER_AVC|SELINUX_ERR)\b/.test(l) && re.test(l));
+  return { count: lines.length, text: lines.join('\n'), error: null, note: d.note || null };
+}
+
+/**
+ * The checklist for a service module on a target ({ module, target, since }): the facts (module, build,
+ * target, push state, its programs on the target with their denials) and the steps server/confine.js
+ * makes of them. → { module, build, target, push, services, denials, steps, units, programs }.
+ */
+connection.onRequest('selinux/confineStatus', async ({ module: mod, target, since, exercise } = {}) => {
+  await indexing;
+  const m = confineModule(mod);
+  const facts = { module: m, build: m ? confineBuild(m) : null, target: null, push: null, services: [], denials: null, exercise: exercise && Array.isArray(exercise.ran) ? { ran: exercise.ran.map(x => ({ cmd: String(x.cmd || ''), code: +x.code || 0 })), at: +exercise.at || null } : null };
+  const e = target && targetHosts.get(target);
+  if (m && e && e.state === 'connected') {
+    const f = e.facts || {};
+    facts.target = { id: target, mode: f.mode || null, root: !!f.root, permissive: f.permissive || [] };
+    if (f.root && facts.build && facts.build.ok) {
+      const { plan } = await targetPushPlan(target);
+      if (plan.error) facts.push = { state: null, error: plan.error, lastPush: plan.lastPush || null };
+      else { const x = plan.modules.find(y => y.name === m.name) || (plan.modules.find(y => y.name === 'base') && !plan.modules.some(y => y.name === m.name) ? null : null); facts.push = { state: x ? x.state : null, error: null, lastPush: plan.lastPush || null }; }
+    }
+    // The module's programs on the target, judged by the target's own policy (what it runs now), with the denials since `since`.
+    const un = await unconfinedReport(`target:${target}`, { host: target, since: since || 'today' });
+    if (un.error) facts.denials = { count: 0, since: since || 'today', error: un.error, text: '' };
+    else {
+      const mine = (un.rows || []).filter(r => r.module === m.name || r.policyDomain === m.domain || (r.hostDomains || []).includes(m.domain));
+      facts.services = mine.map(r => ({ real: r.real, units: (r.units || []).map(u => ({ id: u.id, active: u.active })), pids: r.pids || [], hostDomains: r.hostDomains || [], listens: r.listens || [], permissive: !!r.permissive }));
+      const den = un.host && un.host.denials;
+      facts.denials = den ? { count: mine.reduce((n, r) => n + (r.denials ? r.denials.count : 0), 0), since: den.since || since || 'today', error: den.error || null, text: mine.map(r => r.denialText || '').filter(Boolean).join('\n') } : null;
+    }
+  }
+  return { ...facts, steps: confineLib.steps(facts), units: [...new Set(facts.services.flatMap(r => r.units.map(u => u.id)))], programs: facts.services.map(r => r.real) };
+});
+
+/** Run the exercise commands on the target → { ran, at } | { error }. */
+connection.onRequest('selinux/confineExercise', async ({ target, commands = [] } = {}) => {
+  const e = targetHosts.get(target);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${target || 'a target host'}.` };
+  const ran = await targetExercise(target, Array.isArray(commands) ? commands : []);
+  if (!ran.length) return { error: 'No commands to run (one per line; # starts a comment).' };
+  return { ran, at: Date.now() };
+});
+
+/**
+ * Enforce and verify ({ module, target, units, commands, programs }): the domain enforced again on the target
+ * (semanage permissive -d), the units restarted, the exercise commands run, then the denials of the domain
+ * since the start and which domain the programs run in. → { ok, verdict, enforce, restart, exercise,
+ * denials, running, domain, target, units } | { error }.
+ */
+connection.onRequest('selinux/confineVerify', async ({ module: mod, target, units = [], commands = [], programs = [] } = {}) => {
+  await indexing;
+  const m = confineModule(mod);
+  if (!m) return { error: `${mod} is not a service module here.` };
+  const e = targetHosts.get(target);
+  if (!e || e.state !== 'connected') return { error: `Not connected to ${target || 'a target host'}.` };
+  if (!(e.facts && e.facts.root)) return { error: `Verifying needs root on ${target}.` };
+  const t0 = Date.now();
+  const clock = await targetHosts.run(target, 'date +%s', { timeout: 30000 });
+  if (clock.lost) return { error: `Connection to ${target} lost.` };
+  const epoch = parseInt(clock.stdout, 10) || Math.floor(t0 / 1000);
+  e.lastVerify = { module: m.name, at: epoch, atLocal: t0 };
+  const out = { domain: m.domain, target, units: (Array.isArray(units) ? units : []).filter(u => /^[\w@.:-]+$/.test(u)), enforce: null, restart: null, exercise: [], denials: null, running: null };
+  out.enforce = (e.facts.permissive || []).includes(m.domain) ? await targetSetPermissive(e, target, m.domain, false) : { ok: true, already: true };
+  out.restart = await targetRestartUnits(target, out.units);
+  out.exercise = await targetExercise(target, Array.isArray(commands) ? commands : []);
+  await new Promise(r => setTimeout(r, 1500));
+  out.denials = await targetDomainDenials(target, m.domain, epoch, (Date.now() - t0) / 1000);
+  targetProcCache.delete(target);
+  const hf = await hostProcessFacts(target);
+  const progs = new Set((Array.isArray(programs) ? programs : []).filter(p => typeof p === 'string'));
+  const procs = (hf.processes || []).filter(p => progs.has((p.args || '').split(' ')[0]) || p.type === m.domain);
+  out.running = { pids: procs.map(p => p.pid), domains: [...new Set(procs.map(p => p.type).filter(Boolean))] };
+  const v = confineLib.verdict(out);
+  return { ...out, ok: v.ok, verdict: v, ms: Date.now() - t0 };
 });
 
 /**

@@ -61,6 +61,7 @@
     const permissive = r.permissive ? h('span', { class: 'warn small', title: 'This domain is permissive on the host: its denials are logged, nothing is stopped' }, ' permissive') : null;
     const fix = d && r.module ? h('button', { class: 'primary', title: `Open the module ${r.module} in the service editor with these ${d.count} denials in its "From a permissive run" section: each becomes a setting of the form`, onclick: () => vscode.postMessage({ cmd: 'fixService', module: r.module, domain: d.domains[0], text: r.denialText || '', status: `${plural(d.count, 'denial')} of ${d.domains.join(', ')} read from ${where} (${result.host.denials.since}).` }) }, 'Fix in Service Editor…')
       : r.module ? h('button', { title: `Open the module ${r.module} in the service editor`, onclick: () => vscode.postMessage({ cmd: 'fixService', module: r.module, domain: null, text: '', status: '' }) }, 'Edit Service…') : null;
+    const checklist = r.module ? h('button', { title: `The confinement checklist for ${r.module}: built, pushed to the target, permissive, running in its domain, exercised, denials into the form, enforced and verified`, onclick: () => vscode.postMessage({ cmd: 'confine', module: r.module, target: onTarget ? result.host.target : null }) }, 'Checklist…') : null;
     const dom = r.hostDomains[0] || r.policyDomain;
     const perm = onTarget && dom && !(result.unconfined || []).includes(dom) ? h('button', { class: 'link small', title: r.permissive ? `semanage permissive -d ${dom} on ${where}: the domain is enforced again` : `semanage permissive -a ${dom} on ${where}: its denials are logged, nothing is stopped (for a test run)`,
       onclick: () => vscode.postMessage({ cmd: 'permissive', target: result.host.target, domain: dom, on: !r.permissive }) }, r.permissive ? 'enforce again' : 'make permissive') : null;
@@ -70,7 +71,7 @@
       h('td', {}, runs, permissive, perm ? [' ', perm] : null, r.differs ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'policy: '), would) : null, !r.hostDomains.length && r.type ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'would start as '), would) : null, denialsCell),
       h('td', {}, units.length ? units : h('span', { class: 'muted small' }, r.pids.length ? `pid ${r.pids.slice(0, 3).join(', ')}${r.users.length ? ` (${r.users.join(', ')})` : ''}` : '')),
       h('td', {}, r.listens.length ? r.listens.map(l => `${l.proto} ${l.port}`).join(', ') : ''),
-      h('td', {}, fix, fix ? ' ' : null, h('button', { title: `Confine ${r.real}: open the service editor with it as the program`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: r.real, host: result && result.host ? result.host.target || '' : '' }) }, 'New Service…')));
+      h('td', {}, fix, fix ? ' ' : null, checklist, checklist ? ' ' : null, h('button', { title: `Confine ${r.real}: open the service editor with it as the program`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: r.real, host: result && result.host ? result.host.target || '' : '' }) }, 'New Service…')));
   }
 
   function table(rows) {

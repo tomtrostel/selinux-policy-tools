@@ -218,6 +218,11 @@
         "icon": "$(edit)"
       },
       {
+        "command": "selinux.confineService",
+        "title": "SELinux: Confine a Service…",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "selinux.transitionGraph",
         "title": "SELinux: Show Domain Transition Graph",
         "icon": "$(type-hierarchy)"
@@ -1128,7 +1133,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/localmods-test.js && node test/loginctx-test.js && node test/sessions-test.js && node test/ctxfiles-test.js && node test/kickstart-test.js && node test/check-cli-test.js && node test/unconfined-test.js && node test/learn-test.js && node test/prefill-test.js && node test/evidence-test.js && node test/booleans-test.js && node test/target-test.js && node test/walkthrough-test.js",
+    "test": "node test/lsp-e2e.js && node test/ifelse-test.js && node test/ifdef-names-test.js && node test/service-test.js && node test/denials-test.js && node test/logins-test.js && node test/user-test.js && node test/filelabel-test.js && node test/wrapper-test.js && node test/specconfig-test.js && node test/levels-test.js && node test/webview-transitions-test.js && node test/diagnostics-test.js && node test/checks-test.js && node test/build-test.js && node test/explain-test.js && node test/policy-query-test.js && node test/client-test.js && node test/localmods-test.js && node test/loginctx-test.js && node test/sessions-test.js && node test/ctxfiles-test.js && node test/kickstart-test.js && node test/check-cli-test.js && node test/unconfined-test.js && node test/learn-test.js && node test/prefill-test.js && node test/confine-test.js && node test/evidence-test.js && node test/booleans-test.js && node test/target-test.js && node test/walkthrough-test.js",
     "check": "node bin/selinux-policy-check.js",
     "test:service": "node test/service-test.js",
     "test:service-e2e": "node test/service-e2e.js",
@@ -1170,6 +1175,7 @@
     "test:unconfined-e2e": "node test/unconfined-e2e.js",
     "test:learn-e2e": "node test/learn-e2e.js",
     "test:prefill-e2e": "node test/prefill-e2e.js",
+    "test:confine-e2e": "node test/confine-e2e.js",
     "test:booleans-e2e": "node test/booleans-e2e.js",
     "test:target-e2e": "node test/target-e2e.js",
     "test:target-push-e2e": "node test/target-push-e2e.js"

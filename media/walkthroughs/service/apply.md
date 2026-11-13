@@ -42,5 +42,11 @@ form has no place for is listed with the rule it would need. Review, apply,
 test again; when a full test run logs nothing, turn permissive off. For a
 single puzzling denial, the walkthrough **Fix a denial the right way**.
 
+**The checklist** (*Checklist…* in the editor's bar) keeps the whole loop in
+view when a test host is connected (*SELinux: Connect to Target Host…*):
+built, pushed to the target, permissive, running in its domain, exercised
+with commands you keep per service, denials into the form, and **Enforce
+and verify** at the end.
+
 Resist `audit2allow -M`: it turns every denial into a raw rule, including
 ones that point to a labeling mistake or that should be a boolean.

@@ -322,6 +322,7 @@ function activate(context) {
       if (denialPanel) denialPanel.webview.postMessage({ cmd: 'built', ok: p.ok, module: p.module });
       if (loginsPanel) loginsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (filePanel) filePanel.webview.postMessage({ cmd: 'built', ok: p.ok });
+      for (const cp of confinePanels.values()) cp.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (levelsPanel) levelsPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
       for (const rp of reportPanels.values()) rp.webview.postMessage({ cmd: 'built', ok: p.ok });
       if (hostPanel) hostPanel.webview.postMessage({ cmd: 'built', ok: p.ok });
@@ -535,6 +536,11 @@ function activate(context) {
       t.sendText(cmd);
     }),
     vscode.commands.registerCommand('selinux.newService', () => showServiceEditor(context, null)),
+    vscode.commands.registerCommand('selinux.confineService', async (arg) => {
+      // A module name (from a view or another panel), a Policy Explorer module node, or a pick.
+      const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
+      if (name) showConfine(context, name);
+    }),
     vscode.commands.registerCommand('selinux.editService', async (arg) => {
       // From the Policy Explorer (module node), a module name, or a pick.
       const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
@@ -920,6 +926,7 @@ ${EDITOR_CSS}</style></head><body>
 <div id="bar">
   <span id="title"></span>
   <button id="apply" disabled>Apply</button>
+  <button id="checklist" hidden title="The confinement checklist for this service: built, pushed to a target host, permissive, running in its domain, exercised, denials into this form, enforced and verified">Checklist…</button>
   <span id="status"></span>
   <span id="stale" hidden>The module's files changed. <button id="reload" title="Read the module's files again and start over from them">Reload</button> (discards the edits here)</span>
 </div>
@@ -958,6 +965,7 @@ ${EDITOR_CSS}</style></head><body>
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
       else if (m.cmd === 'learn') post({ cmd: 'learned', result: await client.sendRequest('selinux/serviceLearn', { text: m.text, model: m.model, module: current.module, standalone: !!m.standalone }) });
       else if (m.cmd === 'prefill') post({ cmd: 'prefilled', result: await client.sendRequest('selinux/servicePrefill', { exec: m.exec, host: m.host || '', model: m.model, standalone: !!m.standalone }) });
+      else if (m.cmd === 'checklist') { if (current.module) showConfine(context, current.module); }
       else if (m.cmd === 'learnAusearch') { if (m.target) post({ cmd: 'learnLog', text: null, status: `Reading the log of ${m.target}…` }); readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }), m.target || null); }
       else if (m.cmd === 'learnFile') {
         const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Read', title: 'Audit log of the permissive run', defaultUri: vscode.Uri.file(require('os').homedir()) });
@@ -2031,6 +2039,7 @@ const FEATURES = [
     ['selinux.newService', 'add', 'New Service…', 'Confine a program: its domain, files, network and rights, in a form'],
     ['selinux.showUnconfined', 'unlock', 'What Runs Unconfined…', 'This host\'s services and processes without a domain of their own, under the running policy or a tree build; each a click from a new service module'],
     ['selinux.editService', 'edit', 'Edit Service…', 'Open an existing service module in the form'],
+    ['selinux.confineService', 'checklist', 'Confine a Service…', 'The checklist for one service: built, pushed to a target, permissive, running in its domain, exercised, denials into the form, enforced and verified'],
     ['selinux.newUser', 'person-add', 'New User…', 'An SELinux user and role, its logins and ways in'],
     ['selinux.editUser', 'account', 'Edit User…', 'Open an existing user\'s role module in the form'],
     ['selinux.newWrapper', 'lock', 'New Wrapped Programs…', 'Let a chroot\'s users run programs only through wrappers: protected copies that keep the programs\' own domains'],
@@ -2374,6 +2383,7 @@ function targetsChanged(p) {
   refreshDenialPolicies();
   for (const sp of servicePanels.values()) sp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
   for (const rp of reportPanels.values()) rp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
+  for (const cp of confinePanels.values()) cp.webview.postMessage({ cmd: 'targets', targets: connectedTargets() });
   if (!targetStatus) return;
   const live = targets.filter(t => t.state === 'connected');
   const t = live[0] || targets.find(x => x.state === 'connecting') || targets.find(x => x.state === 'lost' || x.state === 'error');
@@ -2601,18 +2611,8 @@ function loginsChanged(context, p) {
 }
 /** Context Files: do the contexts in file_contexts and the other context files load (server/ctxfiles.js). */
 function showContextFiles(context) { showReport(context, 'selinuxContextFiles'); }
-function showReport(context, viewType) {
-  const def = REPORTS[viewType];
-  if (reportPanels.has(viewType)) { reportPanels.get(viewType).reveal(); return; }
-  const panel = vscode.window.createWebviewPanel(viewType, def.title, vscode.ViewColumn.Active,
-    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
-  reportPanels.set(viewType, panel);
-  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
-  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', def.script));
-  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
+/** The style of the report panels (Login Contexts, Context Files, Unconfined Programs, Booleans) and the checklist. */
+const REPORT_CSS = `  body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; }
   #bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 14px;
     background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-panel-border); }
   #title { font-weight: 600; font-size: 1.1em; }
@@ -2651,7 +2651,116 @@ function showReport(context, viewType) {
   .badge.new { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
   .badge.quiet { border-color: var(--vscode-editorWarning-foreground); color: var(--vscode-editorWarning-foreground); }
   .cause { margin: 3px 0; }
+`;
+
+const confinePanels = new Map(); // module → panel
+
+/**
+ * The confinement checklist for one service module (media/confine.js, server/confine.js): the steps from a
+ * written module to a service running enforced on a target host with nothing denied, each with its action.
+ * The exercise commands are kept per module in the workspace state.
+ */
+function showConfine(context, mod, target) {
+  if (confinePanels.has(mod)) { const p = confinePanels.get(mod); p.reveal(); if (target) p.webview.postMessage({ cmd: 'target', target }); return; }
+  const panel = vscode.window.createWebviewPanel('selinuxConfine', `Confine ${mod}`, vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  confinePanels.set(mod, panel);
+  const stateKey = `selinux.confine.exercise.${mod}`;
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'confine.js'));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+${REPORT_CSS}
+  textarea { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); font-family: var(--vscode-editor-font-family); width: 100%; max-width: 60em; box-sizing: border-box; }
+  .step { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--vscode-panel-border); border-left-width: 4px; border-radius: 4px; padding: 8px 12px; margin: 0 0 8px; max-width: 80em; }
+  .step.done { border-left-color: var(--vscode-testing-iconPassed, #3fb950); }
+  .step.todo { border-left-color: var(--vscode-focusBorder); }
+  .step.bad { border-left-color: var(--vscode-errorForeground); }
+  .step.unknown, .step.skip { border-left-color: var(--vscode-panel-border); opacity: .9; }
+  .step.skip { opacity: .6; }
+  .mark { font-size: 1.2em; width: 1.3em; text-align: center; flex: none; }
+  .step.done .mark { color: var(--vscode-testing-iconPassed, #3fb950); }
+  .step.bad .mark { color: var(--vscode-errorForeground); }
+  .stitle { font-weight: 600; }
+  .stext { margin: 2px 0 4px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+  .out { font-family: var(--vscode-editor-font-family); white-space: pre-wrap; font-size: .92em; opacity: .85; margin: 4px 0 0; max-height: 14em; overflow: auto; }
 </style></head><body>
+<div id="bar">
+  <span id="title">Confine ${mod}</span>
+  <label>Target <select id="target"></select></label>
+  <label>Denials since <select id="since"></select></label>
+  <button id="refresh" title="Look at everything again">Refresh</button>
+  <span id="status"></span>
+</div>
+<div id="main"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body></html>`;
+  const post = (m) => panel.webview.postMessage(m);
+  panel.webview.onDidReceiveMessage(async (m) => {
+    try {
+      if (m.cmd === 'ready') {
+        post({ cmd: 'init', module: mod, targets: connectedTargets(), exercise: context.workspaceState.get(stateKey, ''), target: target || null });
+      } else if (m.cmd === 'load') {
+        post({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/confineStatus', { module: mod, target: m.target || null, since: m.since || 'today' }) });
+      } else if (m.cmd === 'build') {
+        vscode.commands.executeCommand('selinux.buildModule', m.te && m.standalone ? vscode.Uri.file(m.te) : 'tree');
+      } else if (m.cmd === 'connect') {
+        vscode.commands.executeCommand('selinux.connectTarget');
+      } else if (m.cmd === 'editService') {
+        showServiceEditor(context, mod);
+      } else if (m.cmd === 'newService') {
+        showServiceEditor(context, null);
+      } else if (m.cmd === 'open') {
+        vscode.commands.executeCommand('selinux.openLocation', m.path, m.line || 0, 0);
+      } else if (m.cmd === 'push') {
+        const out = targetLog(`\n=== Push ${mod} to ${m.target} (${new Date().toLocaleString()}) from the checklist`);
+        const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Pushing ${mod} to ${m.target}… (semodule rebuilds the policy there)` }, () => client.sendRequest('selinux/targetPush', { id: m.target, modules: [mod], contexts: [], booleans: [], setPermissive: false }));
+        if (r.error) { out.appendLine(r.error); vscode.window.showErrorMessage(r.error); }
+        else { out.appendLine(r.transcript || ''); if (r.stderr) out.appendLine(`stderr: ${r.stderr}`); if (!r.ok) { out.show(true); vscode.window.showErrorMessage(`The push to ${m.target} failed at: ${(r.failed || []).join(', ') || 'unknown step'}. See the SELinux Target output; Roll Back restores the backup.`, 'Roll Back').then(a => { if (a) rollbackTarget(m.target); }); } }
+        post({ cmd: 'done', what: 'push', result: r });
+      } else if (m.cmd === 'permissive') {
+        const r = await client.sendRequest('selinux/targetPermissive', { id: m.target, domain: m.domain, on: !!m.on });
+        if (r.error) vscode.window.showErrorMessage(r.error);
+        post({ cmd: 'done', what: 'permissive', result: r });
+      } else if (m.cmd === 'restart') {
+        const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Restarting ${m.units.join(', ')} on ${m.target}…` }, () => client.sendRequest('selinux/targetRestart', { id: m.target, units: m.units }));
+        const out = targetLog(`\n=== Restart on ${m.target}: ${m.units.join(', ')}`);
+        if (r.error) { out.appendLine(r.error); vscode.window.showErrorMessage(r.error); } else { out.appendLine((r.units || []).map(u => `${u.unit}: ${u.state}`).join('\n')); if (r.out) out.appendLine(r.out); }
+        post({ cmd: 'done', what: 'restart', result: r });
+      } else if (m.cmd === 'exercise') {
+        post({ cmd: 'done', what: 'exercise', result: await client.sendRequest('selinux/confineExercise', { target: m.target, commands: m.commands }) });
+      } else if (m.cmd === 'saveExercise') {
+        await context.workspaceState.update(stateKey, m.text || '');
+      } else if (m.cmd === 'applyDenials') {
+        showServiceEditor(context, mod, null, { learnText: m.text, learnStatus: m.status || '' });
+      } else if (m.cmd === 'verify') {
+        const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Enforcing ${mod} on ${m.target} and verifying…` }, () => client.sendRequest('selinux/confineVerify', { module: mod, target: m.target, units: m.units, commands: m.commands, programs: m.programs }));
+        const out = targetLog(`\n=== Enforce and verify ${mod} on ${m.target} (${new Date().toLocaleString()})`);
+        if (r.error) out.appendLine(r.error);
+        else { out.appendLine(r.verdict.text); for (const p of r.verdict.problems) out.appendLine(`- ${p}`); for (const x of r.exercise || []) out.appendLine(`$ ${x.cmd}\n${x.out}${x.code ? `\n(exit ${x.code})` : ''}`); if (r.denials && r.denials.text) out.appendLine(r.denials.text); }
+        post({ cmd: 'done', what: 'verify', result: r });
+      }
+    } catch (e) {
+      post({ cmd: 'error', text: e.message });
+    }
+  }, undefined, context.subscriptions);
+  panel.onDidDispose(() => { confinePanels.delete(mod); }, undefined, context.subscriptions);
+}
+
+function showReport(context, viewType) {
+  const def = REPORTS[viewType];
+  if (reportPanels.has(viewType)) { reportPanels.get(viewType).reveal(); return; }
+  const panel = vscode.window.createWebviewPanel(viewType, def.title, vscode.ViewColumn.Active,
+    { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
+  reportPanels.set(viewType, panel);
+  const nonce = [...Array(24)].map(() => Math.random().toString(36)[2]).join('');
+  const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', def.script));
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<style>
+${REPORT_CSS}</style></head><body>
 <div id="bar">
   <span id="title">${def.title}</span>
   <label>Policy <select id="against"></select></label>
@@ -2674,6 +2783,8 @@ function showReport(context, viewType) {
       } else if (m.cmd === 'fixService') {
         // A service with denials on the target: its module in the editor, the denials in the learn section.
         showServiceEditor(context, m.module, null, { learnText: m.text, learnStatus: m.status || '' });
+      } else if (m.cmd === 'confine') {
+        showConfine(context, m.module, m.target);
       } else if (m.cmd === 'open') {
         vscode.commands.executeCommand('selinux.openLocation', m.loc.p, m.loc.l, m.loc.c || 0);
       } else if (m.cmd === 'sessionFix') {

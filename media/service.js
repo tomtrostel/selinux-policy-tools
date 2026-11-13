@@ -1002,6 +1002,7 @@
       model.provides = model.provides || [];
       where = info.isNew ? (info.defaultLayer || null) : null;
       plan = null; dirty = false;
+      if ($('checklist')) $('checklist').hidden = !!info.isNew || !!model.user;
       if (!m.keep) { pfResult = null; pfStatus = ''; pfHostTouched = false; pfHost = null; }
       $('form').textContent = '';
       render();
@@ -1067,6 +1068,7 @@
     }
   });
   $('apply').addEventListener('click', () => vscode.postMessage({ cmd: 'apply', model, where, standalone: !!info.standalone, license }));
+  if ($('checklist')) $('checklist').addEventListener('click', () => vscode.postMessage({ cmd: 'checklist' }));
   $('reload').addEventListener('click', () => vscode.postMessage({ cmd: 'reload' }));
   vscode.postMessage({ cmd: 'ready' });
 })();
