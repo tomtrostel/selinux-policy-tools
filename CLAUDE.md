@@ -2001,6 +2001,17 @@ so far covered by the e2e tests only.
    rebuilt → /etc/chrony.keys reported generic with kind config; shares
    `npm run test:labels-e2e` with the tighten part).
 
+   Spec picker (2026-11-12, user: the spec dialog over Remote-SSH "just
+   gives me a place to enter the name"): specconfig.findSpecFiles(dirs,
+   {maxDepth, limit}) (*.spec with %makeCmds / %installCmds lines only:
+   refpolicy's support/*.spec and packages that need selinux-policy are
+   not recipes; skips .git, node_modules, tmp, policy/, rpmbuild output
+   dirs; variants from the %makeCmds lines), request `selinux/findSpecs`
+   (the trees' parents and grandparents, the workspace roots and their
+   parents, ~/rpmbuild/SPECS; depth 3); the command shows them in a quick
+   pick with their variants and a Browse… item that opens the file dialog
+   in the nearest one's directory (specconfig-test).
+
 28. **Tighten** (done, unreleased; idea 4). `server/tighten.js` (pure):
    report(model, { domain, catalog, grants (Map name → { cost, types,
    writes, broadest }), kept }) → rows {kind permissive|cap|self|access|

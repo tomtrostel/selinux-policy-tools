@@ -162,5 +162,21 @@ fs.rmSync(d10, { recursive: true, force: true });
 check(JSON.stringify(specBuildConfigs((() => { const d = tempDir('specconfig-none-'); const p = path.join(d, 'x.spec'); fs.writeFileSync(p, 'Name: x\n%build\nmake\n'); return p; })())) === '[]',
   'a spec with neither %makeCmds nor %installCmds: no variants');
 
+// Spec files near a tree: found, classified, with their variants; others' .spec files and deep or skipped dirs left out.
+{
+  const { findSpecFiles } = require('../server/specconfig');
+  const d = tempDir('specconfig-find-');
+  const mk = (rel, text) => { const p = path.join(d, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p; };
+  const rhel = mk('srpm/selinux-policy.spec', 'Name: selinux-policy\n%makeCmds targeted mcs allow\n%makeCmds mls mls deny\n%makeCmds targeted mcs allow\n');
+  const clip = mk('clip/packages/selinux-policy/selinux-policy-cil.spec', 'Name: selinux-policy\n%installCmds A B C D E\n');
+  mk('other/kernel.spec', 'Name: kernel\n%build\nmake\n');
+  mk('srpm/.git/x.spec', 'Name: selinux-policy\n%makeCmds targeted\n');
+  mk('deep/a/b/c/d/selinux-policy.spec', 'Name: selinux-policy\n%makeCmds targeted\n');
+  const found = findSpecFiles([d], { maxDepth: 3 });
+  check(found.length === 2 && found[0].path === rhel && found[0].kind === 'rhel' && found[0].variants.join() === 'targeted,mls' && found[1].path === clip && found[1].kind === 'clip' && !found[1].variants.length,
+    'findSpecFiles: the RHEL spec (variants once each) and the CLIP one; not kernel.spec, not under .git, not deeper than the limit', found);
+  check(findSpecFiles([path.join(d, 'nope'), null], {}).length === 0, 'findSpecFiles: missing or null directories give nothing');
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nall specconfig checks passed');
 process.exit(failures ? 1 : 0);

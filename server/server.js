@@ -1395,6 +1395,15 @@ connection.onRequest('selinux/selectInstallProfile', async ({ profile }) => {
 connection.onRequest('selinux/specBuildConfig', async ({ specPath }) => {
   try { return { configs: require('./specconfig').specBuildConfigs(specPath, treeRoot) }; } catch (e) { return { error: e.message }; }
 });
+/** Spec files near the trees and the workspace (and ~/rpmbuild/SPECS): what Configure Build from Spec File offers before the file dialog. */
+connection.onRequest('selinux/findSpecs', async () => {
+  const dirs = [];
+  const add = (d) => { if (d && !dirs.includes(d)) dirs.push(d); };
+  for (const t of trees || []) { add(path.dirname(t)); add(path.dirname(path.dirname(t))); }
+  for (const r of roots) { add(r); add(path.dirname(r)); }
+  try { add(path.join(require('os').homedir(), 'rpmbuild', 'SPECS')); } catch { /* no home */ }
+  try { return { specs: require('./specconfig').findSpecFiles(dirs, { maxDepth: 3 }), dirs }; } catch (e) { return { specs: [], dirs, error: e.message }; }
+});
 
 /* ---------------- what changed since HEAD ---------------- */
 

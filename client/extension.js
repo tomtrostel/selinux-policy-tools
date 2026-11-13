@@ -400,11 +400,27 @@ function activate(context) {
       installPackage(r.package);
     }),
     vscode.commands.registerCommand('selinux.configureFromSpec', async () => {
-      const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Use this spec',
-        title: 'selinux-policy.spec (from an unpacked source RPM or a dist-git checkout, next to its modules-*.conf / modules-*.lst files; or CLIP\'s packages/selinux-policy/selinux-policy*.spec, next to its Makefile)',
-        filters: { 'RPM spec': ['spec'] } });
-      if (!picked || !picked.length) return;
-      const r = await client.sendRequest('selinux/specBuildConfig', { specPath: picked[0].fsPath });
+      // Spec files found near the trees first (an unpacked SRPM next to the tree, CLIP's packages/selinux-policy, ~/rpmbuild/SPECS), then the file dialog.
+      const found = await client.sendRequest('selinux/findSpecs');
+      const specs = (found && found.specs) || [];
+      let specPath = null;
+      const browse = { label: '$(folder-opened) Browse…', description: 'pick a .spec file in the file dialog', browse: true };
+      if (specs.length) {
+        const items = specs.map(s => ({ label: `$(file) ${path.basename(s.path)}`, description: s.kind === 'clip' ? 'CLIP' : s.variants.length ? `variants: ${s.variants.join(', ')}` : '', detail: path.dirname(s.path), spec: s }));
+        const pick = await vscode.window.showQuickPick([...items, { label: '', kind: vscode.QuickPickItemKind.Separator }, browse],
+          { title: 'Configure the build from a selinux-policy spec file', placeHolder: `${specs.length} spec file${specs.length === 1 ? '' : 's'} found near the policy trees; or browse`, matchOnDescription: true, matchOnDetail: true });
+        if (!pick) return;
+        if (!pick.browse) specPath = pick.spec.path;
+      }
+      if (!specPath) {
+        const near = specs.length ? vscode.Uri.file(path.dirname(specs[0].path)) : policyTrees.length ? vscode.Uri.file(path.dirname(policyTrees[0].root)) : undefined;
+        const picked = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Use this spec', defaultUri: near,
+          title: 'selinux-policy.spec (from an unpacked source RPM or a dist-git checkout, next to its modules-*.conf / modules-*.lst files; or CLIP\'s packages/selinux-policy/selinux-policy*.spec, next to its Makefile)',
+          filters: { 'RPM spec': ['spec'] } });
+        if (!picked || !picked.length) return;
+        specPath = picked[0].fsPath;
+      }
+      const r = await client.sendRequest('selinux/specBuildConfig', { specPath });
       if (r.error || !r.configs || !r.configs.length) { vscode.window.showErrorMessage(r.error || 'No policy variants found in that spec (neither %makeCmds lines nor CLIP\'s %installCmds).'); return; }
       const pick = await vscode.window.showQuickPick(r.configs.map(specPickItem), { placeHolder: 'Policy variant to build' });
       if (!pick) return;

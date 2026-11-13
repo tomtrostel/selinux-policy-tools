@@ -193,4 +193,38 @@ function specBuildConfigs(specPath, treeRoot = null) {
   });
 }
 
-module.exports = { parseSpec, specBuildConfigs, makeVars };
+/**
+ * Spec files worth offering for Configure Build from Spec File: *.spec under the given directories (depth
+ * limited, skipping .git, node_modules, tmp and policy/ trees) whose text has %makeCmds (RHEL/Fedora) or
+ * %installCmds (CLIP) lines. → [{ path, kind: 'rhel' | 'clip', variants: [names] }], nearest first.
+ */
+function findSpecFiles(startDirs, { maxDepth = 4, limit = 40 } = {}) {
+  const fs = require('fs');
+  const path = require('path');
+  const seen = new Set();
+  const out = [];
+  const skip = new Set(['.git', 'node_modules', 'tmp', '.vscode', '__pycache__', 'policy', 'BUILD', 'BUILDROOT', 'RPMS', 'SRPMS']);
+  const walk = (dir, depth, rank) => {
+    let ents;
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (depth < maxDepth && !skip.has(e.name) && !e.name.startsWith('.')) walk(p, depth + 1, rank); continue; }
+      if (!e.isFile() || !e.name.endsWith('.spec') || seen.has(p)) continue;
+      seen.add(p);
+      let text;
+      try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
+      const rhel = /^%makeCmds\b/m.test(text), clip = /^%installCmds\b/m.test(text);
+      if (!rhel && !clip) continue; // refpolicy's own support/*.spec and packages that merely need selinux-policy are not build recipes
+      const variants = [];
+      if (rhel) for (const m of text.matchAll(/^%makeCmds\s+(\S+)/gm)) if (!variants.includes(m[1])) variants.push(m[1]);
+      out.push({ path: p, kind: rhel ? 'rhel' : clip ? 'clip' : 'other', variants, rank, depth });
+      if (out.length >= limit) return;
+    }
+  };
+  startDirs.forEach((d, i) => { if (d) walk(d, 0, i); });
+  out.sort((a, b) => (a.rank - b.rank) || (a.depth - b.depth) || a.path.localeCompare(b.path));
+  return out.map(({ path: p, kind, variants }) => ({ path: p, kind, variants }));
+}
+
+module.exports = { parseSpec, specBuildConfigs, makeVars, findSpecFiles };

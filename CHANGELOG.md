@@ -54,6 +54,11 @@
   shape. Commands *SELinux: Check a Service's Labels…* and *SELinux: Tighten
   a Service…* (Features menu and view) open a service on the section and run
   it.
+* **Configure Build from Spec File…** first offers the spec files it finds
+  near the policy trees and the workspace (an unpacked source RPM next to
+  the tree, CLIP's `packages/selinux-policy`, `~/rpmbuild/SPECS`), each with
+  its variants, and *Browse…* opens the file dialog in that directory.
+  Request `selinux/findSpecs`.
 * **Service plan: paths another module labels.** A new or edited module
   whose `.fc` labels a path another module's `.fc` already labels (same
   spec and file flag, another type) is refused with that module and line;
