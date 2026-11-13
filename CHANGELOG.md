@@ -4,6 +4,26 @@
 
 **Added**
 
+* **Service editor: fill the form in from the host.** For a new service,
+  *Look at the program* (this host, or a connected target host as root over
+  its ssh connection) drafts the form from what the host knows: the
+  package's files become the configuration, state, log, runtime, cache and
+  spool types, the systemd unit gives the summary, the unit file,
+  `RuntimeDirectory`/`StateDirectory`/`PIDFile` paths, `ReadWritePaths`,
+  `AmbientCapabilities` and a small `CapabilityBoundingSet`,
+  `NoNewPrivileges` and D-Bus activation, the running program's sockets
+  give the ports it listens on and connects to (the policy's port types, or
+  a port type of its own), D-Bus service files, cron and xinetd entries say
+  how it is started, and its shared libraries say what it talks to (PAM,
+  Kerberos, LDAP, TLS, D-Bus). Every setting is listed with its source;
+  nothing already set is removed. *New Service…* from the Unconfined view
+  and the denial assistant does it at once. Request
+  `selinux/servicePrefill`.
+* **Service plan: paths another module labels.** A new or edited module
+  whose `.fc` labels a path another module's `.fc` already labels (same
+  spec and file flag, another type) is refused with that module and line;
+  setfiles would refuse the build with "Multiple different specifications".
+
 * **Features view** at the top of the SELinux sidebar: the entries of the
   *All Features* menu as a tree, one collapsible node per group (look into
   a policy, write policy, fix problems, build and install, compare and

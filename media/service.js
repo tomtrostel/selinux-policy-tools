@@ -886,6 +886,57 @@
     }
   }
 
+  /* ---------- from the host: what it knows about the program ---------- */
+  let pfHost = null, pfStatus = '', pfResult = null, pfOpen = false, pfHostTouched = false;
+  const PF_FIELDS = { name: 'Service', summary: 'Service', exec: 'Programs', starts: 'Started by', files: 'Files', net: 'Network', caps: 'Capabilities', access: 'System access' };
+  const programPath = () => (model.exec || []).map(p => (p || '').trim()).find(p => p.startsWith('/') && !p.includes('%')) || '';
+  function prefillRun(host) {
+    const exec = programPath();
+    if (!exec) { pfStatus = 'Enter the program’s path under Programs first.'; pfOpen = true; render(); return; }
+    pfHost = host;
+    pfStatus = `Looking at ${exec} on ${host ? host : 'this host'}…`;
+    pfResult = null;
+    pfOpen = true;
+    render();
+    vscode.postMessage({ cmd: 'prefill', exec, host: host || '', model, standalone: !!info.standalone });
+  }
+  function prefillSection() {
+    if (!info.isNew || model.user || model.webapp) return null;
+    // Until the user picks one: the first connected target, else this host.
+    if (!pfHostTouched) pfHost = learnTargets.length ? learnTargets[0].id : '';
+    else if (pfHost && !learnTargets.some(t => t.id === pfHost)) pfHost = '';
+    const from = learnTargets.length ? h('select', { title: 'Where the program runs: this host, or a connected target host (looked at over its ssh connection, as root there)', onchange: (e) => { pfHost = e.target.value; pfHostTouched = true; render(); } },
+      h('option', { value: '', selected: !pfHost || null }, 'this host'), ...learnTargets.map(t => h('option', { value: t.id, selected: pfHost === t.id || null }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`))) : null;
+    const exec = programPath();
+    const body = [
+      h('div', { class: 'muted' }, 'The host already knows a lot about a program: its package and the package’s files (configuration, state, logs, runtime files), the systemd unit that starts it (user, capabilities, directories, hardening), the ports it listens on and connects to, D-Bus, cron and xinetd entries, the libraries it uses. Fill the form in from that first; a permissive run then shows what is left.'),
+      h('div', { class: 'row' },
+        from ? h('span', { class: 'muted' }, 'Program on ') : null, from,
+        h('button', { class: 'primary', title: `Look at the program (the first path under Programs${exec ? `: ${exec}` : ''}) on ${pfHost || 'this host'} and fill the form in from what is found; nothing already set is removed`,
+          onclick: () => prefillRun(pfHost || '') }, 'Look at the program'),
+        pfStatus ? h('span', { class: 'muted' }, pfStatus) : null),
+    ];
+    const r = pfResult;
+    if (r) {
+      if (r.error) body.push(h('div', { class: 'problem' }, r.error));
+      else {
+        const f = r.facts || {};
+        body.push(h('div', {}, h('b', {}, `${r.report.length} setting${r.report.length === 1 ? '' : 's'} filled in from ${f.host || 'the host'}`),
+          h('span', { class: 'muted' }, `${f.pkg ? `: package ${f.pkg.name}` : ': no package owns it'}${(f.units || []).length ? `, unit ${f.units.join(', ')}` : ', no systemd unit runs it'}${f.root === false ? ' (not root there: ports and some files unseen)' : ''}.`)));
+        const by = new Map();
+        for (const x of r.report) { const k = PF_FIELDS[x.field] || x.field; if (!by.has(k)) by.set(k, []); by.get(k).push(x); }
+        for (const [title, items] of by) {
+          body.push(h('details', { class: 'egroup', open: true }, h('summary', {}, h('b', {}, title), h('span', { class: 'muted' }, ` ${items.length}`)),
+            h('ul', { class: 'learn' }, items.map(x => h('li', {}, x.text, h('span', { class: 'muted' }, ` — ${x.from}`))))));
+        }
+        for (const n of r.notes || []) body.push(h('div', { class: 'muted' }, n));
+      }
+    }
+    const d = section('From the host', r && !r.error ? `${r.report.length} filled in` : 'fill the form in from the program’s package, unit, ports and libraries', body, pfOpen);
+    d.addEventListener('toggle', () => { pfOpen = d.open; });
+    return d;
+  }
+
   /* ---------- learn from a permissive run ---------- */
   let learnText = '', learnStatus = '', learnResult = null, learnOpen = false, learnTargets = [], learnFrom = '';
   const LEARN_ACTIONS = { file: 'Access level raised', label: 'Files given a type of their own', cap: 'Capabilities', self: 'Process and capabilities', net: 'Network', access: 'System access', extra: 'Interfaces added', covered: 'Already covered', unmapped: 'Not in the form: add by hand', skipped: 'Left out' };
@@ -935,7 +986,7 @@
     grantsSlots = new Map();
     const open = [...form.querySelectorAll('.card')].map(d => d.open); // the sections (not groups inside them)
     form.textContent = '';
-    const secs = [serviceSection(), learnSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), prefillSection(), learnSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     if (grantsInfo.domain !== domainName()) { grantsInfo.clear(); grantsInfo.domain = domainName(); }
@@ -951,10 +1002,17 @@
       model.provides = model.provides || [];
       where = info.isNew ? (info.defaultLayer || null) : null;
       plan = null; dirty = false;
+      if (!m.keep) { pfResult = null; pfStatus = ''; pfHostTouched = false; pfHost = null; }
       $('form').textContent = '';
       render();
       $('stale').hidden = true;
       vscode.postMessage({ cmd: 'plan', model, where, standalone: !!info.standalone, license });
+      // Opened for a program (New Service… from the Unconfined view or the denial assistant): look at it at once.
+      if (!m.keep && info.isNew && info.prefill && info.prefill.exec) {
+        const host = info.prefill.host === undefined ? (learnTargets.length ? learnTargets[0].id : '') : info.prefill.host;
+        pfHostTouched = true;
+        prefillRun(learnTargets.some(t => t.id === host) ? host : '');
+      }
     } else if (m.cmd === 'plan') {
       plan = m.plan;
       renderPreview();
@@ -991,7 +1049,14 @@
       render();
     } else if (m.cmd === 'targets') {
       learnTargets = m.targets || [];
-      if (learnOpen) render();
+      if (learnOpen || pfOpen || (info && info.isNew)) render();
+    } else if (m.cmd === 'prefilled') {
+      pfResult = m.result || { error: 'No answer.' };
+      pfStatus = '';
+      pfOpen = true;
+      if (pfResult.model) { model = pfResult.model; model.provides = model.provides || []; refreshTypes(); }
+      render();
+      if (pfResult.model) changed();
     } else if (m.cmd === 'learned') {
       learnResult = m.result || { error: 'No answer.' };
       learnStatus = '';

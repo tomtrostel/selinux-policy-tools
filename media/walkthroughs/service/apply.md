@@ -15,6 +15,14 @@ builds them, and errors would appear in the Problems panel as usual.
 
 In a tree, the module is part of the policy you build and ship.
 
+**Fill the form in from the host first.** For a new service, the form's
+**From the host** section looks at the program where it runs (this host, or
+a connected target host) and fills in what the host already knows: the
+package's files as the service's file types, the unit's directories,
+capabilities and hardening, the ports it listens on and connects to, how it
+is started, and what its libraries say it talks to. Each setting names its
+source. *New Service…* from **What Runs Unconfined** does this at once.
+
 **Test in permissive mode first.** With *Permissive while testing* on, the
 service works normally and every denial is logged. Exercise everything it
 does (start, reload, normal traffic, log rotation, stop), then read the

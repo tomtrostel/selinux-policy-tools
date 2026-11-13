@@ -933,8 +933,8 @@ ${EDITOR_CSS}</style></head><body>
     current.files = info.files || null;
     current.domain = info.model.domain || null;
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
+    post({ cmd: 'targets', targets: connectedTargets() }); // before init: the form's host choice needs them
     post({ cmd: 'init', info, keep });
-    post({ cmd: 'targets', targets: connectedTargets() });
     if (opts && opts.learnText) { post({ cmd: 'learnLog', text: opts.learnText, status: opts.learnStatus || '' }); opts = null; }
   };
   panel.learn = (text, status) => post({ cmd: 'learnLog', text, status: status || '' });
@@ -957,6 +957,7 @@ ${EDITOR_CSS}</style></head><body>
       else if (m.cmd === 'grants') post({ cmd: 'grants', domain: m.domain, result: await client.sendRequest('selinux/interfaceGrants', { domain: m.domain, names: m.names }) });
       else if (m.cmd === 'saveLicense') post({ cmd: 'licenseSaved', ...(await saveLicense(m.license, !!m.asDefault, !!m.defaultOnly)) });
       else if (m.cmd === 'learn') post({ cmd: 'learned', result: await client.sendRequest('selinux/serviceLearn', { text: m.text, model: m.model, module: current.module, standalone: !!m.standalone }) });
+      else if (m.cmd === 'prefill') post({ cmd: 'prefilled', result: await client.sendRequest('selinux/servicePrefill', { exec: m.exec, host: m.host || '', model: m.model, standalone: !!m.standalone }) });
       else if (m.cmd === 'learnAusearch') { if (m.target) post({ cmd: 'learnLog', text: null, status: `Reading the log of ${m.target}…` }); readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }), m.target || null); }
       else if (m.cmd === 'learnFile') {
         const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Read', title: 'Audit log of the permissive run', defaultUri: vscode.Uri.file(require('os').homedir()) });
@@ -1902,7 +1903,7 @@ function showDenials(context, text, against = null, read = null) {
       } else if (m.cmd === 'levels') {
         showLevels(context, m.state);
       } else if (m.cmd === 'newService') {
-        showServiceEditor(context, null, { exec: m.exec });
+        showServiceEditor(context, null, { exec: m.exec, host: m.host });
       } else if (m.cmd === 'fix') {
         const plan = await client.sendRequest('selinux/denialFix', { domain: m.domain, call: m.call, calls: m.calls, rule: m.rule, newInterface: m.newInterface });
         panel.webview.postMessage({ cmd: 'fixPlan', key: m.key, plan });
@@ -2198,7 +2199,7 @@ function showFileLabel(context, p) {
       } else if (m.cmd === 'graph') {
         vscode.commands.executeCommand('selinux.transitionGraph', m.domain);
       } else if (m.cmd === 'newService') {
-        showServiceEditor(context, null, { exec: m.exec });
+        showServiceEditor(context, null, { exec: m.exec, host: m.host });
       }
     } catch (e) {
       panel.webview.postMessage({ cmd: 'error', text: e.message });
@@ -2683,7 +2684,7 @@ function showReport(context, viewType) {
         await applyDenialFix(m.plan);
         panel.webview.postMessage({ cmd: 'applied', key: m.key, path: m.plan.path });
       } else if (m.cmd === 'newService') {
-        showServiceEditor(context, null, { exec: m.exec });
+        showServiceEditor(context, null, { exec: m.exec, host: m.host });
       } else if (m.cmd === 'lookUp') {
         vscode.commands.executeCommand('selinux.lookUpFile', m.path);
       } else if (m.cmd === 'set') {

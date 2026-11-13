@@ -70,7 +70,7 @@
       h('td', {}, runs, permissive, perm ? [' ', perm] : null, r.differs ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'policy: '), would) : null, !r.hostDomains.length && r.type ? h('div', { class: 'small' }, h('span', { class: 'muted' }, 'would start as '), would) : null, denialsCell),
       h('td', {}, units.length ? units : h('span', { class: 'muted small' }, r.pids.length ? `pid ${r.pids.slice(0, 3).join(', ')}${r.users.length ? ` (${r.users.join(', ')})` : ''}` : '')),
       h('td', {}, r.listens.length ? r.listens.map(l => `${l.proto} ${l.port}`).join(', ') : ''),
-      h('td', {}, fix, fix ? ' ' : null, h('button', { title: `Confine ${r.real}: open the service editor with it as the program`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: r.real }) }, 'New Service…')));
+      h('td', {}, fix, fix ? ' ' : null, h('button', { title: `Confine ${r.real}: open the service editor with it as the program`, onclick: () => vscode.postMessage({ cmd: 'newService', exec: r.real, host: result && result.host ? result.host.target || '' : '' }) }, 'New Service…')));
   }
 
   function table(rows) {

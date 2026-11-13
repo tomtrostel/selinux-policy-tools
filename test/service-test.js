@@ -691,6 +691,36 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   check(pw.webapp && pw.webapp.template === 'apache_content_template' && pw.content.rw.join() === '/var/lib/%/' && pw.exec.join() === '/usr/share/%/cgi-bin/' && !pw.entries.length && !pw.files.some(f => f.kind === 'unit'), 'the planned model is a web application', pw);
   whatRadio('System service').checked = true; whatRadio('System service').fire('change');
   check(byId.title.textContent === 'New service' && startSel() && !find(e => e.tag === 'details' && /^Web content/.test(e.children[0].textContent)).length && /systemd unit file/.test(form.textContent) && /Runtime files/.test(form.textContent), 'back to a system service: Started by, unit and runtime files again');
+  // From the host: the button waits for a program path, posts the lookup, and the answer fills the form.
+  const pfSec = () => find(e => e.tag === 'details' && /^From the host/.test(e.children[0].textContent))[0];
+  const execBox = () => find(e => e.tag === 'textarea' && /executable\(s\)/.test(e.attrs.title || ''))[0];
+  execBox().value = ''; execBox().fire('input');
+  buttonText('Look at the program').fire('click');
+  check(pfSec() && !last('prefill') && /Enter the program’s path under Programs first/.test(pfSec().textContent), 'From the host section: without a program path the button says to enter one');
+  execBox().value = '/usr/sbin/webby\n'; execBox().fire('input');
+  send({ cmd: 'targets', targets: [{ id: 'root@box', mode: 'permissive', root: true }] });
+  const pfFrom = () => find(e => e.tag === 'select' && /Where the program runs/.test(e.attrs.title || ''))[0];
+  check(pfFrom() && pfFrom().children.map(o => o.value).join('|') === '|root@box' && pfFrom().children.filter(o => 'selected' in o.attrs).map(o => o.value).join() === 'root@box', 'a connected target is offered under Program on, and picked by default');
+  pfFrom().value = ''; pfFrom().fire('change');
+  buttonText('Look at the program').fire('click');
+  const pf = last('prefill');
+  check(pf && pf.exec === '/usr/sbin/webby' && pf.host === '' && pf.model && pf.model.name === 'webby' && /Looking at \/usr\/sbin\/webby on this host/.test(form.textContent), 'Look at it: posts the program, the host and the form’s model', pf);
+  const pfModel = { ...pf.model, summary: 'Webby daemon', caps: ['net_bind_service'], access: [...pf.model.access, 'dbus'], net: { listen: [{ proto: 'tcp', port: 'http' }], connect: [] },
+    files: [...pf.model.files, { kind: 'config', paths: ['/etc/webby/'], access: 'read' }] };
+  send({ cmd: 'prefilled', result: { model: pfModel, report: [{ field: 'summary', text: 'Summary "Webby daemon"', from: 'unit webby.service' }, { field: 'files', text: 'Configuration: /etc/webby/', from: 'package webby' }, { field: 'net', text: 'Listens on tcp 80 (http_port_t)', from: 'tcp socket of pid 1' }, { field: 'caps', text: 'Capability net_bind_service', from: 'webby.service AmbientCapabilities' }, { field: 'access', text: 'Uses the D-Bus system bus', from: 'bus name org.webby' }],
+    notes: ['webby.service has PrivateTmp: /tmp is private to it.'], facts: { exec: '/usr/sbin/webby', pkg: { name: 'webby' }, units: ['webby.service'], host: 'melody', root: true } } });
+  await wait(400);
+  check(/5 settings filled in from melody/.test(pfSec().textContent) && /package webby, unit webby.service/.test(pfSec().textContent) && /Configuration: \/etc\/webby\/ — package webby/.test(pfSec().textContent) && /PrivateTmp/.test(pfSec().textContent),
+    'the answer: the count, package and unit, each setting with its source, the notes', pfSec().textContent.slice(0, 600));
+  check(checkbox('Bind ports below 1024').checked && checkbox('Use the D-Bus system bus').checked && /\/etc\/webby\//.test(form.textContent) && last('plan').model.summary === 'Webby daemon' && last('plan').model.net.listen[0].port === 'http',
+    'the form shows the filled-in model and a plan was asked for it', last('plan').model);
+  checkbox('Bind ports below 1024').checked = false; checkbox('Bind ports below 1024').fire('change');
+  checkbox('Use the D-Bus system bus').checked = false; checkbox('Use the D-Bus system bus').fire('change');
+  const confRow = find(e => e.tag === 'button' && /Remove this file type/.test(e.attrs.title || ''));
+  if (confRow.length) confRow[confRow.length - 1].fire('click');
+  const portRows = find(e => e.tag === 'button' && /Remove this port/.test(e.attrs.title || ''));
+  if (portRows.length) portRows[0].fire('click');
+  send({ cmd: 'targets', targets: [] });
   buttonText('+ State data').fire('click');
   checkbox('Bind ports below 1024').checked = true; checkbox('Bind ports below 1024').fire('change');
   checkbox('Use the D-Bus system bus').checked = true; checkbox('Use the D-Bus system bus').fire('change');

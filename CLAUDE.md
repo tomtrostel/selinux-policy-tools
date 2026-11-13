@@ -1858,6 +1858,63 @@ so far covered by the e2e tests only.
    repo; a wrapper `ssh` on the server's PATH proves the askpass flow; not in
    clip-all).
 
+25. **Prefill the service form from the host** (done, unreleased; user
+   2026-11-12 asked what else would make adding well constrained programs
+   and repairing existing ones easier; of the five suggested (1 prefill from
+   package and unit, 2 confinement checklist panel with exercise commands
+   and enforce-and-verify, 3 labeling coverage for a module, 4 tighten
+   report, 5 import a module from another tree) "lets start with 1").
+   `server/prefill.js` (pure): prefillScript(exec) (one `sh -s` round trip:
+   realpath, `rpm -qf`/`-ql`/`-qc`, `systemctl show` of every .service with
+   Exec*/User/Type/BusName/PIDFile/*Directory/CapabilityBoundingSet/
+   AmbientCapabilities/ReadWritePaths/PrivateTmp/NoNewPrivileges/
+   TriggeredBy and of every .socket with Listen/Triggers, `ss -ntuHap`, ps,
+   D-Bus system service files naming the program or owned by its package,
+   cron and xinetd files, ldd, getcap, `semanage port -l -n`, stat),
+   parsePrefill (capSet: an explicit list → names, the unlimited number or
+   ≥ 30 names → null; execEntries from systemd's `{ path= ; argv[]= }`
+   blocks), draft(facts, model, opts) → { model, report [{field, text,
+   from}], notes }: name from the unit stem / package / basename (a name
+   taken by a module is noted and skipped), summary from Description,
+   programs = the real path + Exec* programs the package owns (others
+   noted: they run in systemd's domain), file kinds from the package's
+   files under each kind's `where` whose first component is sameProgram()
+   (prefix match, 3+ chars: chrony/chronyd) + the unit's directories and
+   PIDFile dir (config files: `rpm -qc` or conf-like names only, so
+   logrotate.d/sysconfig snippets stay etc_t; log access `append`), unit
+   and socket unit files, init scripts; ports from the sockets of the
+   unit's MainPID / processes running the program (LISTEN or udp UNCONN →
+   listen, ESTAB peer < 32768 → connect) and socket units, mapped to
+   opts.ports (networkPorts()) else the host's semanage list else a port
+   type of the service's own; net_bind_service for ports < 1024 as root;
+   caps from getcap, AmbientCapabilities, a bounding set ≤ MAX_BOUNDING (8;
+   larger ones are a note, as are User= and an unlimited set);
+   NoNewPrivileges → access nnp; BusName / D-Bus file → also
+   dbus_system_domain + dbus client; cron files → cron_system_entry;
+   xinetd without a unit → inetd_tcp_service_domain; LIB_HINTS (libpam →
+   pam, libkrb5 → kerberos, libldap/libsss → nsswitch, libssl/gnutls/nss3 →
+   certs + urandom, libcurl → dns, libdbus → dbus). Server
+   `selinux/servicePrefill` {exec, host ('' | target id), model, standalone}
+   (runShellScript locally, targetHosts.run over ssh); serviceInfo echoes
+   `prefill {exec, host}` for the form; `fcSpecIndex()`/`fcConflicts()`:
+   servicePlan refuses a planned .fc line whose spec+flag another module
+   labels with another type (found by the e2e: a drafted chrony module
+   next to the tree's chronyd failed validate with "Multiple different
+   specifications"); only modules that are built count: RHEL's trees keep
+   xfs, rgmanager, aisexec, gnomeclock, corosync, pacemaker .fc files in
+   contrib that modules.conf does not list, and they clash with xserver,
+   rhcs and systemd (service-e2e on RHEL 9 found it). Client: New Service… from the Unconfined view carries
+   the host (`result.host.target`); the service panel's `prefill` message;
+   `targets` is posted before `init`. Webview media/service.js
+   prefillSection() ("From the host": Program on select, Look at the
+   program, the report grouped by field with sources, notes), auto-run on
+   init when info.prefill is set. Tests: test/prefill-test.js (npm test),
+   service-test form checks, test/prefill-e2e.js (melody; chronyd and sshd
+   on this host as the user, the plan's clash with chronyd.fc, the draft
+   built with chronyd's .te/.fc removed from the copy, then on
+   root@localhost with ports: udp 323 → chronyd_port_t, tcp 22 → ssh_port_t
+   + net_bind_service; `TARGET`/`TARGET_PASS_FILE` as target-e2e).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -2049,6 +2106,7 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `bin/selinux-policy-check.js`: the headless check runner for CI (drives server.js over stdio; static diagnostics, build, checks, login contexts, context files, dropped blocks; exit status).
 - `server/unconfined.js`: what runs unconfined on a host (ps / systemctl / ss parsing, what init_t starts per label, rows and verdicts); `media/unconfined.js` the Unconfined Programs webview.
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
+- `server/prefill.js`: prefill the service form from a program on a host (the facts script, its parser, the draft of a model from package, unit, sockets, D-Bus/cron/xinetd and libraries).
 - `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
 - `server/booleans.js`: booleans (booleans.conf parsing, the rows from declarations / conf / compiled / running values, setting a value); `media/booleans.js` the Booleans webview.
 - `server/target.js`: target hosts, pure (host spec, ssh arguments, the askpass helper, the facts script and its parsers, the mirror command); `server/targethost.js` the connections (ssh ControlMaster per target, commands over it, the mirrored /etc/selinux).
@@ -2182,6 +2240,10 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/learn-test.js` (in `npm test`) and `test/learn-e2e.js`
   (`npm run test:learn-e2e`, melody; optional tree arg; in clip-all as
   `learn`): learn from a permissive run.
+- `test/prefill-test.js` (in `npm test`) and `test/prefill-e2e.js`
+  (`npm run test:prefill-e2e`, melody; optional tree arg; env TARGET and
+  TARGET_PASS_FILE for the target part; not in clip-all): prefill from the
+  host.
 - `test/evidence-test.js` (in `npm test`): the evidence report (its e2e is
   check-cli-e2e's `--report`).
 - `test/booleans-test.js` (in `npm test`) and `test/booleans-e2e.js`

@@ -2074,7 +2074,8 @@ connection.onRequest('selinux/serviceInfo', async ({ module: mod, domain, standa
       const base = path.basename(prefill.exec).toLowerCase().replace(/\.(sh|py|pl|bin)$/, '').replace(/[^a-z0-9_]+/g, '_').replace(/^[^a-z]+/, '').replace(/_+$/, '');
       if (base && !serviceCtx(sa).moduleExists(base)) model.name = base;
     }
-    return { ...info, isNew: true, model };
+    // The form fills itself in from the program on the host (prefill.host: '' = this host, a target id, undefined = the webview's choice).
+    return { ...info, isNew: true, model, prefill: prefill && typeof prefill.exec === 'string' && prefill.exec.startsWith('/') ? { exec: prefill.exec, host: prefill.host === undefined ? undefined : prefill.host || '' } : null };
   }
   const m = existing;
   if (!m) return { unavailable: `${mod} has no init_daemon_domain() in its .te (nor another call that starts a service, such as dbus_system_domain() or inetd_service_domain()), so it isn't a service module the editor understands.` };
@@ -2131,6 +2132,90 @@ connection.onRequest('selinux/serviceLearn', async ({ text, model, module: mod, 
   if (skipped) notes.push(`${skipped} denial group${skipped > 1 ? 's' : ''} of other domains left out.`);
   return { ...res, records: parsed.length, groups: mine.length, notes };
 });
+
+/**
+ * Prefill the service form from a program on a host ({ exec, host: '' | target id, model, standalone }):
+ * server/prefill.js's script runs there (sh -s, locally or over the target's ssh connection) and its
+ * facts are drafted onto the model. → { model, report, notes, facts: { exec, pkg, units, host } } | { error }.
+ */
+const prefillLib = require('./prefill');
+connection.onRequest('selinux/servicePrefill', async ({ exec, host, model, standalone } = {}) => {
+  await indexing;
+  if (!treeRoot && !usingDevel) return { error: 'Open a policy source tree or a standalone module folder first.' };
+  if (typeof exec !== 'string' || !/^\/[^\0\n\r]+$/.test(exec)) return { error: 'Give the program as an absolute path (the first path under Programs).' };
+  const script = prefillLib.prefillScript(exec);
+  let out;
+  if (host) {
+    const e = targetHosts.get(host);
+    if (!e || e.state !== 'connected') return { error: `${host} is not connected (SELinux: Connect to Target Host…).` };
+    const r = await targetHosts.run(host, 'sh -s', { input: script, timeout: 90000 });
+    if (r.lost || (r.code !== 0 && !r.stdout.trim())) return { error: (r.stderr || '').trim() || `Could not look at ${exec} on ${host} (exit ${r.code}).` };
+    out = r.stdout;
+  } else {
+    if (process.platform === 'win32') return { error: 'Looking at a program needs a Linux host: use Remote-SSH, or connect a target host and pick it under "Program on".' };
+    const r = await runShellScript(script, 90000);
+    if (r.error && !r.stdout.trim()) return { error: r.error };
+    out = r.stdout;
+  }
+  const facts = prefillLib.parsePrefill(out);
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
+  const sa = usingDevel || (canStandalone && !!standalone);
+  const ctx = serviceCtx(sa);
+  const cat = service.catalog(ctx);
+  const ports = usingDevel ? [] : networkPorts().map(p => ({ name: p.name, nums: p.nums }));
+  const res = prefillLib.draft(facts, model && typeof model === 'object' ? model : service.newModel(), {
+    fileKinds: cat.fileKinds, ports, has: (n) => ctx.has(n), capNames: new Set(service.CAPS.map(c => c[0])), moduleExists: (n) => ctx.moduleExists(n), name: (model && model.name) || '',
+  });
+  const units = facts.units.filter(u => u.execStart.some(x => x.path === facts.exec || (/\/(sh|bash|dash)$/.test(x.path) && x.argv.includes(facts.exec)))).map(u => u.id);
+  return { ...res, facts: { exec: facts.exec, exists: facts.exists, pkg: facts.pkg, units, host: host || require('os').hostname(), root: facts.uid === 0 } };
+});
+
+/** Run a sh script on this host (stdin), with a time limit. → { stdout, stderr, code, error }. */
+const runShellScript = (script, timeout = 60000) => new Promise((resolve) => {
+  let child;
+  try {
+    child = require('child_process').execFile('sh', ['-s'], { maxBuffer: 32 << 20, timeout }, (err, stdout, stderr) => resolve({ stdout: String(stdout || ''), stderr: String(stderr || ''), code: err ? (err.code == null ? 1 : err.code) : 0, error: err ? (err.killed ? 'The look at this host took too long.' : (String(stderr || '').trim() || err.message)) : null }));
+  } catch (e) { resolve({ stdout: '', stderr: '', code: 1, error: e.message }); return; }
+  child.stdin.on('error', () => {});
+  child.stdin.end(script);
+});
+
+/** Every active .fc line of the tree by its spec: spec → [{ type, flag, path, l }] (cached per index generation). */
+let fcSpecCache = { key: null, map: null };
+function fcSpecIndex() {
+  if (fcSpecCache.key === idx.fcByType) return fcSpecCache.map;
+  const map = new Map();
+  const lineCache = new Map();
+  const flagOf = (p, l) => {
+    if (!lineCache.has(p)) lineCache.set(p, (readSource(p) || '').split('\n'));
+    const m = /^\s*\S+\s+(-[-dcbslp])\s/.exec(lineCache.get(p)[l] || '');
+    return m ? m[1] : '';
+  };
+  for (const [type, entries] of idx.fcByType) for (const e of entries) {
+    if (!map.has(e.spec)) map.set(e.spec, []);
+    const f = idx.files.get(e.path);
+    map.get(e.spec).push({ type, flag: flagOf(e.path, e.l), path: e.path, l: e.l, module: (f && f.module) || path.basename(e.path, '.fc') });
+  }
+  fcSpecCache = { key: idx.fcByType, map };
+  return map;
+}
+/** The lines of a planned .fc text that clash with another module's line: [{ spec, type, module, path, l }]. */
+function fcConflicts(fcText, ownPaths) {
+  const out = [];
+  const byspec = fcSpecIndex();
+  const seen = new Set();
+  for (const line of fcText.split('\n')) {
+    const m = /^(\S+)(?:\s+(-[-dcbslp]))?\s+gen_context\(\w+:\w+:(\w+)/.exec(line.trim());
+    if (!m || seen.has(m[1] + (m[2] || ''))) continue;
+    seen.add(m[1] + (m[2] || ''));
+    // Only modules that are built: the .fc of a module that is off, or that modules.conf does not list (RHEL's
+    // trees keep xfs, rgmanager, aisexec, gnomeclock… in contrib without building them), never reaches setfiles.
+    const built = (mod) => !idx.moduleKinds || (idx.moduleKinds.get(mod) != null && idx.moduleKinds.get(mod) !== 'off');
+    const other = (byspec.get(m[1]) || []).find(o => !ownPaths.has(o.path) && o.type !== m[3] && (o.flag || '') === (m[2] || '') && built(o.module));
+    if (other) out.push({ spec: m[1], type: other.type, module: other.module, path: other.path, l: other.l });
+  }
+  return out;
+}
 
 connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, standalone, license }) => {
   await indexing;
@@ -2194,6 +2279,11 @@ connection.onRequest('selinux/servicePlan', async ({ model, module: mod, where, 
   }
   // New or changed port types: corenetwork.te.in.
   if (corenet && out.net != null && out.net !== corenet.text) files.push({ path: cp, kind: 'net', exists: true, text: out.net, changed: true, diff: service.lineDiff(corenet.text, out.net) });
+  // A path another module's .fc labels already (same spec and file flag, another type): setfiles refuses it at build time.
+  if (!sa && treeRoot && out.fc) {
+    const mine = new Set(Object.values(paths));
+    for (const c of fcConflicts(out.fc, mine)) problems.push(`${c.spec} is labeled ${c.type} by ${rel(c.path)}:${c.l + 1} already (${c.module}); setfiles refuses two labels for one path. Edit that module instead, or drop the path here.`);
+  }
   // A standalone module gets RPM packaging (written once; edit it freely afterwards).
   if (sa && model.name) {
     const dir = path.dirname(paths.te);

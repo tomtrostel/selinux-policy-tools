@@ -326,6 +326,23 @@ writes. It offers what the existing service modules use (taken from the
 
 * **Service:** module name and description, the program path(s) that start
   in the new domain, permissive mode while testing.
+* **From the host:** for a new service, **Look at the program** on this host
+  or on a connected target host (as root over its ssh connection) and fill
+  the form in from what the host already knows: the package's files become
+  the service's configuration, state, log, runtime, cache and spool types
+  (paths named after the program; `rpm -qc` config files, not the logrotate
+  or sysconfig snippets other programs read), the systemd unit gives the
+  summary, the unit file, `RuntimeDirectory`/`StateDirectory`/`PIDFile`
+  paths, `ReadWritePaths`, `AmbientCapabilities` and a small
+  `CapabilityBoundingSet`, `NoNewPrivileges` and D-Bus activation, the
+  running program's sockets give the ports it listens on and connects to
+  (mapped to the policy's port types, else a port type of its own), D-Bus
+  service files, cron and xinetd entries say how it is started, and its
+  shared libraries say what it talks to (PAM, Kerberos, LDAP, TLS, D-Bus).
+  Each setting is listed with its source; what was already set is kept.
+  *New Service…* from the Unconfined view and the denial assistant does
+  this at once for the program chosen there. A path another module's `.fc`
+  already labels is refused by the plan (setfiles would refuse the build).
 * **From a permissive run:** with permissive on, run the service through
   its paces, then read what it was denied (this host's log with `sudo
   ausearch`, a file, or pasted text) and **Apply to the form**. Each denial
