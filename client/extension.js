@@ -2750,7 +2750,7 @@ ${REPORT_CSS}
       if (m.cmd === 'ready') {
         post({ cmd: 'init', module: mod, targets: connectedTargets(), exercise: context.workspaceState.get(stateKey, ''), target: target || null });
       } else if (m.cmd === 'load') {
-        post({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/confineStatus', { module: mod, target: m.target || null, since: m.since || 'today' }) });
+        post({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/confineStatus', { module: mod, target: m.target || null, since: m.since || 'today', exercise: m.exercise || null }) });
       } else if (m.cmd === 'build') {
         vscode.commands.executeCommand('selinux.buildModule', m.te && m.standalone ? vscode.Uri.file(m.te) : 'tree');
       } else if (m.cmd === 'connect') {

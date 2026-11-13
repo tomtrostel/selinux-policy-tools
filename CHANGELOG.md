@@ -34,6 +34,8 @@
   the denials since then and the service's domain read, as one verdict.
   Requests `selinux/confineStatus`, `selinux/confineExercise`,
   `selinux/confineVerify`; `selinux/targetDenials` takes `since: 'verify'`.
+  (The panel's exercise results reach the status request, so the step
+  turns green once the commands ran; found by the user on httpd.)
 * **Service editor: Labels on the host.** For the module's program, on this
   host or a connected target host (as root over ssh): the package's files
   the policy leaves under a generic label, each with the file kind that
