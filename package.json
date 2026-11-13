@@ -223,6 +223,16 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "selinux.checkServiceLabels",
+        "title": "SELinux: Check a Service’s Labels…",
+        "icon": "$(tag)"
+      },
+      {
+        "command": "selinux.tightenService",
+        "title": "SELinux: Tighten a Service…",
+        "icon": "$(filter)"
+      },
+      {
         "command": "selinux.transitionGraph",
         "title": "SELinux: Show Domain Transition Graph",
         "icon": "$(type-hierarchy)"

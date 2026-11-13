@@ -51,7 +51,9 @@
   configuration, a permissive declaration left on, booleans on by default,
   kept rules on whole attributes or with a second entrypoint, dontaudit
   rules. Request `selinux/tighten`; `selinux/interfaceGrants` keeps its
-  shape.
+  shape. Commands *SELinux: Check a Service's Labels…* and *SELinux: Tighten
+  a Service…* (Features menu and view) open a service on the section and run
+  it.
 * **Service plan: paths another module labels.** A new or edited module
   whose `.fc` labels a path another module's `.fc` already labels (same
   spec and file flag, another type) is refused with that module and line;

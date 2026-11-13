@@ -1140,6 +1140,12 @@
     } else if (m.cmd === 'targets') {
       learnTargets = m.targets || [];
       if (learnOpen || pfOpen || lbOpen || (info && info.isNew)) render();
+    } else if (m.cmd === 'focus') {
+      // Opened from the menu on a section: open it and run its lookup.
+      if (m.section === 'tighten' && !model.user) { tgOpen = true; tgStatus = 'Looking at what it grants…'; tgResult = null; render(); vscode.postMessage({ cmd: 'tighten', model, standalone: !!info.standalone }); }
+      else if (m.section === 'labels' && !model.user && !model.webapp) { lbOpen = true; lbStatus = `Looking at the files on ${lbHost || 'this host'}…`; lbResult = null; render(); vscode.postMessage({ cmd: 'labels', host: lbHost || '', model, standalone: !!info.standalone }); }
+      else if (m.section === 'learn') { learnOpen = true; render(); }
+      else if (m.section === 'prefill') { pfOpen = true; render(); }
     } else if (m.cmd === 'labelsResult') {
       lbResult = m.result || { error: 'No answer.' };
       lbStatus = '';

@@ -2029,7 +2029,10 @@ so far covered by the e2e tests only.
    names), notes when nothing can be expanded. Webview tightenSection()
    ("Tighten": Look at what it grants, rows with severity, fix buttons
    (applyFix edits the model, counts "narrowed"), line links → openLine).
-   Tests: test/tighten-test.js (npm test), service-test form checks,
+   Commands selinux.checkServiceLabels / selinux.tightenService (FEATURES
+   "Write policy"; showServiceEditor opts.section → the panel's `focus`
+   message opens the section and runs it; also for an open panel). Tests:
+   test/tighten-test.js (npm test), service-test form checks,
    labels-e2e section 1 (RHEL 9 chronyd as read back: 11 rows — dac_override,
    kernel_request_load_module, domain_dontaudit_getsession_all_domains,
    unconfined_dgram_send high; a loose model with files_read_all_files

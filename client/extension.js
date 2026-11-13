@@ -536,6 +536,14 @@ function activate(context) {
       t.sendText(cmd);
     }),
     vscode.commands.registerCommand('selinux.newService', () => showServiceEditor(context, null)),
+    vscode.commands.registerCommand('selinux.tightenService', async (arg) => {
+      const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
+      if (name) showServiceEditor(context, name, null, { section: 'tighten' });
+    }),
+    vscode.commands.registerCommand('selinux.checkServiceLabels', async (arg) => {
+      const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
+      if (name) showServiceEditor(context, name, null, { section: 'labels' });
+    }),
     vscode.commands.registerCommand('selinux.confineService', async (arg) => {
       // A module name (from a view or another panel), a Policy Explorer module node, or a pick.
       const name = arg && arg.m ? arg.m.module : typeof arg === 'string' ? arg : await pickService();
@@ -912,7 +920,7 @@ const EDITOR_CSS = `  body { font-family: var(--vscode-font-family); font-size: 
 function showServiceEditor(context, mod, prefill = null, opts = null) {
   const key = mod || '';
   const existing = servicePanels.get(key);
-  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); if (opts && opts.learnText && existing.learn) existing.learn(opts.learnText, opts.learnStatus); return; }
+  if (existing) { existing.reveal(); if (prefill && existing.prefill) existing.prefill(prefill); if (opts && opts.learnText && existing.learn) existing.learn(opts.learnText, opts.learnStatus); if (opts && opts.section && existing.focus) existing.focus(opts.section); return; }
   const panel = vscode.window.createWebviewPanel('selinuxService', mod ? `Service: ${mod}` : 'New Service', vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] });
   servicePanels.set(key, panel);
@@ -942,9 +950,11 @@ ${EDITOR_CSS}</style></head><body>
     panel.title = info.isNew ? 'New Service' : `Service: ${info.module}`;
     post({ cmd: 'targets', targets: connectedTargets() }); // before init: the form's host choice needs them
     post({ cmd: 'init', info, keep });
-    if (opts && opts.learnText) { post({ cmd: 'learnLog', text: opts.learnText, status: opts.learnStatus || '' }); opts = null; }
+    if (opts && opts.learnText) { post({ cmd: 'learnLog', text: opts.learnText, status: opts.learnStatus || '' }); opts = { ...opts, learnText: null }; }
+    if (opts && opts.section) { post({ cmd: 'focus', section: opts.section }); opts = { ...opts, section: null }; }
   };
   panel.learn = (text, status) => post({ cmd: 'learnLog', text, status: status || '' });
+  panel.focus = (section) => post({ cmd: 'focus', section });
   // A new-service form opened again for another program (from the denial assistant) starts over with it.
   panel.prefill = (p) => { current.prefill = p; load(); };
   // Edits to the module's files elsewhere make the form stale.
@@ -2059,6 +2069,8 @@ const FEATURES = [
     ['selinux.showUnconfined', 'unlock', 'What Runs Unconfined…', 'This host\'s services and processes without a domain of their own, under the running policy or a tree build; each a click from a new service module'],
     ['selinux.editService', 'edit', 'Edit Service…', 'Open an existing service module in the form'],
     ['selinux.confineService', 'checklist', 'Confine a Service…', 'The checklist for one service: built, pushed to a target, permissive, running in its domain, exercised, denials into the form, enforced and verified'],
+    ['selinux.checkServiceLabels', 'tag', 'Check a Service’s Labels…', 'On this host or a target: the program’s files under generic labels, labels that differ on disk, paths the module labels that do not exist'],
+    ['selinux.tightenService', 'filter', 'Tighten a Service…', 'What a service module grants, broadest and riskiest first, each with the narrower choice applied to the form'],
     ['selinux.newUser', 'person-add', 'New User…', 'An SELinux user and role, its logins and ways in'],
     ['selinux.editUser', 'account', 'Edit User…', 'Open an existing user\'s role module in the form'],
     ['selinux.newWrapper', 'lock', 'New Wrapped Programs…', 'Let a chroot\'s users run programs only through wrappers: protected copies that keep the programs\' own domains'],
