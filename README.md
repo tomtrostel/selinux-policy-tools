@@ -377,7 +377,9 @@ writes. It offers what the existing service modules use (taken from the
   and the module's kept lines: rules on whole attributes (file_type,
   domain), second entrypoints, dontaudit rules that hide refusals. RHEL's
   own chronyd shows dac_override, module loading and
-  unconfined_dgram_send among eleven rows.
+  unconfined_dgram_send among eleven rows. *SELinux: Check a Service's
+  Labels…* and *SELinux: Tighten a Service…* (Features menu and view, under
+  *Write policy*) open a service on these sections and run them.
 * **From a permissive run:** with permissive on, run the service through
   its paces, then read what it was denied (this host's log with `sudo
   ausearch`, a file, or pasted text) and **Apply to the form**. Each denial
