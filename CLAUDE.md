@@ -6,7 +6,7 @@ policies derived from it). Plain JavaScript (CommonJS), no build step.
 
 ## Goals and roadmap
 
-Status as of 2026-11-12: **v0.20.0 released** (GitHub release `v0.20.0`;
+Status as of 2026-11-13: **v0.21.0 released** (GitHub release `v0.21.0`;
 v0.2.0 was the first release). Steps 1, 2 and 3 are done and in 0.3.0;
 0.4.0 adds the step-4 items below plus info-flow and standalone-module
 checks; 0.5.0 adds the .te missing-require check and RHEL 10 support;
@@ -76,6 +76,13 @@ installed on melody. The repo is public: the root password files for the
 test hosts stay untracked in `sample/` (audited at release: no password
 content, file name or Claude-side path in any tracked file, commit or the
 vsix).
+0.21.0 (released 2026-11-13; the user tried the checklist on httpd and
+the spec picker on melody first, and asked for the release: "thats enough
+for tonight ... lets push all of this to github as a new release"): the
+Features view, step 25 (prefill from the host + the .fc clash check in the
+plan), step 26 (confinement checklist), steps 27/28 (Labels on the host,
+Tighten) with their menu entries, the spec picker; same audit as 0.20.0,
+clean. Release build installed on melody.
 The user clicked through all features of 0.3.0 and 0.4.0 in VS Code
 (Remote-SSH to melody) after the 0.4.0 release (all worked, nothing
 reported), and confirmed 0.7.0's tree switching; 0.5.0/0.6.0 features are
@@ -975,7 +982,7 @@ so far covered by the e2e tests only.
    ("SELinux") in explorer/context and editor/context (lookUpFile,
    buildModule for .te/.if/.fc — takes the Uri now —, analyzeDenials,
    showFeatures). Getting-started navigate page mentions both. Features
-   view (2026-11-12, unreleased; user: "add the Features tree to the
+   view (2026-11-12, 0.21.0; user: "add the Features tree to the
    sidebar"): `FeaturesView` (TreeDataProvider over FEATURES: group nodes
    collapsed with the count, entries with icon, tooltip = detail, command),
    view `selinuxFeatures` first in the container; client-test. Also fixed:
@@ -1858,7 +1865,7 @@ so far covered by the e2e tests only.
    repo; a wrapper `ssh` on the server's PATH proves the askpass flow; not in
    clip-all).
 
-25. **Prefill the service form from the host** (done, unreleased; user
+25. **Prefill the service form from the host** (done, 0.21.0; user
    2026-11-12 asked what else would make adding well constrained programs
    and repairing existing ones easier; of the five suggested (1 prefill from
    package and unit, 2 confinement checklist panel with exercise commands
@@ -1915,7 +1922,7 @@ so far covered by the e2e tests only.
    root@localhost with ports: udp 323 → chronyd_port_t, tcp 22 → ssh_port_t
    + net_bind_service; `TARGET`/`TARGET_PASS_FILE` as target-e2e).
 
-26. **Confinement checklist** (done, unreleased; idea 2 of the five: "ok lets
+26. **Confinement checklist** (done, 0.21.0; idea 2 of the five: "ok lets
    do number 2"). `server/confine.js` (pure): steps(facts) → nine steps
    {id, title, state done|todo|bad|unknown|skip, text}: module (serviceModules
    entry: name, domain, files, layer, standalone), build (the tree's last
@@ -1975,7 +1982,7 @@ so far covered by the e2e tests only.
    bar's Start over button clears the panel's exercise/verify results and
    `reset: true` on confineStatus drops e.lastVerify.
 
-27. **Labels on the host** (done, unreleased; idea 3: "ok do 3 and 4").
+27. **Labels on the host** (done, 0.21.0; idea 3: "ok do 3 and 4").
    `server/labels.js` (pure): coverageScript(programs, dirs, paths) (`rpm
    -qf` of the programs → `rpm -ql` of their packages with kind d/f/l and
    `stat -c %C`, `restorecon -nv -R` over the module's paths (its "Would
@@ -2021,7 +2028,7 @@ so far covered by the e2e tests only.
    pick with their variants and a Browse… item that opens the file dialog
    in the nearest one's directory (specconfig-test).
 
-28. **Tighten** (done, unreleased; idea 4). `server/tighten.js` (pure):
+28. **Tighten** (done, 0.21.0; idea 4). `server/tighten.js` (pure):
    report(model, { domain, catalog, grants (Map name → { cost, types,
    writes, broadest }), kept }) → rows {kind permissive|cap|self|access|
    file|extra|boolean|kept, id, severity high|medium|low, title, text, fix
