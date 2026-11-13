@@ -3901,14 +3901,17 @@ async function targetDomainDenials(id, domain, epoch, ageSeconds) {
  * target, push state, its programs on the target with their denials) and the steps server/confine.js
  * makes of them. → { module, build, target, push, services, denials, steps, units, programs }.
  */
-connection.onRequest('selinux/confineStatus', async ({ module: mod, target, since, exercise } = {}) => {
+connection.onRequest('selinux/confineStatus', async ({ module: mod, target, since, exercise, reset } = {}) => {
   await indexing;
   const m = confineModule(mod);
+  // Start over: forget this session's verify of the module on the target (the steps are read from the facts anew anyway).
+  if (reset && m && target) { const e0 = targetHosts.get(target); if (e0 && e0.lastVerify && e0.lastVerify.module === m.name) e0.lastVerify = null; }
   const facts = { module: m, build: m ? confineBuild(m) : null, target: null, push: null, services: [], denials: null, exercise: exercise && Array.isArray(exercise.ran) ? { ran: exercise.ran.map(x => ({ cmd: String(x.cmd || ''), code: +x.code || 0 })), at: +exercise.at || null } : null };
   const e = target && targetHosts.get(target);
   if (m && e && e.state === 'connected') {
     const f = e.facts || {};
     facts.target = { id: target, mode: f.mode || null, root: !!f.root, permissive: f.permissive || [] };
+    facts.verified = !!(e.lastVerify && e.lastVerify.module === m.name);
     if (f.root && facts.build && facts.build.ok) {
       const { plan } = await targetPushPlan(target);
       if (plan.error) facts.push = { state: null, error: plan.error, lastPush: plan.lastPush || null };

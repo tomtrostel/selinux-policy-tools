@@ -2739,6 +2739,7 @@ ${REPORT_CSS}
   <label>Target <select id="target"></select></label>
   <label>Denials since <select id="since"></select></label>
   <button id="refresh" title="Look at everything again">Refresh</button>
+  <button id="reset" title="Start over: forget this session's exercise and verify results for this service (the steps are read from the target afresh; nothing on the target changes)">Start over</button>
   <span id="status"></span>
 </div>
 <div id="main"></div>
@@ -2750,7 +2751,7 @@ ${REPORT_CSS}
       if (m.cmd === 'ready') {
         post({ cmd: 'init', module: mod, targets: connectedTargets(), exercise: context.workspaceState.get(stateKey, ''), target: target || null });
       } else if (m.cmd === 'load') {
-        post({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/confineStatus', { module: mod, target: m.target || null, since: m.since || 'today', exercise: m.exercise || null }) });
+        post({ cmd: 'result', key: m.key, result: await client.sendRequest('selinux/confineStatus', { module: mod, target: m.target || null, since: m.since || 'today', exercise: m.exercise || null, reset: !!m.reset }) });
       } else if (m.cmd === 'build') {
         vscode.commands.executeCommand('selinux.buildModule', m.te && m.standalone ? vscode.Uri.file(m.te) : 'tree');
       } else if (m.cmd === 'connect') {

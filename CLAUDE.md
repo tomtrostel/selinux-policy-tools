@@ -1968,7 +1968,12 @@ so far covered by the e2e tests only.
    client dropped the exercise results on the way to confineStatus (fixed),
    and after a successful verify every step should be green: the
    permissive step is done once verify is done (text "enforced again … the
-   test run is over"), with Make permissive offered for another round.
+   test run is over"), with Make permissive offered for another round. A
+   fresh panel showed verify done on a target that merely looked right
+   (enforced, running, clean): facts.verified (e.lastVerify for the module)
+   is now required, else "no verify run happened yet in this session"; the
+   bar's Start over button clears the panel's exercise/verify results and
+   `reset: true` on confineStatus drops e.lastVerify.
 
 27. **Labels on the host** (done, unreleased; idea 3: "ok do 3 and 4").
    `server/labels.js` (pure): coverageScript(programs, dirs, paths) (`rpm

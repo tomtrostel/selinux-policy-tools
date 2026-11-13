@@ -18,6 +18,7 @@
  *   services: [{ real, units: [{ id, active }], pids, hostDomains, listens, permissive }] (the module's programs on the target),
  *   denials: { count, since, error, note, text } | null,
  *   exercise: { ran: [{ cmd, code }] } | null (the webview's last run),
+ *   verified: an enforce-and-verify run happened for this module on this target (this session),
  * }
  */
 
@@ -102,6 +103,7 @@ function steps(facts) {
   const clean = d && !d.error && !d.note && d.count === 0;
   const runs = D && doms.includes(D);
   if (!m || !t) add('verify', 'skip', 'Needs a target.');
+  else if (enforced && runs && clean && p && p.state === 'same' && !facts.verified) add('verify', 'todo', `Everything is in place (${D} enforced, running in its domain, nothing denied since ${d.since}), but no verify run happened yet in this session: Enforce and verify restarts the service, runs the exercise commands and reads what was denied while enforcing.`);
   else if (enforced && runs && clean && p && p.state === 'same') {
     add('verify', 'done', `${D} is enforced on ${t.id}, the service runs in it and nothing was denied since ${d.since}.`);
     // The test run is over and the domain is enforced again: that is what the permissive step was for.

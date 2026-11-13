@@ -35,11 +35,11 @@
     if (since === 'verify' && !verifyRun) since = 'today';
     ss.value = since;
   }
-  function load() {
+  function load(reset = false) {
     key++;
     loading = true;
     $('status').textContent = target ? `Looking at ${module} on ${target}…` : `Looking at ${module}…`;
-    vscode.postMessage({ cmd: 'load', key, target, since, exercise: exerciseRun });
+    vscode.postMessage({ cmd: 'load', key, target, since, exercise: exerciseRun, reset });
   }
   const commands = () => exerciseText.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith('#'));
   const run = (what, extra) => { busy = what; render(); vscode.postMessage({ cmd: what, target, ...extra }); };
@@ -128,6 +128,7 @@
   $('target').addEventListener('change', (e) => { target = e.target.value || null; verifyRun = null; load(); });
   $('since').addEventListener('change', (e) => { since = e.target.value; load(); });
   $('refresh').addEventListener('click', () => load());
+  $('reset').addEventListener('click', () => { exerciseRun = null; verifyRun = null; if (since === 'verify') since = 'today'; fillBar(); load(true); });
 
   window.addEventListener('message', (e) => {
     const m = e.data;

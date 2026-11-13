@@ -128,6 +128,8 @@ const show = (r) => { for (const s of r.steps || []) console.log(`     ${s.state
   const vb = await req('selinux/targetDenials', { id: 'root@nowhere', since: 'verify' });
   check(vb.error, 'denials since the last verify need the target');
   check(!(await req('selinux/confineVerify', { module: 'chronyd', target: 'root@nowhere' })).ok && /not a service module/.test((await req('selinux/confineVerify', { module: 'nosuch', target: id })).error), 'verify refusals: unconnected target, unknown module');
+  r = await req('selinux/confineStatus', { module: 'chronyd', target: id, since: 'today', reset: true });
+  check(r.verified === false && by(r).verify.state === 'todo' && /no verify run happened yet in this session/.test(by(r).verify.text) && (await req('selinux/targetDenials', { id, since: 'verify' })).error, 'start over: the verify is forgotten, the step waits for a run, the verify window is gone', by(r).verify);
 
   // 5. Leave the target as it was.
   if (wasPermissive) await req('selinux/targetPermissive', { id, domain: 'chronyd_t', on: true });
