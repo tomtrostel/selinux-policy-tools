@@ -4267,9 +4267,11 @@ connection.onRequest('selinux/expandStatements', async ({ items } = {}) => {
 
 let grantsCache = { key: null, map: new Map() };
 /** What interface calls really compile to for a domain (m4 with the policy's own Makefile): name → { rules, attrs, cond }. */
-connection.onRequest('selinux/interfaceGrants', async ({ domain, names } = {}) => {
-  await indexing;
-  if (!/^[A-Za-z_]\w*$/.test(domain || '')) return { error: 'Give the service a name first.' };
+/**
+ * What interfaces expand to for a domain (the probe expansion, cached per build and index): Map name →
+ * { rules: [{ text, rt, src, tgt, cls, perms, cond, nested }], attrs (added to the domain), cond } or { error }.
+ */
+async function expandGrants(domain, names) {
   const list = [...new Set((names || []).filter(n => /^\w+$/.test(n)))].slice(0, 400);
   const cfg = probeConfig();
   if (cfg.unavailable) return { error: cfg.unavailable };
@@ -4294,13 +4296,129 @@ connection.onRequest('selinux/interfaceGrants', async ({ domain, names } = {}) =
         if (seen.has(text)) continue;
         seen.add(text);
         if (s.cond) cond++;
-        rules.push({ text, cond: !!s.cond, nested: !!s.nested });
+        rules.push({ text, rt: s.rt, src: s.s, tgt: s.t, cls: s.c, perms: s.perms, cond: !!s.cond, nested: !!s.nested });
       }
       grantsCache.map.set(`${domain}|${n}`, { rules, attrs: [...new Set(attrs)], cond });
     }
   }
-  return { grants: Object.fromEntries(list.map(n => [n, grantsCache.map.get(`${domain}|${n}`)])) };
+  return { map: new Map(list.map(n => [n, grantsCache.map.get(`${domain}|${n}`)])) };
+}
+connection.onRequest('selinux/interfaceGrants', async ({ domain, names } = {}) => {
+  await indexing;
+  if (!/^[A-Za-z_]\w*$/.test(domain || '')) return { error: 'Give the service a name first.' };
+  const ex = await expandGrants(domain, names || []);
+  if (ex.error) return { error: ex.error };
+  return { grants: Object.fromEntries([...ex.map].map(([n, g]) => [n, g && { rules: g.rules.map(r => ({ text: r.text, cond: r.cond, nested: r.nested })), attrs: g.attrs, cond: g.cond }])) };
 });
+
+/* ----- labeling coverage and the tighten report (server/labels.js, server/tighten.js) ----- */
+const labelsLib = require('./labels');
+const tightenLib = require('./tighten');
+
+/** The model the two reports work on: the form's (given), else the module read back. → { m, ctx, sa, kept } or { error }. */
+function reportModel(mod, model, standalone) {
+  if (!treeRoot && !usingDevel) return { error: 'Open a policy source tree or a standalone module folder first.' };
+  const existing = mod ? serviceModules().find(x => x.module === mod) : null;
+  const canStandalone = !!treeRoot && !usingDevel && !!develInterfaces();
+  const sa = usingDevel || (canStandalone && (existing ? isStandaloneModule(existing.files.te) : !!standalone));
+  const ctx = serviceCtx(sa);
+  let kept = [];
+  let m = model && typeof model === 'object' ? model : null;
+  if (existing) {
+    const rec = service.recognize(serviceTexts(existing.files), ctx, { module: mod, ports: ownedPorts(mod) });
+    if (rec.error && !m) return { error: rec.error };
+    if (!rec.error) { kept = rec.kept || []; if (!m) m = rec.model; }
+  }
+  if (!m) return { error: mod ? `${mod} is not a service module here.` : 'No service model given.' };
+  if (!/^[a-z][a-z0-9_]*$/.test(m.name || '')) return { error: 'Give the service a name first.' };
+  return { m, ctx, sa, kept, existing };
+}
+
+/**
+ * Labeling coverage ({ module, host ('' | target id), model, standalone }): the program's package files the
+ * policy leaves under a generic label (with the file kind for them), files on disk labeled otherwise than the
+ * policy says, and the module's paths that do not exist on the host. → labels.assess() + { host, policy,
+ * programs, note } | { error }.
+ */
+connection.onRequest('selinux/labelCoverage', async ({ module: mod, host, model, standalone } = {}) => {
+  await indexing;
+  const rm = reportModel(mod, model, standalone);
+  if (rm.error) return { error: rm.error };
+  const { m, ctx } = rm;
+  const { D, E } = service.names(m);
+  const sub = (p) => String(p || '').replace(/%/g, m.name).replace(/\s+-[-dcbslp]$/, ''); // the form's "/path -s" flag suffix is not part of the path
+  const plain = (p) => p.startsWith('/') && !/[*?[\]()|+\\]/.test(p);
+  const programs = (m.exec || []).map(sub).filter(plain);
+  const rows = (m.files || []).map((r, i) => ({ r, i, type: service.fileType(m, r, ctx), paths: (r.paths || []).map(sub).filter(plain) }));
+  const moduleTypes = new Set([D, E, ...rows.map(x => x.type).filter(Boolean)]);
+  const bare = (p) => (p.endsWith('/') && p.length > 1 ? p.slice(0, -1) : p);
+  const modelPaths = rows.flatMap(x => x.paths.map(p => ({ path: p, kind: x.r.kind, row: x.i })));
+  const paths = [...new Set(modelPaths.map(x => bare(x.path)))];
+  const script = labelsLib.coverageScript(programs, paths, paths);
+  let out;
+  if (host) {
+    const e = targetHosts.get(host);
+    if (!e || e.state !== 'connected') return { error: `${host} is not connected (SELinux: Connect to Target Host…).` };
+    const r = await targetHosts.run(host, 'sh -s', { input: script, timeout: 180000 });
+    if (r.lost || (r.code !== 0 && !r.stdout.trim())) return { error: (r.stderr || '').trim() || `Could not look at ${host} (exit ${r.code}).` };
+    out = r.stdout;
+  } else {
+    if (process.platform === 'win32') return { error: 'Looking at a host\'s files needs a Linux host: use Remote-SSH, or connect a target host.' };
+    const r = await runShellScript(script, 180000);
+    if (r.error && !r.stdout.trim()) return { error: r.error };
+    out = r.stdout;
+  }
+  const facts = labelsLib.parseCoverage(out);
+  // What the policy says each file should be: the build's (what the module will label), else the host's own policy.
+  let lp = await loginPolicy('build');
+  let pol = lp.error ? null : lp.pol;
+  if (!pol) { const lp2 = await loginPolicy(host ? `target:${host}` : undefined); pol = lp2.error ? null : lp2.pol; }
+  const expected = new Map();
+  if (pol) {
+    for (const [kind, mode] of [['d', 'dir'], ['f', 'file']]) {
+      const ps = facts.files.filter(x => x.kind === kind).map(x => x.path);
+      for (let i = 0; i < ps.length; i += 500) { const ctxs = await expectedContexts(pol, ps.slice(i, i + 500), mode); for (const [p, c] of ctxs) expected.set(p, String(c).split(':')[2] || String(c)); }
+    }
+  }
+  const res = labelsLib.assess(facts, { name: m.name, kinds: service.catalog(ctx).fileKinds, moduleTypes, expected, programs, modelPaths });
+  return { ...res, host: host || require('os').hostname(), policy: pol ? pol.label : null, programs, note: pol ? null : 'No policy to judge the labels against (build the tree first): only the module\'s own paths and restorecon\'s view were checked.' };
+});
+
+/**
+ * The tighten report ({ module, model, standalone }): what the module grants, broadest and riskiest first, with
+ * the form change that narrows each (server/tighten.js). Extra interfaces are priced by their expansion against
+ * the ranking policy's attribute sizes. → tighten.report() + { module, domain } | { error }.
+ */
+connection.onRequest('selinux/tighten', async ({ module: mod, model, standalone } = {}) => {
+  await indexing;
+  const rm = reportModel(mod, model, standalone);
+  if (rm.error) return { error: rm.error };
+  const { m, ctx, kept } = rm;
+  const { D } = service.names(m);
+  const cat = service.catalog(ctx);
+  let grants = null;
+  const names = (m.extra || []).filter(n => /^\w+$/.test(n));
+  const notes = [];
+  if (names.length && !probeConfig().unavailable) {
+    const ex = await expandGrants(D, names);
+    if (ex.error) notes.push(`The interfaces could not be expanded (${ex.error}); only the broad ones by name are listed.`);
+    else {
+      const bin = await policyForRanking();
+      const targets = new Set();
+      for (const g of ex.map.values()) if (g) for (const r of g.rules) for (const t of r.tgt) if (/^\w+$/.test(t)) targets.add(t);
+      const sizes = new Map();
+      if (bin && targets.size) {
+        const ti = await policyQuery.request({ op: 'typeinfo', bin, names: [...targets].slice(0, 600), sourceRules: [] });
+        for (const [n, x] of Object.entries((ti && ti.info) || {})) sizes.set(n, (x && x.size) || 1);
+      } else if (!bin) notes.push('No compiled policy to size the attributes with (build first): each attribute counts as one type.');
+      grants = new Map();
+      for (const [n, g] of ex.map) if (g) grants.set(n, tightenLib.costOf(g.rules, g.attrs, D, (t) => sizes.get(t) || 1));
+    }
+  }
+  const rep = tightenLib.report(m, { domain: D, catalog: cat, grants, kept: kept.map(k => ({ text: k.text, l: k.l })) });
+  return { ...rep, notes: [...rep.notes.filter(n => !grants ? !/Build the tree/.test(n) || !names.length : true), ...notes], module: mod || null, domain: D };
+});
+
 
 /** Whether calls into a module belong in optional_policy (it can be off): not base, or outside kernel/system. */
 function moduleOptional(mod, file) {

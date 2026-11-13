@@ -1966,6 +1966,75 @@ so far covered by the e2e tests only.
    chronyd_t on /etc/shadow) kept "today" at 1 denial, hence the
    since-the-last-verify window.
 
+27. **Labels on the host** (done, unreleased; idea 3: "ok do 3 and 4").
+   `server/labels.js` (pure): coverageScript(programs, dirs, paths) (`rpm
+   -qf` of the programs → `rpm -ql` of their packages with kind d/f/l and
+   `stat -c %C`, `restorecon -nv -R` over the module's paths (its "Would
+   relabel X from A to B" lines), `[ -e ]` of the module's paths),
+   parseCoverage, kindFor(file, names, kinds) (unit/initrc by path; else the
+   kind whose `where` holds the path with a first component that is the
+   program's — module or package name, extension stripped: chrony.keys is
+   chronyd's; OTHERS = logrotate.d, sysconfig, cron.d, … are other
+   programs'; /srv, /opt, /var/www → kind other), assess(facts, { name,
+   kinds, moduleTypes, expected (Map path → policy type), modelPaths,
+   programs }) → generic (expected type ∈ GENERIC and not another module's,
+   grouped by the suggested path), disagree (package files whose on-disk
+   type differs from the policy's + restorecon's lines, each once), missing,
+   covered, skipped, notes (no package, not root, cut off). Server
+   `selinux/labelCoverage` {module, host, model, standalone}: reportModel()
+   (the form's model, else recognize; kept lines too), the module's types via
+   service.fileType, paths with the fc flag suffix stripped and regex paths
+   left out, the script locally or over the target, expected types from
+   expectedContexts() against loginPolicy('build') (else the host's
+   policy) per mode dir/file in batches of 500. Client: service panel
+   messages labels / relabel (target: `restorecon -Rv` over targetRun,
+   transcript in SELinux Target; this host: sudo in the denials terminal) /
+   openLine. Webview media/service.js labelsSection() ("Labels on the host":
+   Host select, Look at the host, the three groups with Add as <kind>
+   (addPath: the kind's row or a new one; config read, log append) and
+   Relabel, notes). Tests: test/labels-test.js (npm test), service-test form
+   checks, test/labels-e2e.js (melody, RHEL 9 tree + spec, root@localhost:
+   chronyd on this host as the user — the real finding that RHEL leaves
+   /etc/chrony.conf as etc_t, and its /var/run paths missing on melody —
+   then as root on the target: a file chcon'ed to var_t under
+   /var/lib/chrony found and restored; the .fc without its chrony.keys line
+   rebuilt → /etc/chrony.keys reported generic with kind config; shares
+   `npm run test:labels-e2e` with the tighten part).
+
+28. **Tighten** (done, unreleased; idea 4). `server/tighten.js` (pure):
+   report(model, { domain, catalog, grants (Map name → { cost, types,
+   writes, broadest }), kept }) → rows {kind permissive|cap|self|access|
+   file|extra|boolean|kept, id, severity high|medium|low, title, text, fix
+   {op permissive|cap|self|access|extra|fileAccess|boolDefault, …, label} |
+   null, line}: permissive on; CAP_RISK (sys_admin, dac_override,
+   sys_ptrace, sys_rawio, sys_module, sys_boot, mac_* high; net_admin,
+   net_raw, dac_read_search, setpcap, mknod medium; setuid/setgid/sys_chroot
+   low); SELF_RISK execmem; ACCESS_RISK (kmod, sessions, loginpgm high;
+   bin, shell, systemctl medium; etcfiles low); file rows: log manage →
+   append, config manage → read, unit manage → none (high); extras: BROAD
+   name patterns (files_*_all_*, *_all_domains, unconfined_*, corenet
+   all ports, dev all, kernel sysctls, storage raw disks, shadow, userdom
+   all users, fs all, selinux_*, seutil, init scripts, terminals, mount,
+   su/sudo/newrole, libs/miscfiles manage) with the narrower choice, or by
+   cost (≥ 800 medium, ≥ 5000 high); booleans on by default that grant
+   something; kept lines: dontaudit count (low, first line), allow rules of
+   the domain on file_type/domain/… attributes (writes high), a second
+   entrypoint. costOf(rules, attrs, domain, sizeOf) = Σ size(target) × max
+   permWeight over rules whose source is the domain or an attribute it
+   gained. Sorted severity, kind, title. Server: expandGrants(domain,
+   names) factored out of interfaceGrants (structured rules kept in
+   grantsCache; the request's shape unchanged), `selinux/tighten` {module,
+   model, standalone}: reportModel, expansions of model.extra, attribute
+   sizes from policy_query typeinfo against policyForRanking() (≤ 600
+   names), notes when nothing can be expanded. Webview tightenSection()
+   ("Tighten": Look at what it grants, rows with severity, fix buttons
+   (applyFix edits the model, counts "narrowed"), line links → openLine).
+   Tests: test/tighten-test.js (npm test), service-test form checks,
+   labels-e2e section 1 (RHEL 9 chronyd as read back: 11 rows — dac_override,
+   kernel_request_load_module, domain_dontaudit_getsession_all_domains,
+   unconfined_dgram_send high; a loose model with files_read_all_files
+   priced at 3108 types from the build).
+
 The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 **public**; releases are visible to everyone.
 
@@ -2159,6 +2228,8 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `server/learn.js`: learn from a permissive run (denial groups → service model settings, the report of what went where).
 - `server/prefill.js`: prefill the service form from a program on a host (the facts script, its parser, the draft of a model from package, unit, sockets, D-Bus/cron/xinetd and libraries).
 - `server/confine.js`: the confinement checklist (nine steps with states from the gathered facts, the verdict of an enforce-and-verify run); `media/confine.js` its webview.
+- `server/labels.js`: labeling coverage of a module on a host (the facts script, its parser, the assessment: generic labels with their file kinds, labels differing on disk, missing paths).
+- `server/tighten.js`: the tighten report (broad and risky grants ranked with the narrower choice and the form change; the cost of an interface from its expansion).
 - `server/evidence.js`: the evidence report (document model from the gathered facts, Markdown and HTML renderers).
 - `server/booleans.js`: booleans (booleans.conf parsing, the rows from declarations / conf / compiled / running values, setting a value); `media/booleans.js` the Booleans webview.
 - `server/target.js`: target hosts, pure (host spec, ssh arguments, the askpass helper, the facts script and its parsers, the mirror command); `server/targethost.js` the connections (ssh ControlMaster per target, commands over it, the mirrored /etc/selinux).
@@ -2299,6 +2370,10 @@ The GitHub repo (github.com/tomtrostel/selinux-policy-tools) is
 - `test/confine-test.js` (in `npm test`) and `test/confine-e2e.js`
   (`npm run test:confine-e2e`, melody; `[tree [spec [variant]]]`, env
   TARGET and TARGET_PASS_FILE; not in clip-all): the confinement checklist.
+- `test/labels-test.js` and `test/tighten-test.js` (in `npm test`) and
+  `test/labels-e2e.js` (`npm run test:labels-e2e`, melody; `[tree [spec
+  [variant]]]`, env TARGET and TARGET_PASS_FILE for the target part; not in
+  clip-all): labels on the host and the tighten report.
 - `test/evidence-test.js` (in `npm test`): the evidence report (its e2e is
   check-cli-e2e's `--report`).
 - `test/booleans-test.js` (in `npm test`) and `test/booleans-e2e.js`

@@ -966,6 +966,25 @@ ${EDITOR_CSS}</style></head><body>
       else if (m.cmd === 'learn') post({ cmd: 'learned', result: await client.sendRequest('selinux/serviceLearn', { text: m.text, model: m.model, module: current.module, standalone: !!m.standalone }) });
       else if (m.cmd === 'prefill') post({ cmd: 'prefilled', result: await client.sendRequest('selinux/servicePrefill', { exec: m.exec, host: m.host || '', model: m.model, standalone: !!m.standalone }) });
       else if (m.cmd === 'checklist') { if (current.module) showConfine(context, current.module); }
+      else if (m.cmd === 'labels') post({ cmd: 'labelsResult', result: await client.sendRequest('selinux/labelCoverage', { module: current.module, host: m.host || '', model: m.model, standalone: !!m.standalone }) });
+      else if (m.cmd === 'tighten') post({ cmd: 'tightened', result: await client.sendRequest('selinux/tighten', { module: current.module, model: m.model, standalone: !!m.standalone }) });
+      else if (m.cmd === 'openLine') { if (current.files && current.files.te) vscode.commands.executeCommand('selinux.openLocation', current.files.te, m.line || 0, 0); }
+      else if (m.cmd === 'relabel') {
+        // restorecon over the paths whose label on disk differs from the policy: on the target as root, here through sudo in a terminal.
+        const paths = (m.paths || []).filter(p => /^\/[^\s'"`$\\;&|<>]+$/.test(p));
+        if (!paths.length) { post({ cmd: 'relabeled', host: m.host || '', error: 'No paths to relabel.' }); return; }
+        const cmdline = `restorecon -Rv ${paths.map(p => `'${p}'`).join(' ')}`;
+        if (m.host) {
+          const r = await client.sendRequest('selinux/targetRun', { id: m.host, command: cmdline });
+          targetLog(`\n=== Relabel on ${m.host}: ${cmdline}\n${(r.stdout || '').trim()}${r.stderr ? `\nstderr: ${r.stderr.trim()}` : ''}`);
+          post({ cmd: 'relabeled', host: m.host, ok: !r.error && r.code === 0, out: `${r.stdout || ''}${r.stderr || ''}`, error: r.error || null });
+        } else {
+          const t = denialTerminal();
+          t.show();
+          t.sendText(`sudo ${cmdline}`);
+          post({ cmd: 'relabeled', host: '', terminal: true });
+        }
+      }
       else if (m.cmd === 'learnAusearch') { if (m.target) post({ cmd: 'learnLog', text: null, status: `Reading the log of ${m.target}…` }); readAuditLog(m.since, (text, status) => post({ cmd: 'learnLog', text, status }), m.target || null); }
       else if (m.cmd === 'learnFile') {
         const pick = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Read', title: 'Audit log of the permissive run', defaultUri: vscode.Uri.file(require('os').homedir()) });

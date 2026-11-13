@@ -42,6 +42,12 @@ form has no place for is listed with the rule it would need. Review, apply,
 test again; when a full test run logs nothing, turn permissive off. For a
 single puzzling denial, the walkthrough **Fix a denial the right way**.
 
+**Labels on the host** (a section of the form) finds the program's files the
+policy leaves under a generic label, files whose label on disk differs from
+the policy, and paths the module labels that do not exist: most "it worked
+in permissive mode but not enforced" puzzles are one of these. **Tighten**
+ranks what the module grants, broadest first, each with the narrower choice.
+
 **The checklist** (*Checklist…* in the editor's bar) keeps the whole loop in
 view when a test host is connected (*SELinux: Connect to Target Host…*):
 built, pushed to the target, permissive, running in its domain, exercised

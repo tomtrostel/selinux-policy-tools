@@ -937,6 +937,95 @@
     return d;
   }
 
+  /* ---------- labels on the host: coverage of the module's labeling ---------- */
+  let lbHost = null, lbTouched = false, lbStatus = '', lbResult = null, lbOpen = false;
+  function addPath(kind, p) {
+    const k = (info.catalog.fileKinds || []).find(x => x.id === kind) || { access: ['manage'] };
+    let row = model.files.find(r => r.kind === kind && (r.paths || []).some(x => x === p || (x.endsWith('/') && p.startsWith(x))));
+    if (row) return;
+    row = model.files.find(r => r.kind === kind && !r.type) || (kind !== 'other' ? model.files.find(r => r.kind === kind) : null);
+    if (row) { row.paths = (row.paths || []).filter(x => !(p.endsWith('/') && x.startsWith(p))); row.paths.push(p); }
+    else model.files.push({ kind, type: '', paths: [p], access: kind === 'config' ? 'read' : kind === 'log' ? 'append' : k.access[0], _new: true });
+    render();
+    changed();
+  }
+  function labelsSection() {
+    if (model.user || model.webapp) return null;
+    if (!lbTouched) lbHost = learnTargets.length ? learnTargets[0].id : '';
+    else if (lbHost && !learnTargets.some(t => t.id === lbHost)) lbHost = '';
+    const from = learnTargets.length ? h('select', { title: 'Which host to look at: this host, or a connected target host (as root over its ssh connection)', onchange: (e) => { lbHost = e.target.value; lbTouched = true; render(); } },
+      h('option', { value: '', selected: !lbHost || null }, 'this host'), ...learnTargets.map(t => h('option', { value: t.id, selected: lbHost === t.id || null }, `${t.id}${t.mode ? ` (${t.mode})` : ''}`))) : null;
+    const body = [
+      h('div', { class: 'muted' }, 'Wrong or missing labels are the usual reason a confined service misbehaves. This looks at the program’s package on the host: files the policy leaves under a generic label (etc_t, var_lib_t, …) that should be the service’s own, files on disk whose label differs from what the policy says (after a push, or files created before the policy existed), and paths this module labels that do not exist there.'),
+      h('div', { class: 'row' }, from ? h('span', { class: 'muted' }, 'Host ') : null, from,
+        h('button', { class: 'primary', title: `Look at the program’s package files and the module’s paths on ${lbHost || 'this host'}`, onclick: () => { lbStatus = `Looking at the files on ${lbHost || 'this host'}…`; lbResult = null; lbOpen = true; render(); vscode.postMessage({ cmd: 'labels', host: lbHost || '', model, standalone: !!info.standalone }); } }, 'Look at the host'),
+        lbStatus ? h('span', { class: 'muted' }, lbStatus) : null),
+    ];
+    const r = lbResult;
+    if (r) {
+      if (r.error) body.push(h('div', { class: 'problem' }, r.error));
+      else {
+        body.push(h('div', {}, h('b', {}, `${r.covered} file${r.covered === 1 ? '' : 's'} labeled by this module on ${r.host}`), h('span', { class: 'muted' }, `${r.policy ? ` (judged by ${r.policy})` : ''}; ${r.generic.length} under a generic label, ${r.disagree.length} labeled otherwise on disk, ${r.missing.length} path${r.missing.length === 1 ? '' : 's'} missing.`)));
+        if (r.generic.length) body.push(h('details', { class: 'egroup', open: true }, h('summary', {}, h('b', {}, 'Under a generic label'), h('span', { class: 'muted' }, ` ${r.generic.length}`)),
+          h('div', { class: 'muted small' }, 'The program’s own files that the policy labels like any other file. Add them to the form to give them the service’s type (the directory stands for everything in it).'),
+          h('ul', { class: 'learn' }, r.generic.map(g => h('li', {}, h('code', {}, g.suggest.path), g.files.length > 1 ? h('span', { class: 'muted' }, ` (${g.files.length} files)`) : null, h('span', { class: 'muted' }, ` now ${g.expected || g.current || '?'}`), ' ',
+            h('button', { title: `Add ${g.suggest.path} to the ${g.label} row (or a new one)`, onclick: () => { r.generic = r.generic.filter(x => x !== g); addPath(g.suggest.kind, g.suggest.path); } }, `Add as ${g.label}`))))));
+        if (r.disagree.length) body.push(h('details', { class: 'egroup', open: true }, h('summary', {}, h('b', {}, 'Labeled otherwise on disk'), h('span', { class: 'muted' }, ` ${r.disagree.length}`)),
+          h('div', { class: 'muted small' }, 'The label on the file differs from what the policy says: the policy changed since, or the file was created before it. restorecon sets it right.'),
+          h('ul', { class: 'learn' }, r.disagree.slice(0, 50).map(d => h('li', {}, h('code', {}, d.path), h('span', { class: 'muted' }, ` ${d.from} → ${d.to}`)))), r.disagree.length > 50 ? h('div', { class: 'muted small' }, `… and ${r.disagree.length - 50} more`) : null,
+          h('div', { class: 'row' }, h('button', { title: lbHost ? `restorecon -Rv on ${lbHost} over these paths` : 'sudo restorecon -Rv over these paths in a terminal', onclick: () => { lbStatus = lbHost ? `Relabeling on ${lbHost}…` : 'restorecon runs in the terminal (enter your sudo password there)…'; render(); vscode.postMessage({ cmd: 'relabel', host: lbHost || '', paths: [...new Set(r.disagree.map(d => d.path))] }); } }, lbHost ? 'Relabel on the host' : 'Relabel (sudo, in a terminal)'))));
+        if (r.missing.length) body.push(h('details', { class: 'egroup', open: true }, h('summary', {}, h('b', {}, 'Paths not on the host'), h('span', { class: 'muted' }, ` ${r.missing.length}`)),
+          h('div', { class: 'muted small' }, 'The module labels them but they do not exist there: created later by the program (fine), or a typo in the path.'),
+          h('ul', { class: 'learn' }, r.missing.map(x => h('li', {}, h('code', {}, x.path), h('span', { class: 'muted' }, ` (${x.kind})`))))));
+        if (r.note) body.push(h('div', { class: 'muted' }, r.note));
+        for (const n of r.notes || []) body.push(h('div', { class: 'muted' }, n));
+      }
+    }
+    const d = section('Labels on the host', r && !r.error ? `${r.generic.length + r.disagree.length + r.missing.length} to look at` : 'files under generic labels, labels that differ on disk, missing paths', body, lbOpen);
+    d.addEventListener('toggle', () => { lbOpen = d.open; });
+    return d;
+  }
+
+  /* ---------- tighten: what the module grants, broadest first ---------- */
+  let tgStatus = '', tgResult = null, tgOpen = false;
+  function applyFix(row) {
+    const f = row.fix;
+    if (!f) return;
+    if (f.op === 'permissive') model.permissive = false;
+    else if (f.op === 'cap') model.caps = (model.caps || []).filter(c => c !== f.cap);
+    else if (f.op === 'self') model.self = (model.self || []).filter(s => s !== f.self);
+    else if (f.op === 'access') model.access = (model.access || []).filter(a => a !== f.access);
+    else if (f.op === 'extra') model.extra = (model.extra || []).filter(n => n !== f.name);
+    else if (f.op === 'fileAccess' && model.files[f.row]) model.files[f.row].access = f.access;
+    else if (f.op === 'boolDefault') { const b = (model.booleans || []).find(x => x.name === f.name); if (b) b.default = false; }
+    if (tgResult && tgResult.rows) { tgResult.rows = tgResult.rows.filter(x => x !== row); tgResult.applied = (tgResult.applied || 0) + 1; }
+    render();
+    changed();
+  }
+  function tightenSection() {
+    if (model.user) return null;
+    const body = [
+      h('div', { class: 'muted' }, 'What this module grants, broadest and riskiest first: capabilities and permissions that amount to root, interfaces that reach every file, process or port, management where reading would do, a permissive declaration left on, rules kept as written on whole attributes, dontaudit rules that hide refusals. Each row names the narrower choice and applies it to the form.'),
+      h('div', { class: 'row' }, h('button', { class: 'primary', disabled: !(model.name || '').trim(), title: 'Rank what the form grants; extra interfaces are priced by what they expand to against the build', onclick: () => { tgStatus = 'Looking at what it grants…'; tgResult = null; tgOpen = true; render(); vscode.postMessage({ cmd: 'tighten', model, standalone: !!info.standalone }); } }, 'Look at what it grants'),
+        tgStatus ? h('span', { class: 'muted' }, tgStatus) : null),
+    ];
+    const r = tgResult;
+    if (r) {
+      if (r.error) body.push(h('div', { class: 'problem' }, r.error));
+      else {
+        const s = r.summary;
+        body.push(h('div', {}, h('b', {}, r.rows.length ? `${r.rows.length} thing${r.rows.length === 1 ? '' : 's'} to look at` : 'Nothing broad or risky'), h('span', { class: 'muted' }, r.rows.length ? ` (${s.high} high, ${s.medium} medium, ${s.low} low${r.applied ? `; ${r.applied} narrowed` : ''})` : r.applied ? ` (${r.applied} narrowed)` : '')));
+        body.push(h('ul', { class: 'learn' }, r.rows.map(x => h('li', {},
+          h('span', { class: x.severity === 'high' ? 'warn' : x.severity === 'medium' ? 'warn' : 'muted', style: x.severity === 'high' ? 'font-weight: 600' : null, title: `${x.severity} severity` }, x.severity), ' ', h('b', {}, x.title), h('div', { class: 'muted' }, x.text),
+          h('div', {}, x.fix ? h('button', { title: `Apply to the form: ${x.fix.label}`, onclick: () => applyFix(x) }, x.fix.label) : null, x.line != null ? h('button', { class: 'link', title: 'Open the line in the .te', onclick: () => vscode.postMessage({ cmd: 'openLine', line: x.line }) }, `line ${x.line + 1}`) : null)))));
+        for (const n of r.notes || []) body.push(h('div', { class: 'muted' }, n));
+      }
+    }
+    const d = section('Tighten', r && !r.error ? (r.rows.length ? `${r.summary.high} high, ${r.summary.medium} medium` : 'nothing broad') : 'what it grants, broadest first, with the narrower choice', body, tgOpen);
+    d.addEventListener('toggle', () => { tgOpen = d.open; });
+    return d;
+  }
+
   /* ---------- learn from a permissive run ---------- */
   let learnText = '', learnStatus = '', learnResult = null, learnOpen = false, learnTargets = [], learnFrom = '';
   const LEARN_ACTIONS = { file: 'Access level raised', label: 'Files given a type of their own', cap: 'Capabilities', self: 'Process and capabilities', net: 'Network', access: 'System access', extra: 'Interfaces added', covered: 'Already covered', unmapped: 'Not in the form: add by hand', skipped: 'Left out' };
@@ -986,7 +1075,7 @@
     grantsSlots = new Map();
     const open = [...form.querySelectorAll('.card')].map(d => d.open); // the sections (not groups inside them)
     form.textContent = '';
-    const secs = [serviceSection(), prefillSection(), learnSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), keptSection()].filter(Boolean);
+    const secs = [serviceSection(), prefillSection(), learnSection(), labelsSection(), contentSection(), filesSection(), netSection(), accessSection(), selfSection(), extraSection(), boolsSection(), helpersSection(), providesSection(), tightenSection(), keptSection()].filter(Boolean);
     secs.forEach((s, i) => { if (open.length === secs.length) s.open = open[i]; form.append(s); });
     form.scrollTop = scroll;
     if (grantsInfo.domain !== domainName()) { grantsInfo.clear(); grantsInfo.domain = domainName(); }
@@ -1003,7 +1092,7 @@
       where = info.isNew ? (info.defaultLayer || null) : null;
       plan = null; dirty = false;
       if ($('checklist')) $('checklist').hidden = !!info.isNew || !!model.user;
-      if (!m.keep) { pfResult = null; pfStatus = ''; pfHostTouched = false; pfHost = null; }
+      if (!m.keep) { pfResult = null; pfStatus = ''; pfHostTouched = false; pfHost = null; lbResult = null; lbStatus = ''; lbTouched = false; tgResult = null; tgStatus = ''; }
       $('form').textContent = '';
       render();
       $('stale').hidden = true;
@@ -1050,7 +1139,21 @@
       render();
     } else if (m.cmd === 'targets') {
       learnTargets = m.targets || [];
-      if (learnOpen || pfOpen || (info && info.isNew)) render();
+      if (learnOpen || pfOpen || lbOpen || (info && info.isNew)) render();
+    } else if (m.cmd === 'labelsResult') {
+      lbResult = m.result || { error: 'No answer.' };
+      lbStatus = '';
+      lbOpen = true;
+      render();
+    } else if (m.cmd === 'relabeled') {
+      lbStatus = m.error ? m.error : m.terminal ? 'restorecon was sent to the terminal; look at the host again afterwards.' : m.ok ? `Relabeled on ${m.host}${m.out && m.out.trim() ? `: ${m.out.trim().split('\n').length} lines` : ''}; looking again…` : `restorecon failed on ${m.host}: ${(m.out || '').trim().split('\n').slice(-1)[0] || 'unknown error'}`;
+      render();
+      if (!m.error && !m.terminal && m.ok) vscode.postMessage({ cmd: 'labels', host: m.host || '', model, standalone: !!info.standalone });
+    } else if (m.cmd === 'tightened') {
+      tgResult = m.result || { error: 'No answer.' };
+      tgStatus = '';
+      tgOpen = true;
+      render();
     } else if (m.cmd === 'prefilled') {
       pfResult = m.result || { error: 'No answer.' };
       pfStatus = '';

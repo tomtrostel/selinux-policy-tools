@@ -357,6 +357,27 @@ writes. It offers what the existing service modules use (taken from the
   the exercise commands run, then the denials since then and the domain the
   service runs in, as one verdict. Denials can be read since the last push
   or since the last verify.
+* **Labels on the host:** for the module's program, on this host or a
+  connected target host: the files of its package that the policy leaves
+  under a generic label (etc_t, var_lib_t, …) with the file kind that would
+  give them the service's own type (*Add as Configuration* puts the path in
+  the form), files on disk whose label differs from what the policy says
+  (restorecon's dry run over the module's paths, and the package's files;
+  *Relabel* runs restorecon there), and paths the module labels that do not
+  exist on the host. Found this way: RHEL's chronyd module leaves
+  `/etc/chrony.conf` as etc_t.
+* **Tighten:** what the module grants, broadest and riskiest first, each
+  with the narrower choice and a button that applies it to the form:
+  capabilities that amount to root (sys_admin, dac_override, sys_ptrace,
+  …), execmem, access groups that run any program or load modules,
+  interfaces that reach every file, process, port or device (by name, and
+  by what they expand to against the build: the number of types reached and
+  the broadest rule), management of logs or configuration where append or
+  read would do, a permissive declaration left on, booleans on by default,
+  and the module's kept lines: rules on whole attributes (file_type,
+  domain), second entrypoints, dontaudit rules that hide refusals. RHEL's
+  own chronyd shows dac_override, module loading and
+  unconfined_dgram_send among eleven rows.
 * **From a permissive run:** with permissive on, run the service through
   its paces, then read what it was denied (this host's log with `sudo
   ausearch`, a file, or pasted text) and **Apply to the form**. Each denial

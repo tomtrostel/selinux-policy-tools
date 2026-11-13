@@ -721,6 +721,47 @@ const checkbox = (label) => find(e => e.tag === 'label' && e.textContent.include
   const portRows = find(e => e.tag === 'button' && /Remove this port/.test(e.attrs.title || ''));
   if (portRows.length) portRows[0].fire('click');
   send({ cmd: 'targets', targets: [] });
+  // Labels on the host: the lookup, a generic file added to the form, a wrongly labeled file relabeled.
+  const lbSec = () => find(e => e.tag === 'details' && /^Labels on the host/.test(e.children[0].textContent))[0];
+  check(lbSec() && buttonText('Look at the host'), 'Labels on the host section with its button');
+  buttonText('Look at the host').fire('click');
+  const lb = last('labels');
+  check(lb && lb.host === '' && lb.model && lb.model.name === 'webby', 'Look at the host: posts the host and the model', lb);
+  send({ cmd: 'labelsResult', result: { host: 'melody', policy: 'build', covered: 3, skipped: 2, programs: ['/usr/sbin/webby'], note: null, notes: [],
+    generic: [{ path: '/etc/webby/x.conf', current: 'etc_t', expected: 'etc_t', pkg: 'webby', suggest: { kind: 'config', path: '/etc/webby/' }, files: ['/etc/webby', '/etc/webby/x.conf'], label: 'Configuration' }],
+    disagree: [{ path: '/var/lib/webby/db', from: 'var_lib_t', to: 'webby_var_lib_t', pkg: 'webby' }], missing: [{ path: '/run/webby/', kind: 'runtime' }] } });
+  await wait(400);
+  check(/3 files labeled by this module on melody/.test(lbSec().textContent) && /\/etc\/webby\/ \(2 files\)/.test(lbSec().textContent) && /var_lib_t → webby_var_lib_t/.test(lbSec().textContent) && /\/run\/webby\/ \(runtime\)/.test(lbSec().textContent),
+    'the answer: covered count, the generic directory with its file count, the differing file, the missing path', lbSec().textContent.slice(0, 500));
+  buttonText('Add as Configuration').fire('click');
+  await wait(400);
+  check(last('plan').model.files.some(f => f.kind === 'config' && f.paths.includes('/etc/webby/') && f.access === 'read') && !/Add as Configuration/.test(lbSec().textContent), 'Add as Configuration: a config row with the directory (read only), the row gone from the list', last('plan').model.files);
+  buttonText('Relabel (sudo, in a terminal)').fire('click');
+  const rlb = last('relabel');
+  check(rlb && rlb.host === '' && rlb.paths.join() === '/var/lib/webby/db', 'Relabel: posts the differing paths for this host', rlb);
+  send({ cmd: 'relabeled', host: '', terminal: true });
+  check(/sent to the terminal/.test(lbSec().textContent), 'the terminal relabel is reported');
+  const confRows = find(e => e.tag === 'button' && /Remove this file type/.test(e.attrs.title || ''));
+  confRows[confRows.length - 1].fire('click');
+  // Tighten: the lookup, a row's fix applied to the form.
+  const tgSec = () => find(e => e.tag === 'details' && /^Tighten/.test(e.children[0].textContent))[0];
+  check(tgSec() && buttonText('Look at what it grants'), 'Tighten section with its button');
+  buttonText('Look at what it grants').fire('click');
+  const tgq = last('tighten');
+  check(tgq && tgq.model && tgq.model.name === 'webby', 'Look at what it grants: posts the model', tgq);
+  send({ cmd: 'tightened', result: { domain: 'webby_t', summary: { high: 1, medium: 1, low: 1 }, notes: ['a note'], rows: [
+    { kind: 'access', id: 'syslog', severity: 'high', title: 'System access: Write to the system log', text: 'test row', fix: { op: 'access', access: 'syslog', label: 'Untick it' }, line: null },
+    { kind: 'kept', id: 'dontaudit', severity: 'low', title: '2 dontaudit rules hide refusals', text: 'check them', fix: null, line: 12 },
+    { kind: 'file', id: 'file:1', severity: 'medium', title: 'Runtime files', text: 'r', fix: { op: 'fileAccess', row: 1, access: 'read', label: 'Set to read only' }, line: null }] } });
+  await wait(400);
+  check(/3 things to look at/.test(tgSec().textContent) && /1 high, 1 medium, 1 low/.test(tgSec().textContent) && /a note/.test(tgSec().textContent) && buttonText('line 13') && buttonText('Untick it') && buttonText('Set to read only'), 'the report: counts, rows with their fixes, a line link', tgSec().textContent.slice(0, 400));
+  check(checkbox('Write to the system log').checked, 'syslog is ticked before the fix');
+  buttonText('Untick it').fire('click');
+  await wait(400);
+  check(!last('plan').model.access.includes('syslog') && !checkbox('Write to the system log').checked && /2 things to look at/.test(tgSec().textContent) && /1 narrowed/.test(tgSec().textContent), 'Untick it: the access group is off in the model and the form, the row gone, counted as narrowed', last('plan').model.access);
+  buttonText('line 13').fire('click');
+  check(last('openLine') && last('openLine').line === 12, 'the line link opens the .te line');
+  checkbox('Write to the system log').checked = true; checkbox('Write to the system log').fire('change');
   buttonText('+ State data').fire('click');
   checkbox('Bind ports below 1024').checked = true; checkbox('Bind ports below 1024').fire('change');
   checkbox('Use the D-Bus system bus').checked = true; checkbox('Use the D-Bus system bus').fire('change');

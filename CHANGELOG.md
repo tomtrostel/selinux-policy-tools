@@ -34,6 +34,24 @@
   the denials since then and the service's domain read, as one verdict.
   Requests `selinux/confineStatus`, `selinux/confineExercise`,
   `selinux/confineVerify`; `selinux/targetDenials` takes `since: 'verify'`.
+* **Service editor: Labels on the host.** For the module's program, on this
+  host or a connected target host (as root over ssh): the package's files
+  the policy leaves under a generic label, each with the file kind that
+  would give them the service's type (*Add as …* puts the path in the
+  form), files whose label on disk differs from the policy (restorecon's
+  dry run over the module's paths plus the package's files; *Relabel* runs
+  restorecon on the target, or through sudo in a terminal here), and paths
+  the module labels that do not exist on the host. Request
+  `selinux/labelCoverage`.
+* **Service editor: Tighten.** What the module grants, broadest and riskiest
+  first, with the narrower choice and a button applying it to the form:
+  risky capabilities and execmem, access groups that run any program or
+  load modules, broad interfaces (by name and by their expansion against
+  the build: types reached, the broadest rule), manage on logs or
+  configuration, a permissive declaration left on, booleans on by default,
+  kept rules on whole attributes or with a second entrypoint, dontaudit
+  rules. Request `selinux/tighten`; `selinux/interfaceGrants` keeps its
+  shape.
 * **Service plan: paths another module labels.** A new or edited module
   whose `.fc` labels a path another module's `.fc` already labels (same
   spec and file flag, another type) is refused with that module and line;
